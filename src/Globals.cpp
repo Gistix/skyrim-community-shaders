@@ -29,6 +29,7 @@
 #include "Features/WaterEffects.h"
 #include "Features/WeatherPicker.h"
 #include "Features/WetnessEffects.h"
+#include "Features/VoxelConeTracingGI.h"
 #include "Menu.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -75,6 +76,7 @@ namespace globals
 		WetnessEffects wetnessEffects{};
 		ExtendedTranslucency extendedTranslucency{};
 		Upscaling upscaling{};
+		VoxelConeTracingGI voxelConeTracingGI{};
 
 		namespace llf
 		{

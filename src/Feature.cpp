@@ -30,6 +30,7 @@
 #include "Features/WaterEffects.h"
 #include "Features/WeatherPicker.h"
 #include "Features/WetnessEffects.h"
+#include "Features/VoxelConeTracingGI.h"
 #include "Menu.h"
 #include "SettingsOverrideManager.h"
 #include "Utils/Format.h"
@@ -225,7 +226,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::terrainVariation,
 		&globals::features::ibl,
 		&globals::features::extendedTranslucency,
-		&globals::features::upscaling
+		&globals::features::upscaling,
+		&globals::features::voxelConeTracingGI,
 	};
 
 	if (REL::Module::IsVR()) {

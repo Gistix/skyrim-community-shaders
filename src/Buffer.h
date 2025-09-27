@@ -107,6 +107,15 @@ public:
 		DX::ThrowIfFailed(device->CreateBuffer(&desc, nullptr, resource.put()));
 	}
 
+	template <typename T>
+	StructuredBuffer(D3D11_BUFFER_DESC const& a_desc, T const* a_initial_data, UINT a_count) :
+		desc(a_desc), count(a_count)
+	{
+		auto device = globals::d3d::device;
+		D3D11_SUBRESOURCE_DATA pInitialData = { a_initial_data };
+		DX::ThrowIfFailed(device->CreateBuffer(&desc, &pInitialData, resource.put()));
+	}
+
 	ID3D11ShaderResourceView* SRV(size_t i = 0) const { return srvs[i].get(); }
 	ID3D11UnorderedAccessView* UAV(size_t i = 0) const { return uavs[i].get(); }
 

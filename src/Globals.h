@@ -28,6 +28,7 @@ struct PerformanceOverlay;
 struct WetnessEffects;
 struct ExtendedTranslucency;
 struct Upscaling;
+struct VoxelConeTracingGI;
 
 class State;
 class Deferred;
@@ -78,6 +79,7 @@ namespace globals
 		extern WetnessEffects wetnessEffects;
 		extern ExtendedTranslucency extendedTranslucency;
 		extern Upscaling upscaling;
+		extern VoxelConeTracingGI voxelConeTracingGI;
 
 		namespace llf
 		{
