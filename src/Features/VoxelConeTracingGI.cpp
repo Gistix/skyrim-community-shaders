@@ -68,7 +68,7 @@ void VoxelConeTracingGI::SetupResources()
 		// Voxel Buffer
 		eastl::vector<Voxel> voxels(lod0LeafNodeCount);
 		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(lod0LeafNodeCount, true, false);
-		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, voxels.data(), lod0LeafNodeCount); // Line 75
+		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, voxels.data(), lod0LeafNodeCount);
 		voxelBuffer->CreateUAV();
 	}
 
@@ -150,10 +150,7 @@ void VoxelConeTracingGI::InjectLighting()
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Light Injection");
-
-	//auto renderer = globals::game::renderer;
-	//auto context = globals::d3d::context;
-
+	
 	lights.clear();
 	lights.reserve(settings.maxLights);
 
@@ -237,8 +234,6 @@ void VoxelConeTracingGI::InjectLighting()
 	}
 
 	for (auto lightData: lightsData) {
-		//uint type = lightData.lightFlags.any(RE::TES_LIGHT_FLAGS::kSpotlight, RE::TES_LIGHT_FLAGS::kSpotShadow) ? 2 : 1;
-
 		lights.push_back({ 
 			.position = lightData.positionWS[0].data,
 			.range = lightData.radius,
