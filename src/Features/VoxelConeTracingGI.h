@@ -119,9 +119,9 @@ struct VoxelConeTracingGI : public Feature
 
 	struct Node
 	{
-		float3 min;
-		float3 max;
+		uint min[3];
 		uint voxel;
+		uint data;
 		uint children[8];
 	};
 	static_assert(sizeof(Node) % 4 == 0);
@@ -147,22 +147,30 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::vector<Light> lights = {};
 
-	struct CbData
+	struct alignas(16) VoxelizeCB
 	{
-		float3 ColorA;
-		float _pad0;  // Padding to align to 16 bytes
-		DirectX::XMUINT2 IdA;
-		float2 UvA;
-	};
-	static_assert(sizeof(CbData) % 16 == 0,
-		"CbData must be aligned to 16 bytes. "
-		"Check out maraneshi.github.io/HLSL-ConstantBufferLayoutVisualizer/ if you're unsure.");
+		float4 NDCToView;
+		float2 RcpFrameDim;
+		float Cell2Coord;
+		float Resolution;
+		float3 Center;
+		uint MaxDepth;
+		float3 Size;
+		uint _pad0;		
+	} voxelizeCBData;
+	static_assert(sizeof(VoxelizeCB) % 16 == 0);
 
-	//eastl::unique_ptr<ConstantBuffer> cheeseCb = nullptr;  // Omit this if you want to put your CB in src/FeatureBuffer.cpp
-	winrt::com_ptr<ID3D11ComputeShader> cheeseCs = nullptr;
+	eastl::unique_ptr<ConstantBuffer> voxelizeCB = nullptr;
+
+	winrt::com_ptr<ID3D11ComputeShader> voxelizeCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> volumizeCompute = nullptr;
 
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
+	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
+	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
+
 	eastl::unique_ptr<ConstantBuffer> lightBuffer = nullptr;
 
 	eastl::unique_ptr<Texture3D> lod0Tex = nullptr;

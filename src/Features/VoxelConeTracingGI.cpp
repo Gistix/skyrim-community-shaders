@@ -12,6 +12,7 @@
 
 #include "Globals.h"
 #include "State.h"
+#include "Deferred.h"
 
 static constexpr uint MAX_LIGHTS = 1024;
 
@@ -50,7 +51,8 @@ void VoxelConeTracingGI::SetupResources()
 
 	logger::debug("Creating buffers...");
 	{
-		lightBuffer = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<Light>());
+		voxelizeCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VoxelizeCB>());
+		lightBuffer = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<Light>());		
 	}
 
 	logger::debug("Creating Structured buffers...");
@@ -61,6 +63,8 @@ void VoxelConeTracingGI::SetupResources()
 
 		// Node buffer
 		eastl::vector<Node> nodes(lod0NodeCount);
+		nodes.at(0) = Node{ { 0, 0, 0 }, 0, 0, { 0 } };
+
 		auto nodeBufferDesc = StructuredBufferDesc<Node>(lod0NodeCount, true, false);
 		nodeBuffer = eastl::make_unique<StructuredBuffer>(nodeBufferDesc, nodes.data(), lod0NodeCount);
 		nodeBuffer->CreateUAV(); // TODO: use D3D11_BUFFER_UAV_FLAG_APPEND :pray:
@@ -70,6 +74,40 @@ void VoxelConeTracingGI::SetupResources()
 		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(lod0LeafNodeCount, true, false);
 		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, voxels.data(), lod0LeafNodeCount);
 		voxelBuffer->CreateUAV();
+	}
+
+	logger::debug("Creating Raw buffers...");
+	{
+		D3D11_BUFFER_DESC bufferDesc = {
+			.ByteWidth = 4,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
+		};
+
+		uint initialNodeCount = 1;
+		D3D11_SUBRESOURCE_DATA initialData = {
+			.pSysMem = &initialNodeCount
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = { 
+				.FirstElement = 0,
+				.NumElements = 1,
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW
+			}
+		};
+		
+		// Node count buffer
+		nodeCountBuffer = eastl::make_unique<Buffer>(bufferDesc, &initialData);
+		nodeCountBuffer->CreateUAV(uavDesc);
+
+		// Voxel Buffer
+		voxelCountBuffer = eastl::make_unique<Buffer>(bufferDesc);
+		voxelCountBuffer->CreateUAV(uavDesc);
 	}
 
 	logger::debug("Creating textures...");
@@ -132,8 +170,65 @@ void VoxelConeTracingGI::SetupResources()
 
 void VoxelConeTracingGI::Voxelize()
 {
+	auto state = globals::state;
+	state->BeginPerfEvent("Voxelize");
+
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxelize");
+
+	auto context = globals::d3d::context;
+
+	auto renderer = globals::game::renderer;
+	auto rts = renderer->GetRuntimeData().renderTargets;
+
+	float2 res = globals::state->screenSize;
+	float2 size = Util::ConvertToDynamic(res);
+	auto resolution = std::array{ (uint)size.x, (uint)size.y };
+
+	std::array<ID3D11ShaderResourceView*, 3> srvs = { 
+		rts[ALBEDO].SRV,
+		renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV,
+		rts[NORMALROUGHNESS].SRV,
+	};
+
+	std::array<ID3D11UnorderedAccessView*, 4> uavs = {
+		nodeBuffer->UAV(),
+		nodeCountBuffer->uav.get(),
+		voxelBuffer->UAV(),
+		voxelCountBuffer->uav.get()
+	};
+
+	float lod0Size = static_cast<float>(settings.lod0Size);
+
+	auto eye = Util::GetCameraData(0);
+	auto eyePosition = Util::GetEyePosition(0);
+
+	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
+	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
+
+	auto lod0Resolution = GetLodResolution(0);
+	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
+
+	voxelizeCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
+	voxelizeCBData.RcpFrameDim = float2(1.0) / size;
+	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
+	voxelizeCBData.Resolution = lod0ResolutionFloat;
+	voxelizeCBData.Center = float3(299, 1036, 181);
+	voxelizeCBData.MaxDepth = OctreeMaxDepth(0);
+	voxelizeCBData.Size = float3(lod0Size, lod0Size, lod0Size);
+
+	voxelizeCB->Update(voxelizeCBData);
+
+	auto cb = voxelizeCB->CB();
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+	context->CSSetConstantBuffers(0, 1, &cb);
+
+	context->CSSetShader(voxelizeCompute.get(), nullptr, 0);
+	context->Dispatch(resolution[0] >> 3, resolution[1] >> 3, 1);
+
+	state->EndPerfEvent();
 }
 
 bool VoxelConeTracingGI::IsValidLight(RE::BSLight* a_light)
@@ -251,19 +346,49 @@ void VoxelConeTracingGI::Volumize()
 
 void VoxelConeTracingGI::Prepass()
 {
+	auto state = globals::state;
+	state->BeginPerfEvent("VoxelConeTracingGI");
+
 	Voxelize();
 	InjectLighting();
 	Volumize();
+
+	state->EndPerfEvent();
 }
 
 void VoxelConeTracingGI::ClearShaderCache()
 {
-	cheeseCs = nullptr;  // This is actually optional
+	voxelizeCompute = nullptr;  // This is actually optional
 	CompileShaders();
 }
 
 void VoxelConeTracingGI::CompileShaders()
 {
-	if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VoxelConeTracingGI\\VoxelConeTracingGI.cs.hlsl", { { "SOME_MACRO", "0" } }, "cs_5_0")); rawPtr)
-		cheeseCs.attach(rawPtr);
+	/*if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VoxelConeTracingGI\\VoxelConeTracingGI.cs.hlsl", {}, "cs_5_0")); rawPtr)
+		voxelizeCompute.attach(rawPtr);*/
+
+	CompileComputeShaders();
+}
+
+void VoxelConeTracingGI::CompileComputeShaders()
+{
+	struct ShaderCompileInfo
+	{
+		winrt::com_ptr<ID3D11ComputeShader>* programPtr;
+		std::string_view filename;
+		std::vector<std::pair<const char*, const char*>> defines;
+	};
+
+	std::vector<ShaderCompileInfo>
+		shaderInfos = {
+			{ &voxelizeCompute, "VoxelizeCS.hlsl", {} },
+			{ &injectLightCompute, "InjectLightCS.hlsl", {} },
+			{ &volumizeCompute, "VolumizeCS.hlsl", {} }
+		};
+
+	for (auto& info : shaderInfos) {
+		auto path = std::filesystem::path("Data\\Shaders\\VoxelConeTracingGI") / info.filename;
+		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
+			info.programPtr->attach(rawPtr);
+	}
 }
