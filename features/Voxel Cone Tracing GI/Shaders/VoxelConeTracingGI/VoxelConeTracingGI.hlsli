@@ -10,6 +10,8 @@ namespace VoxelConeTracingGI
     
 }
 
+#define FP_Z (16.5)
+
 float3 ScreenToViewPosition(const float2 screenPos, const float viewspaceDepth, const float4 ndcToView)
 {
 	float3 ret;

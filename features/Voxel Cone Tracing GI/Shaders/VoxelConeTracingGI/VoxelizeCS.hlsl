@@ -1,7 +1,7 @@
-#include "Common/Color.hlsli"
-#include "Common/FrameBuffer.hlsli"
+#define COMPUTESHADER
+
+#include "Common/SharedData.hlsli"
 #include "Common/GBuffer.hlsli"
-#include "Common/VR.hlsli"
 
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 #include "VoxelConeTracingGI/Octree.hlsli"
@@ -19,9 +19,9 @@ cbuffer VoxelizeCB : register(b0)
 	uint _pad0;
 }
 
-Texture2D<float4> Albedo : register(t0);
-Texture2D<float> Depth : register(t1);
-Texture2D<float4> Normal : register(t2);
+Texture2D<unorm float3> Albedo : register(t0);
+Texture2D<unorm float> Depth : register(t1);
+Texture2D<unorm float3> Normal : register(t2);
 
 RWStructuredBuffer<Node> Octree : register(u0);
 RWByteAddressBuffer NodeCount : register(u1);
@@ -42,8 +42,12 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 		return;
 
 	const float depth = Depth[pixCoord];
+	const float depthLinear = SharedData::GetScreenDepth(depth);
 
-	float3 positionVS = ScreenToViewPosition(positionSS, depth, NDCToView);
+    if (depthLinear < FP_Z || depth == 1.0)
+		return;
+
+	float3 positionVS = ScreenToViewPosition(positionSS, depthLinear, NDCToView);
 	float3 positionWS = ViewToWorldPosition(positionVS, FrameBuffer::CameraViewInverse[eyeIndex]) + FrameBuffer::CameraPosAdjust[eyeIndex].xyz;
 
 	float3 octreeMin = Center - Size * 0.5f;
@@ -52,7 +56,7 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 	if (any(positionWS < octreeMin) || any(positionWS > octreeMax))
 		return;
 
-	const float3 albedo = Albedo[pixCoord].rgb;
+	const float3 albedo = Albedo[pixCoord];
 
 	const half3 normalVS = GBuffer::DecodeNormal(Normal[pixCoord].xy);
 	const float3 normalWS = ViewToWorldVector(normalVS, FrameBuffer::CameraViewInverse[eyeIndex]);
@@ -110,7 +114,7 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 				voxel.position = positionWS;
 				voxel.normal = normalWS;
 				voxel.albedo = albedo;
-				voxel.emission = 0;
+				voxel.emission = float3(depth, depthLinear, 0);
 
 				Voxels[voxelIdx] = voxel;
 				childNode.voxel = voxelIdx;

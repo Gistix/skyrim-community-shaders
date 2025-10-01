@@ -55,17 +55,21 @@ struct VoxelConeTracingGI : public Feature
 
 	// Do stuff
 	void Voxelize();
+	void VoxelArgs();
 	void InjectLighting();
-	void Volumize();
+	void Debug();
 
 	virtual void Prepass() override;
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
+	static constexpr uint MAX_LIGHTS = 1024;
+	float3 center;
 
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
+		uint noIndoorDir = false;
 		int lod0Resolution = 4;
 		int lod1Resolution = 4;
 		int lod2Resolution = 4;
@@ -75,10 +79,7 @@ struct VoxelConeTracingGI : public Feature
 		int lod1Size = 60;
 		int lod2Size = 150;
 		int lod3Size = 400;
-
-		int maxLights = 64;
 	} settings;
-
 
 	uint NodeCount(uint maxDepth)
 	{
@@ -111,7 +112,7 @@ struct VoxelConeTracingGI : public Feature
 
 	uint MipLevels(uint resolution) 
 	{
-		return static_cast<uint>(log2(resolution));
+		return static_cast<uint>(log2(resolution)) + 1;
 	}
 
 	static inline bool IsValidLight(RE::BSLight* a_light);
@@ -138,14 +139,12 @@ struct VoxelConeTracingGI : public Feature
 
 	struct Light
 	{
-		float3 position;
+		float3 lvector;
 		float range;		
 		float3 color;
 		uint type;
 	};
-	static_assert(sizeof(Light) % 16 == 0);
-
-	eastl::vector<Light> lights = {};
+	static_assert(sizeof(Light) % 4 == 0);
 
 	struct alignas(16) VoxelizeCB
 	{
@@ -160,19 +159,55 @@ struct VoxelConeTracingGI : public Feature
 	} voxelizeCBData;
 	static_assert(sizeof(VoxelizeCB) % 16 == 0);
 
+	struct alignas(16) InjectLightingCB
+	{
+		float3 VoxelSize;
+		uint LightCount;
+		float3 Coord2Cell;
+		uint _pad0;
+		float3 Min;
+		uint _pad1;	
+	} injectLightingCBData;
+	static_assert(sizeof(InjectLightingCB) % 16 == 0);
+
+	struct alignas(16) DebugCB
+	{
+		float4 NDCToView;
+
+		float2 RcpFrameDim;
+		float2 _pad0;
+
+		float3 Coord2Cell;
+		uint _pad1;
+
+		float3 Min;
+		uint pad2;
+	} debugCBData;
+	static_assert(sizeof(DebugCB) % 16 == 0);
+
+	eastl::vector<Light> lights = {};
+
 	eastl::unique_ptr<ConstantBuffer> voxelizeCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> debugCB = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> voxelizeCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
-	winrt::com_ptr<ID3D11ComputeShader> volumizeCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
 
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
 	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
 
-	eastl::unique_ptr<ConstantBuffer> lightBuffer = nullptr;
+	eastl::unique_ptr<Buffer> voxelArgsBuffer = nullptr;
+
+	eastl::unique_ptr<StructuredBuffer> lightBuffer = nullptr;
 
 	eastl::unique_ptr<Texture3D> lod0Tex = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> lod0Sampler = nullptr;
+
+	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
+	eastl::unique_ptr<Texture2D> debugDisplayText = nullptr;
 };

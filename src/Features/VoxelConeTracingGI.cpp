@@ -18,8 +18,10 @@ static constexpr uint MAX_LIGHTS = 1024;
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VoxelConeTracingGI::Settings,
+	noIndoorDir,
 	lod0Resolution,
-	lod0Size)
+	lod0Size
+)
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -40,19 +42,24 @@ void VoxelConeTracingGI::SaveSettings(json& o_json)
 
 void VoxelConeTracingGI::DrawSettings()
 {
+	ImGui::SeparatorText("Tweaks");
+	ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.noIndoorDir);
+
 	//ImGui::SeparatorText("Cheese");
 	ImGui::Combo("Lod0 Resolution", &settings.lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
 	ImGui::InputInt("Lod0 Size", &settings.lod0Size);
+
 }
 
 void VoxelConeTracingGI::SetupResources()
 {
 	auto device = globals::d3d::device;
 
-	logger::debug("Creating buffers...");
+	logger::debug("Creating Constant buffers...");
 	{
-		voxelizeCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VoxelizeCB>());
-		lightBuffer = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<Light>());		
+		voxelizeCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VoxelizeCB>());	
+		injectLightingCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<InjectLightingCB>());	
+		debugCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<DebugCB>());	
 	}
 
 	logger::debug("Creating Structured buffers...");
@@ -68,12 +75,19 @@ void VoxelConeTracingGI::SetupResources()
 		auto nodeBufferDesc = StructuredBufferDesc<Node>(lod0NodeCount, true, false);
 		nodeBuffer = eastl::make_unique<StructuredBuffer>(nodeBufferDesc, nodes.data(), lod0NodeCount);
 		nodeBuffer->CreateUAV(); // TODO: use D3D11_BUFFER_UAV_FLAG_APPEND :pray:
+		nodeBuffer->CreateSRV();
 
 		// Voxel Buffer
 		eastl::vector<Voxel> voxels(lod0LeafNodeCount);
 		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(lod0LeafNodeCount, true, false);
 		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, voxels.data(), lod0LeafNodeCount);
 		voxelBuffer->CreateUAV();
+		voxelBuffer->CreateSRV();
+
+		// Light buffer
+		auto lightBufferDesc = StructuredBufferDesc<Light>(MAX_LIGHTS, false, true);
+		lightBuffer = eastl::make_unique<StructuredBuffer>(lightBufferDesc, MAX_LIGHTS);
+		lightBuffer->CreateSRV();
 	}
 
 	logger::debug("Creating Raw buffers...");
@@ -101,69 +115,157 @@ void VoxelConeTracingGI::SetupResources()
 			}
 		};
 		
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,  // DXGI_FORMAT_R32_UINT
+			.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX,
+			.BufferEx = {
+				.FirstElement = 0,
+				.NumElements = 1,
+				.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW
+			}
+		};
+
 		// Node count buffer
 		nodeCountBuffer = eastl::make_unique<Buffer>(bufferDesc, &initialData);
 		nodeCountBuffer->CreateUAV(uavDesc);
+		nodeCountBuffer->CreateSRV(srvDesc);
 
-		// Voxel Buffer
+		// Voxel count buffer
 		voxelCountBuffer = eastl::make_unique<Buffer>(bufferDesc);
 		voxelCountBuffer->CreateUAV(uavDesc);
+		voxelCountBuffer->CreateSRV(srvDesc);
+
+		D3D11_BUFFER_DESC argsBufferDesc = {
+			.ByteWidth = 12,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC argsUAVDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = {
+				.FirstElement = 0,
+				.NumElements = 3,
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW 
+			}
+		};
+
+		// Voxel Args buffer
+		voxelArgsBuffer = eastl::make_unique<Buffer>(argsBufferDesc);
+		voxelArgsBuffer->CreateUAV(argsUAVDesc);
 	}
 
 	logger::debug("Creating textures...");
 	{
-		auto lod0Resolution = GetLodResolution(0);
-		uint lod0MipLevels = MipLevels(lod0Resolution);
-
-		D3D11_TEXTURE3D_DESC lod0TexDesc{
-			.Width = lod0Resolution,
-			.Height = lod0Resolution,
-			.Depth = lod0Resolution,
-			.MipLevels = lod0MipLevels,
-			.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
-			.Usage = D3D11_USAGE_DEFAULT,
-			.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
-			.CPUAccessFlags = 0,
-			.MiscFlags = 0
-		};
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC lod0SRVDesc = {
-			.Format = lod0TexDesc.Format,
-			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D,
-			.Texture3D = {
-				.MostDetailedMip = 0,
-				.MipLevels = lod0TexDesc.MipLevels }
-		};
-
-		D3D11_UNORDERED_ACCESS_VIEW_DESC lod0UAVDesc = {
-			.Format = lod0TexDesc.Format,
-			.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D,
-			.Texture3D = {
-				.MipSlice = 0,
-				.FirstWSlice = 0,
-				.WSize = lod0TexDesc.Depth }
-		};
-
-		// Create textures
+		// Volume texture
 		{
+			auto lod0Resolution = GetLodResolution(0);
+			uint lod0MipLevels = MipLevels(lod0Resolution);
+
+			D3D11_TEXTURE3D_DESC lod0TexDesc{
+				.Width = lod0Resolution,
+				.Height = lod0Resolution,
+				.Depth = lod0Resolution,
+				.MipLevels = lod0MipLevels,
+				.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
+				.Usage = D3D11_USAGE_DEFAULT,
+				.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+				.CPUAccessFlags = 0,
+				.MiscFlags = 0
+			};
+
+			D3D11_SHADER_RESOURCE_VIEW_DESC lod0SRVDesc = {
+				.Format = lod0TexDesc.Format,
+				.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D,
+				.Texture3D = {
+					.MostDetailedMip = 0,
+					.MipLevels = lod0TexDesc.MipLevels 
+				}
+			};
+
+			D3D11_UNORDERED_ACCESS_VIEW_DESC lod0UAVDesc = {
+				.Format = lod0TexDesc.Format,
+				.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D,
+				.Texture3D = {
+					.MipSlice = 0,
+					.FirstWSlice = 0,
+					.WSize = lod0TexDesc.Depth 
+				}
+			};
+
 			lod0Tex = eastl::make_unique<Texture3D>(lod0TexDesc);
 			lod0Tex->CreateSRV(lod0SRVDesc);
 			lod0Tex->CreateUAV(lod0UAVDesc);
 		}
+
+		// Debug texture
+		{
+			auto renderer = globals::game::renderer;
+			auto screenSize = renderer->GetScreenSize();
+
+			D3D11_TEXTURE2D_DESC texDesc = {
+				.Width = screenSize.width,
+				.Height = screenSize.height,
+				.MipLevels = 1,
+				.ArraySize = 1,
+				.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
+				.SampleDesc = { 
+					.Count = 1, 
+					.Quality = 0 
+				},
+				.Usage = D3D11_USAGE_DEFAULT,
+				.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+				.CPUAccessFlags = 0,
+				.MiscFlags = 0
+			};
+
+			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+				.Format = texDesc.Format,
+				.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
+				.Texture2D = {
+					.MipSlice = 0 
+				}
+			};
+
+			debugDisplayText = eastl::make_unique<Texture2D>(texDesc); 
+			debugDisplayText->CreateUAV(uavDesc);
+		}
+
+		logger::debug("Creating samplers...");
+		{
+			D3D11_SAMPLER_DESC lod0SamplerDesc = {
+				.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+				.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+				.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+				.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+				.MinLOD = 0,
+				.MaxLOD = D3D11_FLOAT32_MAX
+			};
+			DX::ThrowIfFailed(device->CreateSamplerState(&lod0SamplerDesc, lod0Sampler.put()));
+		}
+
 	}
 
-	logger::debug("Creating samplers...");
+	// Depth copy texture
 	{
-		D3D11_SAMPLER_DESC lod0SamplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&lod0SamplerDesc, lod0Sampler.put()));
+		auto renderer = globals::game::renderer;
+		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+
+		auto depthTexture = depth.texture;
+
+		D3D11_TEXTURE2D_DESC depthDesc;
+		depthTexture->GetDesc(&depthDesc);
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC depthSRVDesc;
+		depth.depthSRV->GetDesc(&depthSRVDesc);
+
+		prevDepth = eastl::make_unique<Texture2D>(depthDesc);
+		prevDepth->CreateSRV(depthSRVDesc);
 	}
+
 
 	CompileShaders();
 }
@@ -187,7 +289,7 @@ void VoxelConeTracingGI::Voxelize()
 
 	std::array<ID3D11ShaderResourceView*, 3> srvs = { 
 		rts[ALBEDO].SRV,
-		renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV,
+		prevDepth->srv.get(),
 		rts[NORMALROUGHNESS].SRV,
 	};
 
@@ -198,10 +300,9 @@ void VoxelConeTracingGI::Voxelize()
 		voxelCountBuffer->uav.get()
 	};
 
-	float lod0Size = static_cast<float>(settings.lod0Size);
+	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
 
 	auto eye = Util::GetCameraData(0);
-	auto eyePosition = Util::GetEyePosition(0);
 
 	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
 	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
@@ -213,7 +314,7 @@ void VoxelConeTracingGI::Voxelize()
 	voxelizeCBData.RcpFrameDim = float2(1.0) / size;
 	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
 	voxelizeCBData.Resolution = lod0ResolutionFloat;
-	voxelizeCBData.Center = float3(299, 1036, 181);
+	voxelizeCBData.Center = center;
 	voxelizeCBData.MaxDepth = OctreeMaxDepth(0);
 	voxelizeCBData.Size = float3(lod0Size, lod0Size, lod0Size);
 
@@ -228,8 +329,51 @@ void VoxelConeTracingGI::Voxelize()
 	context->CSSetShader(voxelizeCompute.get(), nullptr, 0);
 	context->Dispatch(resolution[0] >> 3, resolution[1] >> 3, 1);
 
+	srvs.fill(nullptr);
+	uavs.fill(nullptr);
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+	context->CopyResource(prevDepth->resource.get(), depth.texture);
+
 	state->EndPerfEvent();
 }
+
+void VoxelConeTracingGI::VoxelArgs()
+{
+	auto state = globals::state;
+	state->BeginPerfEvent("Voxel Args");
+
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxel Args");
+
+	auto context = globals::d3d::context;
+
+	std::array<ID3D11ShaderResourceView*, 1> srvs = {
+		voxelCountBuffer->srv.get()
+	};
+
+	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+		voxelArgsBuffer->uav.get()
+	};
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	context->CSSetShader(voxelArgsCompute.get(), nullptr, 0);
+	context->Dispatch(1, 1, 1);
+
+	srvs.fill(nullptr);
+	uavs.fill(nullptr);
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	state->EndPerfEvent();
+}
+
 
 bool VoxelConeTracingGI::IsValidLight(RE::BSLight* a_light)
 {
@@ -243,27 +387,37 @@ bool VoxelConeTracingGI::IsGlobalLight(RE::BSLight* a_light)
 
 void VoxelConeTracingGI::InjectLighting()
 {
+	auto state = globals::state;
+	state->BeginPerfEvent("InjectLighting");
+
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Light Injection");
 	
+	auto context = globals::d3d::context;
+
 	lights.clear();
-	lights.reserve(settings.maxLights);
+	lights.reserve(MAX_LIGHTS);
 
 	auto accumulator = *globals::game::currentAccumulator.get();
-	auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(accumulator->GetRuntimeData().activeShadowSceneNode->GetRuntimeData().sunLight->light.get());
-	auto sunRuntime = dirLight->GetLightRuntimeData();
 
-	auto& directionNi = dirLight->GetWorldDirection();
-	float3 directionF3 = { directionNi.x, directionNi.y, directionNi.z };
-	directionF3.Normalize();
+	if (!settings.noIndoorDir) 
+	{
+		auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(accumulator->GetRuntimeData().activeShadowSceneNode->GetRuntimeData().sunLight->light.get());
+		auto sunRuntime = dirLight->GetLightRuntimeData();
 
-	auto diffuse = sunRuntime.diffuse;
+		auto& directionNi = dirLight->GetWorldDirection();
+		float3 directionF3 = { directionNi.x, directionNi.y, directionNi.z };
+		directionF3.Normalize();
 
-	lights.push_back({
-		.position = { directionF3.x, directionF3.y, directionF3.z },
-		.color = { diffuse.red, diffuse.green, diffuse.blue },
-		.type = 0,
-	});
+		auto diffuse = sunRuntime.diffuse;
+
+		lights.push_back({
+			.lvector = { directionF3.x, directionF3.y, directionF3.z },
+			.range = 0,
+			.color = { diffuse.red, diffuse.green, diffuse.blue },
+			.type = 0,
+		});
+	}
 
 	const auto activeShadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
 
@@ -304,7 +458,8 @@ void VoxelConeTracingGI::InjectLighting()
 
 					// Check for inactive shadow light
 					if (light.shadowMaskIndex != 255) {
-						auto worldPos = niLight->world.translate - Util::GetEyePosition(0);
+						auto worldPos = niLight->world.translate;
+
 						light.positionWS[0].data.x = worldPos.x;
 						light.positionWS[0].data.y = worldPos.y;
 						light.positionWS[0].data.z = worldPos.z;
@@ -330,18 +485,125 @@ void VoxelConeTracingGI::InjectLighting()
 
 	for (auto lightData: lightsData) {
 		lights.push_back({ 
-			.position = lightData.positionWS[0].data,
+			.lvector = lightData.positionWS[0].data,
 			.range = lightData.radius,
 			.color = lightData.color,
 		    .type = 1,
 		});
 	}
+
+	lightBuffer->Update(lights.data(), lights.size());
+
+	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
+
+	uint lod0Resolution = GetLodResolution(0);
+	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
+
+	injectLightingCBData.VoxelSize = lod0SizeF3 / lod0ResolutionFloat;
+	injectLightingCBData.LightCount = std::min((uint)lights.size(), MAX_LIGHTS);
+	injectLightingCBData.Coord2Cell = float3(1.0f / lod0Size, 1.0f / lod0Size, 1.0f / lod0Size) * lod0ResolutionFloat;
+	injectLightingCBData.Min = center - (lod0SizeF3 * 0.5);
+
+	injectLightingCB->Update(injectLightingCBData);
+
+	auto cb = injectLightingCB->CB();
+
+	std::array<ID3D11ShaderResourceView*, 3> srvs = {
+		lightBuffer->SRV(),
+		voxelBuffer->SRV(),
+		nodeBuffer->SRV()
+	};
+
+	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+			lod0Tex->uav.get()
+	};
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+	context->CSSetConstantBuffers(0, 1, &cb);
+
+	context->CSSetShader(injectLightCompute.get(), nullptr, 0);
+	context->DispatchIndirect(voxelArgsBuffer->resource.get(), 0);
+
+	context->GenerateMips(lod0Tex->srv.get());
+
+	srvs.fill(nullptr);
+	uavs.fill(nullptr);
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	//context->OMSetRenderTargetsAndUnorderedAccessViews
+
+	state->EndPerfEvent();
 }
 
-void VoxelConeTracingGI::Volumize()
+void VoxelConeTracingGI::Debug()
 {
+	auto state = globals::state;
+	state->BeginPerfEvent("Debug");
+
 	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Volumizer");
+	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Debug");
+
+	auto context = globals::d3d::context;
+
+
+	auto eye = Util::GetCameraData(0);
+
+	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
+	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
+
+	float2 res = globals::state->screenSize;
+	float2 size = Util::ConvertToDynamic(res);
+
+	auto lod0Resolution = GetLodResolution(0);
+	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
+
+	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
+
+	debugCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
+	debugCBData.RcpFrameDim = float2(1.0) / size;
+	debugCBData.Coord2Cell = float3(1.0f / lod0Size, 1.0f / lod0Size, 1.0f / lod0Size) * lod0ResolutionFloat;
+	debugCBData.Min = center - (lod0SizeF3 * 0.5);
+
+	debugCB->Update(debugCBData);
+
+	auto cb = debugCB->CB();
+
+	std::array<ID3D11ShaderResourceView*, 2> srvs = {
+		prevDepth->srv.get(),
+		lod0Tex->srv.get()
+	};
+
+	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+		debugDisplayText->uav.get()
+	};
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	context->CSSetConstantBuffers(0, 1, &cb);
+
+	auto device = globals::game::renderer;
+	auto screenSize = device->GetScreenSize();
+
+    uint widthThreads = static_cast<uint>(std::ceil(screenSize.width/ 8.0f));
+	uint heightThreads = static_cast<uint>(std::ceil(screenSize.height / 8.0f));
+
+	context->CSSetShader(debugCompute.get(), nullptr, 0);
+	context->Dispatch(widthThreads, heightThreads, 1);
+
+	srvs.fill(nullptr);
+	uavs.fill(nullptr);
+
+	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+
+
+	state->EndPerfEvent();
 }
 
 void VoxelConeTracingGI::Prepass()
@@ -349,9 +611,12 @@ void VoxelConeTracingGI::Prepass()
 	auto state = globals::state;
 	state->BeginPerfEvent("VoxelConeTracingGI");
 
+	center = float3(299, 1036, 181);
+
 	Voxelize();
+	VoxelArgs();
 	InjectLighting();
-	Volumize();
+	Debug();
 
 	state->EndPerfEvent();
 }
@@ -382,8 +647,9 @@ void VoxelConeTracingGI::CompileComputeShaders()
 	std::vector<ShaderCompileInfo>
 		shaderInfos = {
 			{ &voxelizeCompute, "VoxelizeCS.hlsl", {} },
-			{ &injectLightCompute, "InjectLightCS.hlsl", {} },
-			{ &volumizeCompute, "VolumizeCS.hlsl", {} }
+			{ &voxelArgsCompute, "VoxelArgsCS.hlsl", {} },
+			{ &injectLightCompute, "InjectLightingCS.hlsl", {} },
+			{ &debugCompute, "DebugCS.hlsl", {} }
 		};
 
 	for (auto& info : shaderInfos) {
