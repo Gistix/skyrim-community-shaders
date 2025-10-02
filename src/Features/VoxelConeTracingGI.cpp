@@ -13,6 +13,8 @@
 #include "Globals.h"
 #include "State.h"
 #include "Deferred.h"
+#include "Shadercache.h"
+#include "Utils/Game.h"
 
 static constexpr uint MAX_LIGHTS = 1024;
 
@@ -88,6 +90,11 @@ void VoxelConeTracingGI::SetupResources()
 		auto lightBufferDesc = StructuredBufferDesc<Light>(MAX_LIGHTS, false, true);
 		lightBuffer = eastl::make_unique<StructuredBuffer>(lightBufferDesc, MAX_LIGHTS);
 		lightBuffer->CreateSRV();
+
+		// Mesh Buffer
+		auto meshBufferDesc = StructuredBufferDesc<Mesh>(MAX_MESHES, false, true);
+		meshBuffer = eastl::make_unique<StructuredBuffer>(meshBufferDesc, MAX_MESHES);
+		meshBuffer->CreateSRV();
 	}
 
 	logger::debug("Creating Raw buffers...");
@@ -266,8 +273,71 @@ void VoxelConeTracingGI::SetupResources()
 		prevDepth->CreateSRV(depthSRVDesc);
 	}
 
-
 	CompileShaders();
+}
+
+void VoxelConeTracingGI::PostPostLoad()
+{
+	Hooks::Install();
+}
+
+void VoxelConeTracingGI::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass)
+{
+	auto geometry = a_pass->geometry;
+
+	auto modelData = geometry->GetModelData();
+	auto geomRuntimeData = geometry->GetGeometryRuntimeData();
+	auto renderData = geomRuntimeData.rendererData;
+	//auto skinInstance = geomRuntimeData.skinInstance;
+
+	if (renderData != nullptr) {
+		auto name = geometry->name.c_str();
+
+		auto it = meshes.find(name);
+
+		if (it == meshes.end()) {
+			//RE::BSGeometry::Type geomType = geometry->GetType().get();
+
+			logger::info("[VCT] BSLightingShader_SetupGeometry_Before: {}", name);
+	
+			auto vertDesc = renderData->vertexDesc;
+			auto vertFlags = vertDesc.GetFlags();
+			auto vertSize = vertDesc.GetSize();
+
+			auto rawVertexData = renderData->rawVertexData;
+			ID3D11Buffer* vertexBuffer = reinterpret_cast<ID3D11Buffer*>(renderData->vertexBuffer);
+
+			D3D11_BUFFER_DESC vertexBufferDesc = {};
+			vertexBuffer->GetDesc(&vertexBufferDesc);
+
+			uint vertexCount = vertexBufferDesc.ByteWidth / vertSize;
+
+			uint positionOffset = vertDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			uint uvOffset = vertDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+			uint normalOffset = vertDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL);
+
+			Mesh mesh;
+
+			for (size_t i = 0; i < vertexCount; i++) {
+				const uint8_t* vtx = rawVertexData + i * vertSize;
+
+				Vertex vertex;
+
+				if (vertFlags & RE::BSGraphics::Vertex::VF_VERTEX)
+					std::memcpy(&vertex.position, vtx + positionOffset, sizeof(float) * 4);
+
+				if (vertFlags & RE::BSGraphics::Vertex::VF_UV)
+					std::memcpy(&vertex.uv, vtx + uvOffset, sizeof(uint16_t) * 2);
+
+				if (vertFlags & RE::BSGraphics::Vertex::VF_NORMAL)
+					std::memcpy(&vertex.normal, vtx + normalOffset, sizeof(uint16_t) * 2);
+
+				mesh.vertices.push_back(vertex);
+			}
+
+			meshes.insert(eastl::make_pair(name, mesh));		
+		}
+	}
 }
 
 void VoxelConeTracingGI::Voxelize()
@@ -278,19 +348,23 @@ void VoxelConeTracingGI::Voxelize()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxelize");
 
+	uint size = meshes.size();
+
+	eastl::vector<Mesh> meshVector;
+	meshVector.reserve(size);  // Prevents multiple reallocations
+
+	for (const auto& pair : meshes)
+		meshVector.push_back(pair.second);
+
+	meshBuffer->Update(meshVector.data(), size);
+
+	//logger::info("[VCT] Voxelize meshes count - {}", meshes.size());
+
+
 	auto context = globals::d3d::context;
 
-	auto renderer = globals::game::renderer;
-	auto rts = renderer->GetRuntimeData().renderTargets;
-
-	float2 res = globals::state->screenSize;
-	float2 size = Util::ConvertToDynamic(res);
-	auto resolution = std::array{ (uint)size.x, (uint)size.y };
-
-	std::array<ID3D11ShaderResourceView*, 3> srvs = { 
-		rts[ALBEDO].SRV,
-		prevDepth->srv.get(),
-		rts[NORMALROUGHNESS].SRV,
+	std::array<ID3D11ShaderResourceView*, 1> srvs = {
+		meshBuffer->SRV(),
 	};
 
 	std::array<ID3D11UnorderedAccessView*, 4> uavs = {
@@ -302,15 +376,9 @@ void VoxelConeTracingGI::Voxelize()
 
 	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
 
-	auto eye = Util::GetCameraData(0);
-
-	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
-	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
-
 	auto lod0Resolution = GetLodResolution(0);
 	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
 
-	voxelizeCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
 	voxelizeCBData.RcpFrameDim = float2(1.0) / size;
 	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
 	voxelizeCBData.Resolution = lod0ResolutionFloat;
@@ -327,16 +395,15 @@ void VoxelConeTracingGI::Voxelize()
 	context->CSSetConstantBuffers(0, 1, &cb);
 
 	context->CSSetShader(voxelizeCompute.get(), nullptr, 0);
-	context->Dispatch(resolution[0] >> 3, resolution[1] >> 3, 1);
+
+	uint threads = static_cast<uint>(std::ceil(size / 64.0f));
+	context->Dispatch(threads, 1, 1);
 
 	srvs.fill(nullptr);
 	uavs.fill(nullptr);
 
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
-	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-	context->CopyResource(prevDepth->resource.get(), depth.texture);
 
 	state->EndPerfEvent();
 }
@@ -619,6 +686,14 @@ void VoxelConeTracingGI::Prepass()
 	Debug();
 
 	state->EndPerfEvent();
+}
+
+void VoxelConeTracingGI::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+{
+	auto& singleton = globals::features::voxelConeTracingGI;
+	singleton.BSLightingShader_SetupGeometry_Before(Pass);
+	func(This, Pass, RenderFlags);
+	//singleton.BSLightingShader_SetupGeometry_After(Pass);
 }
 
 void VoxelConeTracingGI::ClearShaderCache()

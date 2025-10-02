@@ -59,11 +59,15 @@ struct VoxelConeTracingGI : public Feature
 	void InjectLighting();
 	void Debug();
 
+	virtual void PostPostLoad() override;
+
 	virtual void Prepass() override;
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 	static constexpr uint MAX_LIGHTS = 1024;
+	static constexpr uint MAX_MESHES = 2048;
+
 	float3 center;
 
 	////////////////////////////////////////////////// Feature Specific Data
@@ -80,6 +84,57 @@ struct VoxelConeTracingGI : public Feature
 		int lod2Size = 150;
 		int lod3Size = 400;
 	} settings;
+
+	void BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass);
+
+	struct Vertex
+	{
+		float4 position;
+		uint16_t uv;
+		uint16_t normal;
+	};
+
+	struct Mesh
+	{
+		eastl::vector<Vertex> vertices;
+		eastl::vector<int> indices;
+	};
+
+	eastl::hash_map<const char*, Mesh> meshes;
+
+	struct Hooks
+	{
+		struct BSLightingShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		template <int N>
+		struct ValidLight
+		{
+			static bool thunk(RE::BSShaderProperty* a_property, RE::BSLight* a_light)
+			{
+				return func(a_property, a_light) && (a_light->portalStrict || !a_light->portalGraph || a_light->IsShadowLight());
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		using ValidLight1 = ValidLight<1>;
+		using ValidLight2 = ValidLight<2>;
+		using ValidLight3 = ValidLight<3>;
+
+		static void Install()
+		{
+			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+
+			stl::write_thunk_call<ValidLight1>(REL::RelocationID(100994, 107781).address() + 0x92);
+			stl::write_thunk_call<ValidLight2>(REL::RelocationID(100997, 107784).address() + REL::Relocate(0x139, 0x12A));
+			stl::write_thunk_call<ValidLight3>(REL::RelocationID(101296, 108283).address() + REL::Relocate(0xB7, 0x7E));
+
+			logger::info("[VCT] Installed hooks");
+		}
+	};
 
 	uint NodeCount(uint maxDepth)
 	{
@@ -195,6 +250,8 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
+
+	eastl::unique_ptr<StructuredBuffer> meshBuffer = nullptr;
 
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
 	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
