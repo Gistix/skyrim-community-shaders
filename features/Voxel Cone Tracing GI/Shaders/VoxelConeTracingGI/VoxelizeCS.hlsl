@@ -9,14 +9,12 @@
 
 cbuffer VoxelizeCB : register(b0)
 {
-	float4 NDCToView;
-	float2 RcpFrameDim;
-	float Cell2Coord;
-	float Resolution;
 	float3 Center;
 	uint MaxDepth;
 	float3 Size;
-	uint _pad0;
+	float Cell2Coord;
+	float3 _pad0;
+	float Resolution;
 }
 
 Texture2D<unorm float3> Albedo : register(t0);

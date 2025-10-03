@@ -15,6 +15,7 @@
 #include "Deferred.h"
 #include "Shadercache.h"
 #include "Utils/Game.h"
+#include "Utils/UI.h"
 
 static constexpr uint MAX_LIGHTS = 1024;
 
@@ -51,6 +52,7 @@ void VoxelConeTracingGI::DrawSettings()
 	ImGui::Combo("Lod0 Resolution", &settings.lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
 	ImGui::InputInt("Lod0 Size", &settings.lod0Size);
 
+	BUFFER_VIEWER_NODE(debugTexture, 1.0f);
 }
 
 void VoxelConeTracingGI::SetupResources()
@@ -229,6 +231,15 @@ void VoxelConeTracingGI::SetupResources()
 				.MiscFlags = 0
 			};
 
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+				.Format = texDesc.Format,
+				.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+				.Texture2D = {
+					.MostDetailedMip = 0,
+					.MipLevels = 1
+				}
+			};
+
 			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
 				.Format = texDesc.Format,
 				.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
@@ -237,8 +248,9 @@ void VoxelConeTracingGI::SetupResources()
 				}
 			};
 
-			debugDisplayText = eastl::make_unique<Texture2D>(texDesc); 
-			debugDisplayText->CreateUAV(uavDesc);
+			debugTexture = eastl::make_unique<Texture2D>(texDesc); 
+			debugTexture->CreateSRV(srvDesc);
+			debugTexture->CreateUAV(uavDesc);
 		}
 
 		logger::debug("Creating samplers...");
@@ -348,10 +360,10 @@ void VoxelConeTracingGI::Voxelize()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxelize");
 
-	uint size = meshes.size();
+	auto size = static_cast<size_t>(meshes.size());
 
 	eastl::vector<Mesh> meshVector;
-	meshVector.reserve(size);  // Prevents multiple reallocations
+	meshVector.reserve(size);
 
 	for (const auto& pair : meshes)
 		meshVector.push_back(pair.second);
@@ -359,7 +371,6 @@ void VoxelConeTracingGI::Voxelize()
 	meshBuffer->Update(meshVector.data(), size);
 
 	//logger::info("[VCT] Voxelize meshes count - {}", meshes.size());
-
 
 	auto context = globals::d3d::context;
 
@@ -379,12 +390,11 @@ void VoxelConeTracingGI::Voxelize()
 	auto lod0Resolution = GetLodResolution(0);
 	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
 
-	voxelizeCBData.RcpFrameDim = float2(1.0) / size;
-	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
-	voxelizeCBData.Resolution = lod0ResolutionFloat;
 	voxelizeCBData.Center = center;
 	voxelizeCBData.MaxDepth = OctreeMaxDepth(0);
 	voxelizeCBData.Size = float3(lod0Size, lod0Size, lod0Size);
+	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
+	voxelizeCBData.Resolution = lod0ResolutionFloat;
 
 	voxelizeCB->Update(voxelizeCBData);
 
@@ -646,7 +656,7 @@ void VoxelConeTracingGI::Debug()
 	};
 
 	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-		debugDisplayText->uav.get()
+		debugTexture->uav.get()
 	};
 
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());

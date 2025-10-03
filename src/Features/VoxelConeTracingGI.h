@@ -203,14 +203,12 @@ struct VoxelConeTracingGI : public Feature
 
 	struct alignas(16) VoxelizeCB
 	{
-		float4 NDCToView;
-		float2 RcpFrameDim;
-		float Cell2Coord;
-		float Resolution;
 		float3 Center;
 		uint MaxDepth;
 		float3 Size;
-		uint _pad0;		
+		float Cell2Coord;
+		float3 _pad0;
+		float Resolution;	
 	} voxelizeCBData;
 	static_assert(sizeof(VoxelizeCB) % 16 == 0);
 
@@ -266,5 +264,5 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11SamplerState> lod0Sampler = nullptr;
 
 	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
-	eastl::unique_ptr<Texture2D> debugDisplayText = nullptr;
+	eastl::unique_ptr<Texture2D> debugTexture = nullptr;
 };
