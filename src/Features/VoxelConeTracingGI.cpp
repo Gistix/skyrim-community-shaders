@@ -293,7 +293,148 @@ void VoxelConeTracingGI::PostPostLoad()
 	Hooks::Install();
 }
 
-void VoxelConeTracingGI::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass)
+void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
+{
+	std::lock_guard lock{ mutex };
+
+	RE::NiPoint3 pointA = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
+
+	Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
+
+	RE::NiPoint3 pointB = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
+
+	if (pointA.GetDistance(pointB) > 0.1f) {
+		auto it = instances.find(This);
+		if (it != instances.end()) {
+			auto& instanceData = (*it).second;
+			auto error = ffxBrixelizerDeleteInstances(&brixelizerContext, &instanceData.instanceID, 1);
+			if (error != FFX_OK)
+				logger::critical("error");
+			instances.erase(it);
+		}
+	}
+}
+
+void VoxelConeTracingGI::AddInstance(RE::BSTriShape* a_geometry)
+{
+	const auto& transform = a_geometry->world;
+	const auto& modelData = a_geometry->GetModelData().modelBound;
+	if (a_geometry->worldBound.radius == 0)
+		return;
+
+	auto effect = a_geometry->GetGeometryRuntimeData().properties[RE::BSGeometry::States::kEffect];
+	auto lightingShader = netimmerse_cast<RE::BSLightingShaderProperty*>(effect.get());
+
+	if (!lightingShader)
+		return;
+
+	if (!lightingShader->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kZBufferWrite, RE::BSShaderProperty::EShaderPropertyFlag::kZBufferTest))
+		return;
+
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kLODObjects, RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kHDLODObjects))
+		return;
+
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned))
+		return;
+
+	// TODO: FIX THIS
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kMultipleTextures, RE::BSShaderProperty::EShaderPropertyFlag::kMultiIndexSnow))
+		return;
+
+	const RE::NiPoint3 c = { modelData.center.x, modelData.center.y, modelData.center.z };
+	const RE::NiPoint3 r = { modelData.radius, modelData.radius, modelData.radius };
+
+	const RE::NiPoint3 aabbMinVec = c - r;
+	const RE::NiPoint3 aabbMaxVec = c + r;
+
+
+	auto rendererData = a_geometry->GetGeometryRuntimeData().rendererData;
+
+	if (!rendererData || !rendererData->vertexBuffer || !rendererData->indexBuffer)
+		return;
+
+	BufferData* vertexBuffer;
+	BufferData* indexBuffer;
+
+	{
+		auto it2 = vertexBuffers.find((ID3D11Buffer*)rendererData->vertexBuffer);
+		if (it2 == vertexBuffers.end())
+			return;
+		vertexBuffer = &it2->second;
+	}
+
+	{
+		auto it2 = indexBuffers.find((ID3D11Buffer*)rendererData->indexBuffer);
+		if (it2 == indexBuffers.end())
+			return;
+		indexBuffer = &it2->second;
+	}
+
+	auto vertexDesc = *(uint64_t*)&rendererData->vertexDesc;
+
+	InputLayoutData* inputLayoutData;
+
+	{
+		auto it2 = vertexDescToInputLayout.find(vertexDesc);
+		if (it2 == vertexDescToInputLayout.end())
+			return;
+		auto inputLayout = it2->second;
+		auto it3 = inputLayouts.find(inputLayout);
+		if (it3 == inputLayouts.end())
+			return;
+		inputLayoutData = &it3->second;
+	}
+
+	FfxBrixelizerInstanceDescription instanceDesc = {};
+
+	{
+		instanceDesc.aabb.min[0] = minExtents.x;
+		instanceDesc.aabb.max[0] = maxExtents.x;
+
+		instanceDesc.aabb.min[1] = minExtents.y;
+		instanceDesc.aabb.max[1] = maxExtents.y;
+
+		instanceDesc.aabb.min[2] = minExtents.z;
+		instanceDesc.aabb.max[2] = maxExtents.z;
+	}
+
+	float4x4 xmmTransform = GetXMFromNiTransform(transform);
+
+	for (uint row = 0; row < 3; ++row) {
+		for (uint col = 0; col < 4; ++col) {
+			instanceDesc.transform[row * 4 + col] = xmmTransform.m[col][row];
+		}
+	}
+
+	instanceDesc.indexFormat = FFX_INDEX_TYPE_UINT16;
+	instanceDesc.indexBuffer = GetBufferIndex(*indexBuffer);
+	instanceDesc.indexBufferOffset = 0;
+	instanceDesc.triangleCount = a_geometry->GetTrishapeRuntimeData().triangleCount;
+
+	instanceDesc.vertexBuffer = GetBufferIndex(*vertexBuffer);
+	instanceDesc.vertexStride = ((*(uint64_t*)&rendererData->vertexDesc) << 2) & 0x3C;
+	instanceDesc.vertexBufferOffset = rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+	instanceDesc.vertexCount = a_geometry->GetTrishapeRuntimeData().vertexCount;
+	instanceDesc.vertexFormat = FFX_SURFACE_FORMAT_R32G32B32_FLOAT;
+
+	instanceDesc.vertexStride = inputLayoutData->vertexStride;
+	instanceDesc.vertexBufferOffset = inputLayoutData->vertexBufferOffset;
+	instanceDesc.vertexCount = a_geometry->GetTrishapeRuntimeData().vertexCount;
+	instanceDesc.vertexFormat = inputLayoutData->vertexFormat;
+
+	InstanceData instanceData{};
+	instanceDesc.outInstanceID = &instanceData.instanceID;
+	instanceDesc.flags = FFX_BRIXELIZER_INSTANCE_FLAG_NONE;
+
+	FfxErrorCode error = ffxBrixelizerCreateInstances(&brixelizerContext, &instanceDesc, 1);
+	if (error != FFX_OK)
+		logger::critical("error");
+
+	instances.insert({ a_geometry, instanceData });
+}
+
+
+/*void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
 {
 	auto geometry = a_pass->geometry;
 
@@ -350,7 +491,7 @@ void VoxelConeTracingGI::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass*
 			meshes.insert(eastl::make_pair(name, mesh));		
 		}
 	}
-}
+}*/
 
 void VoxelConeTracingGI::Voxelize()
 {
@@ -696,14 +837,6 @@ void VoxelConeTracingGI::Prepass()
 	Debug();
 
 	state->EndPerfEvent();
-}
-
-void VoxelConeTracingGI::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
-{
-	auto& singleton = globals::features::voxelConeTracingGI;
-	singleton.BSLightingShader_SetupGeometry_Before(Pass);
-	func(This, Pass, RenderFlags);
-	//singleton.BSLightingShader_SetupGeometry_After(Pass);
 }
 
 void VoxelConeTracingGI::ClearShaderCache()
