@@ -196,6 +196,8 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
 
+	winrt::com_ptr<ID3D11RasterizerState> voxelRasterState = nullptr;
+
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
 	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
@@ -209,5 +211,5 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11SamplerState> lod0Sampler = nullptr;
 
 	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
-	eastl::unique_ptr<Texture2D> debugDisplayText = nullptr;
+	eastl::unique_ptr<Texture2D> debugTex = nullptr;
 };

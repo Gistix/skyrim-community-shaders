@@ -59,7 +59,7 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 	const float3 albedo = Albedo[pixCoord];
 
 	const half3 normalVS = GBuffer::DecodeNormal(Normal[pixCoord].xy);
-	const float3 normalWS = ViewToWorldVector(normalVS, FrameBuffer::CameraViewInverse[eyeIndex]);
+	const float3 normalWS = normalize(ViewToWorldVector(normalVS, FrameBuffer::CameraViewInverse[eyeIndex]));
 
 	uint nodeIdx = 0;
 
@@ -131,7 +131,7 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 		} 
 		else if (childIdx == ~0u) 
 		{
-			break;
+			continue;
 		} 
 		else 
 		{

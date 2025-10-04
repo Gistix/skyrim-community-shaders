@@ -1,6 +1,10 @@
+#include "Common/Game.hlsli"
 #include "VoxelConeTracingGI/Light.hlsli"
 #include "VoxelConeTracingGI/Octree.hlsli"
 #include "VoxelConeTracingGI/Voxel.hlsli"
+
+#define M_TO_GAME_UNIT (1.0 / GAME_UNIT_TO_M)
+#define M_TO_GAME_UNITS_SQ (M_TO_GAME_UNIT * M_TO_GAME_UNIT)
 
 cbuffer InjectLightingCB : register(b0)
 {
@@ -46,7 +50,7 @@ void main(int id: SV_DispatchThreadID)
 		}
 		else if (type == 1) // Point
 		{
-			float3 vlVector = voxelPosition - lvector;
+			float3 vlVector = (lvector - voxelPosition) * GAME_UNIT_TO_M;
 
 			float distanceSqr = dot(vlVector, vlVector);
 
@@ -57,17 +61,18 @@ void main(int id: SV_DispatchThreadID)
 			float fade = saturate(1.0 - pow(distance / range, 4.0));
 			attenuation *= fade * fade;
 
-			direction = -(vlVector/distance);
+			direction = vlVector/distance;
 		}
 		else // Spot?
 		{
 			direction = lvector;
 		}
 
-		float NdotL = max(dot(voxel.normal, direction), 0);
+		float NdotL = max(dot(voxel.normal, normalize(direction)), 0);
 		diffuseLighting += color * NdotL * attenuation;
 	}
 
 	uint3 uvw = (uint3)floor((voxelPosition - Min) * Coord2Cell);
-	LOD0[uvw] = half4(voxel.albedo, 1.0);
+	LOD0[uvw] = half4(voxel.albedo * diffuseLighting, 1.0);
+	//LOD0[uvw] = half4(voxel.normal, 1.0);
 }

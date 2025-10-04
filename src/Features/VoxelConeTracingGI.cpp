@@ -13,6 +13,7 @@
 #include "Globals.h"
 #include "State.h"
 #include "Deferred.h"
+#include "Utils/UI.h"
 
 static constexpr uint MAX_LIGHTS = 1024;
 
@@ -48,7 +49,8 @@ void VoxelConeTracingGI::DrawSettings()
 	//ImGui::SeparatorText("Cheese");
 	ImGui::Combo("Lod0 Resolution", &settings.lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
 	ImGui::InputInt("Lod0 Size", &settings.lod0Size);
-
+	
+	BUFFER_VIEWER_NODE_BULLET(debugTex, 0.5f);
 }
 
 void VoxelConeTracingGI::SetupResources()
@@ -222,6 +224,15 @@ void VoxelConeTracingGI::SetupResources()
 				.MiscFlags = 0
 			};
 
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+				.Format = texDesc.Format,
+				.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+				.Texture2D = {
+					.MostDetailedMip = 0,
+					.MipLevels = 1
+				}
+			};
+
 			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
 				.Format = texDesc.Format,
 				.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
@@ -230,8 +241,9 @@ void VoxelConeTracingGI::SetupResources()
 				}
 			};
 
-			debugDisplayText = eastl::make_unique<Texture2D>(texDesc); 
-			debugDisplayText->CreateUAV(uavDesc);
+			debugTex = eastl::make_unique<Texture2D>(texDesc); 
+			debugTex->CreateSRV(srvDesc);
+			debugTex->CreateUAV(uavDesc);
 		}
 
 		logger::debug("Creating samplers...");
@@ -412,10 +424,10 @@ void VoxelConeTracingGI::InjectLighting()
 		auto diffuse = sunRuntime.diffuse;
 
 		lights.push_back({
-			.lvector = { directionF3.x, directionF3.y, directionF3.z },
+			.lvector = -directionF3,
 			.range = 0,
 			.color = { diffuse.red, diffuse.green, diffuse.blue },
-			.type = 0,
+			.type = 0
 		});
 	}
 
@@ -425,6 +437,8 @@ void VoxelConeTracingGI::InjectLighting()
 	lightsData.reserve(MAX_LIGHTS);
 
 	auto& isl = globals::features::inverseSquareLighting;
+
+	auto eyePosition = Util::GetEyePosition(0);
 
 	auto addLight = [&](const RE::NiPointer<RE::BSLight>& e) {
 		if (auto bsLight = e.get()) {
@@ -458,11 +472,35 @@ void VoxelConeTracingGI::InjectLighting()
 
 					// Check for inactive shadow light
 					if (light.shadowMaskIndex != 255) {
-						auto worldPos = niLight->world.translate;
+						/*RE::NiPoint3 worldPos;
+						
+						RE::TESObjectLIGH* ligh = nullptr;
+						const auto refr = niLight->GetUserData();
 
-						light.positionWS[0].data.x = worldPos.x;
-						light.positionWS[0].data.y = worldPos.y;
-						light.positionWS[0].data.z = worldPos.z;
+						if (refr) {
+							if (auto* objRef = refr->GetObjectReference()) {
+								if (objRef->GetFormType() == RE::FormType::Light)
+									ligh = objRef->As<RE::TESObjectLIGH>();
+							}
+						}
+
+						auto isRef = ligh != nullptr;
+						auto isOther = ligh == nullptr;
+						auto isAttached = refr && !isRef && !isOther;
+
+						if (isRef) {
+							worldPos = refr->GetPosition();
+						} else if (isAttached) {
+							worldPos = niLight->parent->world.translate;
+						} else {
+							worldPos = niLight->world.translate;
+						}					
+
+						worldPos -= eyePosition;*/
+
+						auto worldPos = niLight->world.translate - eyePosition;
+
+						light.positionWS[0].data = float3(worldPos.x, worldPos.y, worldPos.z);
 
 						if ((light.color.x + light.color.y + light.color.z) > 1e-4 && light.radius > 1e-4) {
 							lightsData.push_back(light);
@@ -579,7 +617,7 @@ void VoxelConeTracingGI::Debug()
 	};
 
 	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-		debugDisplayText->uav.get()
+		debugTex->uav.get()
 	};
 
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
