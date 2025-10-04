@@ -18,6 +18,12 @@
 
 struct VoxelConeTracingGI : public Feature
 {
+	static VoxelConeTracingGI* GetSingleton()
+	{
+		static VoxelConeTracingGI singleton;
+		return &singleton;
+	}
+
 	////////////////////////////////////////////////// Boilerplate
 	// Metadata
 	virtual inline std::string GetName() override { return "Voxel Cone Tracing GI"; }
@@ -85,7 +91,8 @@ struct VoxelConeTracingGI : public Feature
 		int lod3Size = 400;
 	} settings;
 
-	void BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass);
+	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
+	void AddInstance(RE::BSTriShape* a_geometry);
 
 	struct Vertex
 	{
@@ -100,37 +107,56 @@ struct VoxelConeTracingGI : public Feature
 		eastl::vector<int> indices;
 	};
 
-	eastl::hash_map<const char*, Mesh> meshes;
+	struct BufferData
+	{
+		winrt::com_ptr<ID3D12Resource> buffer;
+		bool registered = false;
+		uint width;
+		uint index;
+	};
+
+	eastl::hash_map<ID3D11Buffer*, BufferData> vertexBuffers;
+	eastl::hash_map<ID3D11Buffer*, BufferData> indexBuffers;
+
+	struct InputLayoutData
+	{
+		uint32_t vertexStride;
+		uint32_t vertexBufferOffset;
+	};
+
+	eastl::hash_map<ID3D11InputLayout*, InputLayoutData> inputLayouts;
+	eastl::hash_map<uint64_t, ID3D11InputLayout*> vertexDescToInputLayout;
+
+	struct InstanceData
+	{
+		float3 position;
+		float3 rotation;
+		bool visibleState = false;
+	};
+
+	std::shared_mutex mutex;
+	eastl::hash_set<RE::BSTriShape*> queuedInstances;
+	eastl::hash_map<RE::BSTriShape*, eastl::vector<InstanceData>> instances;
 
 	struct Hooks
 	{
-		struct BSLightingShader_SetupGeometry
+		struct BSTriShape_UpdateWorldData
 		{
-			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
-		template <int N>
-		struct ValidLight
-		{
-			static bool thunk(RE::BSShaderProperty* a_property, RE::BSLight* a_light)
+			static void thunk(RE::BSTriShape* This, RE::NiUpdateData* a_data)
 			{
-				return func(a_property, a_light) && (a_light->portalStrict || !a_light->portalGraph || a_light->IsShadowLight());
+				GetSingleton()->BSTriShape_UpdateWorldData(This, a_data);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		using ValidLight1 = ValidLight<1>;
-		using ValidLight2 = ValidLight<2>;
-		using ValidLight3 = ValidLight<3>;
 
 		static void Install()
 		{
-			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
-
-			stl::write_thunk_call<ValidLight1>(REL::RelocationID(100994, 107781).address() + 0x92);
-			stl::write_thunk_call<ValidLight2>(REL::RelocationID(100997, 107784).address() + REL::Relocate(0x139, 0x12A));
-			stl::write_thunk_call<ValidLight3>(REL::RelocationID(101296, 108283).address() + REL::Relocate(0xB7, 0x7E));
+			if (REL::Module::IsAE()) {
+				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			} else {
+				stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			}
 
 			logger::info("[VCT] Installed hooks");
 		}
