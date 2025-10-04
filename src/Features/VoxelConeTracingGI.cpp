@@ -278,6 +278,18 @@ void VoxelConeTracingGI::SetupResources()
 		prevDepth->CreateSRV(depthSRVDesc);
 	}
 
+	// Raster State
+	{
+		auto device = globals::d3d::device;
+
+		D3D11_RASTERIZER_DESC rasterDesc{};
+		rasterDesc.CullMode = D3D11_CULL_NONE;
+		rasterDesc.FillMode = D3D11_FILL_SOLID;
+		rasterDesc.DepthClipEnable = TRUE;
+		rasterDesc.MultisampleEnable = TRUE;
+
+		device->CreateRasterizerState(&rasterDesc, &voxelRasterState);
+	}
 
 	CompileShaders();
 }
