@@ -13,6 +13,7 @@
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
+#include "Features/VoxelConeTracingGI.h"
 
 #include "Hooks.h"
 
@@ -398,6 +399,10 @@ void Deferred::DeferredPasses()
 			context->CSSetConstantBuffers(12, 1, buffers);
 		}
 	}
+
+	auto& voxelConeTracingGI = globals::features::voxelConeTracingGI;
+	if (voxelConeTracingGI.loaded)
+		voxelConeTracingGI.FrameUpdate();
 
 	auto specular = renderer->GetRuntimeData().renderTargets[SPECULAR];
 	auto albedo = renderer->GetRuntimeData().renderTargets[ALBEDO];

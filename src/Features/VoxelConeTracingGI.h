@@ -15,9 +15,16 @@
 */
 
 #pragma once
+#include <shared_mutex>
 
 struct VoxelConeTracingGI : public Feature
 {
+	static VoxelConeTracingGI* GetSingleton()
+	{
+		static VoxelConeTracingGI singleton;
+		return &singleton;
+	}
+
 	////////////////////////////////////////////////// Boilerplate
 	// Metadata
 	virtual inline std::string GetName() override { return "Voxel Cone Tracing GI"; }
@@ -60,6 +67,7 @@ struct VoxelConeTracingGI : public Feature
 	void Debug();
 
 	virtual void Prepass() override;
+	virtual void PostPostLoad() override;
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
@@ -196,7 +204,131 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
 
+#pragma region VoxelizationBuffer
+	std::shared_mutex mutex;
+
+	struct BufferData
+	{
+		winrt::com_ptr<ID3D11Resource> buffer;
+		bool registered = false;
+		uint width;
+		uint index;
+	};
+
+	eastl::hash_map<ID3D11Buffer*, BufferData> vertexBuffers;
+	eastl::hash_map<ID3D11Buffer*, BufferData> indexBuffers;
+	
+	struct InputLayoutData
+	{
+		uint32_t stride;
+		uint32_t offset;
+		DXGI_FORMAT format;
+	};
+
+	eastl::hash_map<ID3D11InputLayout*, InputLayoutData> inputLayouts;
+	eastl::hash_map<uint64_t, ID3D11InputLayout*> vertexDescToInputLayout;
+
+	struct InstanceData
+	{
+		float4x4 transform;
+		float3 min;
+		float3 max;
+		bool visibleState = false;
+	};
+
+	eastl::hash_set<RE::BSTriShape*> queuedInstances;
+	eastl::hash_map<RE::BSTriShape*, InstanceData> instances;
+
+	BufferData AllocateBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData);
+
+	void RegisterVertexBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Buffer** ppBuffer);
+	void RegisterIndexBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Buffer** ppBuffer);
+	void RegisterInputLayout(ID3D11InputLayout* ppInputLayout, D3D11_INPUT_ELEMENT_DESC* pInputElementDescs, UINT NumElements);
+
+	void UnregisterVertexBuffer(ID3D11Buffer* ppBuffer);
+	void UnregisterIndexBuffer(ID3D11Buffer* ppBuffer);
+
+	void FrameUpdate();
+
+	void InstallD3DHooks();
+
+	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
+
+	void AddInstance(RE::BSTriShape* a_geometry);
+
 	winrt::com_ptr<ID3D11RasterizerState> voxelRasterState = nullptr;
+
+	struct Hooks
+	{
+		struct ID3D11Device_CreateBuffer
+		{
+			static HRESULT thunk(ID3D11Device* This, const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Buffer** ppBuffer)
+			{
+				HRESULT hr = func(This, pDesc, pInitialData, ppBuffer);
+
+				if (pInitialData) {
+
+					if (pDesc->BindFlags & D3D11_BIND_VERTEX_BUFFER) {
+						GetSingleton()->RegisterVertexBuffer(pDesc, pInitialData, ppBuffer);
+					} else if (pDesc->BindFlags & D3D11_BIND_INDEX_BUFFER) {
+						GetSingleton()->RegisterIndexBuffer(pDesc, pInitialData, ppBuffer);
+					}
+				}
+
+				return hr;
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct ID3D11Device_CreateInputLayout
+		{
+			static HRESULT thunk(ID3D11Device* This, D3D11_INPUT_ELEMENT_DESC* pInputElementDescs, UINT NumElements, void* pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength, ID3D11InputLayout** ppInputLayout)
+			{
+				HRESULT hr = func(This, pInputElementDescs, NumElements, pShaderBytecodeWithInputSignature, BytecodeLength, ppInputLayout);
+
+				if (pInputElementDescs && NumElements > 0) {
+					GetSingleton()->RegisterInputLayout(*ppInputLayout, pInputElementDescs, NumElements);
+				}
+
+				return hr;
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct BSTriShape_UpdateWorldData
+		{
+			static void thunk(RE::BSTriShape* This, RE::NiUpdateData* a_data)
+			{
+				GetSingleton()->BSTriShape_UpdateWorldData(This, a_data);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct DirtyStates_CreateInputLayoutFromVertexDesc
+		{
+			static ID3D11InputLayout* thunk(uint64_t a_vertexDesc)
+			{
+				auto inputLayout = func(a_vertexDesc);
+				GetSingleton()->vertexDescToInputLayout.insert({ a_vertexDesc, inputLayout });
+				return inputLayout;
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		static void Install()
+		{
+			//if (REL::Module::IsAE()) {
+			//	stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			//} else {
+			//	stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			//}
+			stl::write_thunk_call<DirtyStates_CreateInputLayoutFromVertexDesc>(REL::RelocationID(75580, 75580).address() + REL::Relocate(0x465, 0x465));
+
+			logger::info("[VCT] Installed hooks");
+		}
+	};
+
+#pragma endregion
 
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
 	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;

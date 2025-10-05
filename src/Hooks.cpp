@@ -16,6 +16,8 @@
 #include "Features/Upscaling.h"
 #include "Features/VR.h"
 #include "Features/VolumetricLighting.h"
+#include "Features/Upscaling.h"
+#include "Features/VoxelConeTracingGI.h"
 
 #include "ShaderTools/BSShaderHooks.h"
 
@@ -447,6 +449,10 @@ namespace Hooks
 				stl::detour_vfunc<12, ID3D11Device_CreateVertexShader>(globals::d3d::device);
 				stl::detour_vfunc<15, ID3D11Device_CreatePixelShader>(globals::d3d::device);
 			}
+
+			auto& voxelConeTracingGI = globals::features::voxelConeTracingGI;
+			if (voxelConeTracingGI.loaded)
+				voxelConeTracingGI.InstallD3DHooks();
 
 			stl::detour_vfunc<23, ID3D11Device_CreateSamplerState>(globals::d3d::device);
 

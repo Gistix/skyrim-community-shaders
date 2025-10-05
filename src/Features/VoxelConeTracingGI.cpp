@@ -46,10 +46,15 @@ void VoxelConeTracingGI::DrawSettings()
 	ImGui::SeparatorText("Tweaks");
 	ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.noIndoorDir);
 
-	//ImGui::SeparatorText("Cheese");
+	ImGui::SeparatorText("Settings");
 	ImGui::Combo("Lod0 Resolution", &settings.lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
 	ImGui::InputInt("Lod0 Size", &settings.lod0Size);
 	
+	ImGui::SeparatorText("Debug");
+	ImGui::LabelText("Vertex buffers", "%zu", vertexBuffers.size());
+	ImGui::LabelText("Index buffers", "%zu", indexBuffers.size());
+	ImGui::LabelText("Input layouts", "%zu", inputLayouts.size());
+
 	BUFFER_VIEWER_NODE_BULLET(debugTex, 0.5f);
 }
 
@@ -280,19 +285,406 @@ void VoxelConeTracingGI::SetupResources()
 
 	// Raster State
 	{
-		auto device = globals::d3d::device;
-
 		D3D11_RASTERIZER_DESC rasterDesc{};
 		rasterDesc.CullMode = D3D11_CULL_NONE;
 		rasterDesc.FillMode = D3D11_FILL_SOLID;
 		rasterDesc.DepthClipEnable = TRUE;
 		rasterDesc.MultisampleEnable = TRUE;
 
-		device->CreateRasterizerState(&rasterDesc, &voxelRasterState);
+		device->CreateRasterizerState(&rasterDesc, voxelRasterState.put());
 	}
 
 	CompileShaders();
 }
+
+#pragma region VoxelizationBuffer
+
+void VoxelConeTracingGI::InstallD3DHooks()
+{
+	logger::info("[VCT] D3D hooks installed");
+
+	stl::detour_vfunc<3, VoxelConeTracingGI::Hooks::ID3D11Device_CreateBuffer>(globals::d3d::device);
+	stl::detour_vfunc<11, VoxelConeTracingGI::Hooks::ID3D11Device_CreateInputLayout>(globals::d3d::device);
+}
+
+/*VoxelConeTracingGI::BufferData VoxelConeTracingGI::AllocateBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData)
+{
+	auto device = globals::d3d::device;
+	auto context = globals::d3d::context;
+
+	BufferData data;
+	data.width = pDesc->ByteWidth;
+
+	{
+		D3D11_MAPPED_SUBRESOURCE mappedResource;
+		DX::ThrowIfFailed(context->Map(data.buffer.get(), 0, D3D11_MAP_READ, 0, &mappedResource));
+		memcpy(mappedResource.pData, pInitialData->pSysMem, pDesc->ByteWidth);
+		context->Unmap(data.buffer.get(), 0);
+	}
+
+	return data;
+}*/
+
+/*VoxelConeTracingGI::BufferData VoxelConeTracingGI::AllocateBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData)
+{
+	auto device = globals::d3d::device;
+	auto context = globals::d3d::context;
+
+	BufferData data;
+
+	// Allocate the memory on the CPU and GPU
+	{
+		ID3D11Buffer* buffer;
+		DX::ThrowIfFailed(device->CreateBuffer(pDesc, nullptr, &buffer));
+		data.buffer.attach(buffer);
+		data.width = pDesc->ByteWidth;
+	}
+
+	// Map the buffer to CPU memory and copy the vertex data
+	{
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		DX::ThrowIfFailed(context->Map(data.buffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+		memcpy(mapped.pData, pInitialData->pSysMem, pDesc->ByteWidth);
+		context->Unmap(data.buffer.get(), 0);
+	}
+
+	return data;
+}*/
+
+VoxelConeTracingGI::BufferData VoxelConeTracingGI::AllocateBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData)
+{
+	auto device = globals::d3d::device;
+
+	BufferData data;
+	{
+		ID3D11Buffer* buffer = nullptr;
+		DX::ThrowIfFailed(Hooks::ID3D11Device_CreateBuffer::func(device, pDesc, pInitialData, &buffer));
+		data.buffer.attach(buffer);
+		data.width = pDesc->ByteWidth;
+	}
+
+	return data;
+}
+
+struct ID3D11Buffer_Release
+{
+	static void thunk(ID3D11Buffer* This)
+	{
+		VoxelConeTracingGI::GetSingleton()->UnregisterVertexBuffer(This);
+		VoxelConeTracingGI::GetSingleton()->UnregisterIndexBuffer(This);
+		func(This);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+bool hooked = false;
+
+void VoxelConeTracingGI::RegisterVertexBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Buffer** ppBuffer)
+{
+	std::lock_guard lock{ mutex };
+
+	BufferData data = AllocateBuffer(pDesc, pInitialData);
+	vertexBuffers.insert({ *ppBuffer, data });
+	if (!hooked) {
+		stl::detour_vfunc<2, ID3D11Buffer_Release>(*ppBuffer);
+		hooked = true;
+	}
+}
+
+void VoxelConeTracingGI::RegisterIndexBuffer(const D3D11_BUFFER_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Buffer** ppBuffer)
+{
+	std::lock_guard lock{ mutex };
+
+	BufferData data = AllocateBuffer(pDesc, pInitialData);
+	indexBuffers.insert({ *ppBuffer, data });
+	if (!hooked) {
+		stl::detour_vfunc<2, ID3D11Buffer_Release>(*ppBuffer);
+		hooked = true;
+	}
+}
+
+size_t BytesPerElement(DXGI_FORMAT fmt)
+{
+	// This list only includes those formats that are valid for use by IB or VB
+
+	switch (static_cast<int>(fmt)) {
+	case DXGI_FORMAT_R32G32B32A32_FLOAT:
+	case DXGI_FORMAT_R32G32B32A32_UINT:
+	case DXGI_FORMAT_R32G32B32A32_SINT:
+		return 16;
+
+	case DXGI_FORMAT_R32G32B32_FLOAT:
+	case DXGI_FORMAT_R32G32B32_UINT:
+	case DXGI_FORMAT_R32G32B32_SINT:
+		return 12;
+
+	case DXGI_FORMAT_R16G16B16A16_FLOAT:
+	case DXGI_FORMAT_R16G16B16A16_UNORM:
+	case DXGI_FORMAT_R16G16B16A16_UINT:
+	case DXGI_FORMAT_R16G16B16A16_SNORM:
+	case DXGI_FORMAT_R16G16B16A16_SINT:
+	case DXGI_FORMAT_R32G32_FLOAT:
+	case DXGI_FORMAT_R32G32_UINT:
+	case DXGI_FORMAT_R32G32_SINT:
+		return 8;
+
+	case DXGI_FORMAT_R10G10B10A2_UNORM:
+	case DXGI_FORMAT_R10G10B10A2_UINT:
+	case DXGI_FORMAT_R11G11B10_FLOAT:
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+	case DXGI_FORMAT_R8G8B8A8_UINT:
+	case DXGI_FORMAT_R8G8B8A8_SNORM:
+	case DXGI_FORMAT_R8G8B8A8_SINT:
+	case DXGI_FORMAT_R16G16_FLOAT:
+	case DXGI_FORMAT_R16G16_UNORM:
+	case DXGI_FORMAT_R16G16_UINT:
+	case DXGI_FORMAT_R16G16_SNORM:
+	case DXGI_FORMAT_R16G16_SINT:
+	case DXGI_FORMAT_R32_FLOAT:
+	case DXGI_FORMAT_R32_UINT:
+	case DXGI_FORMAT_R32_SINT:
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+	case DXGI_FORMAT_B8G8R8X8_UNORM:
+		return 4;
+
+	case DXGI_FORMAT_R8G8_UNORM:
+	case DXGI_FORMAT_R8G8_UINT:
+	case DXGI_FORMAT_R8G8_SNORM:
+	case DXGI_FORMAT_R8G8_SINT:
+	case DXGI_FORMAT_R16_FLOAT:
+	case DXGI_FORMAT_R16_UNORM:
+	case DXGI_FORMAT_R16_UINT:
+	case DXGI_FORMAT_R16_SNORM:
+	case DXGI_FORMAT_R16_SINT:
+	case DXGI_FORMAT_B5G6R5_UNORM:
+	case DXGI_FORMAT_B5G5R5A1_UNORM:
+		return 2;
+
+	case DXGI_FORMAT_R8_UNORM:
+	case DXGI_FORMAT_R8_UINT:
+	case DXGI_FORMAT_R8_SNORM:
+	case DXGI_FORMAT_R8_SINT:
+		return 1;
+
+	case DXGI_FORMAT_B4G4R4A4_UNORM:
+		return 2;
+
+	default:
+		// No BC, sRGB, XRBias, SharedExp, Typeless, Depth, or Video formats
+		return 0;
+	}
+}
+
+void VoxelConeTracingGI::RegisterInputLayout(ID3D11InputLayout* ppInputLayout, D3D11_INPUT_ELEMENT_DESC* pInputElementDescs, UINT NumElements)
+{
+	InputLayoutData data = {};
+	for (UINT i = 0; i < NumElements; i++) {
+		if (strcmp(pInputElementDescs[i].SemanticName, "POSITION") == 0) {
+			data.stride = 0;
+
+			for (UINT k = 0; k < NumElements; k++) {
+				data.stride += (UINT)BytesPerElement(pInputElementDescs[k].Format);
+			}
+
+			data.offset = 0;
+
+			for (UINT k = 0; k < i; k++) {
+				data.offset += (UINT)BytesPerElement(pInputElementDescs[k].Format);
+			}
+
+			auto format = pInputElementDescs[i].Format;
+			if (format == DXGI_FORMAT_R32G32B32A32_FLOAT || format == DXGI_FORMAT_R32G32B32_FLOAT || format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+				data.format = format;
+			} else {
+				return;
+			}
+
+			inputLayouts.insert({ ppInputLayout, data });
+		}
+	}
+}
+
+void VoxelConeTracingGI::UnregisterVertexBuffer(ID3D11Buffer* ppBuffer)
+{
+	//std::lock_guard lock{ mutex };
+
+	vertexBuffers.erase(ppBuffer);
+}
+
+void VoxelConeTracingGI::UnregisterIndexBuffer(ID3D11Buffer* ppBuffer)
+{
+	//std::lock_guard lock{ mutex };
+
+	indexBuffers.erase(ppBuffer);
+}
+
+void VoxelConeTracingGI::FrameUpdate()
+{
+	logger::info("Vertex buffers - {}", vertexBuffers.size());
+	logger::info("Index buffers - {}", indexBuffers.size());
+	logger::info("Input layouts - {}", inputLayouts.size());
+	logger::info("Vert desc to layouts - {}", vertexDescToInputLayout.size());
+	
+	auto state = globals::state;
+	auto context = globals::d3d::context;
+
+	state->BeginPerfEvent("VoxelConeTracing - FrameUpdate");
+	//std::lock_guard lock{ mutex };
+	//auto context = globals::d3d::context;
+
+	/*
+	UINT stride = sizeof(Vertex);
+	UINT offset = 0;
+	gContext->IASetInputLayout(inputLayout);
+	gContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+	gContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	gContext->VSSetShader(vertexShader, nullptr, 0);
+	gContext->PSSetShader(pixelShader, nullptr, 0);
+
+	gContext->Draw(3, 0); // 3 vertices, start at index 0 
+	*/
+
+	for (auto const& keyVal: inputLayouts) {
+		auto inputLayout = keyVal.first;
+		auto layoutData = keyVal.second;
+
+		context->IASetInputLayout(inputLayout);
+		context->IASetVertexBuffers(0, 1, &vertexBuffer, &layoutData.stride, &layoutData.offset);
+		context->IASetPrimitiveTopology(layoutData.format); // D3D11_PRIMITIVE_TOPOLOGY
+
+		context->VSSetShader(vertexShader, nullptr, 0);
+		context->PSSetShader(pixelShader, nullptr, 0);
+
+		context->DrawIndexedInstanced(3, 0);  // 3 vertices, start at index 0 
+	}
+
+	state->EndPerfEvent();
+}
+
+DirectX::XMMATRIX GetXMFromNiTransform(const RE::NiTransform& Transform)
+{
+	DirectX::XMMATRIX temp;
+
+	const RE::NiMatrix3& m = Transform.rotate;
+	const float scale = Transform.scale;
+
+	temp.r[0] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][0],
+										   m.entry[1][0],
+										   m.entry[2][0],
+										   0.0f),
+		scale);
+
+	temp.r[1] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][1],
+										   m.entry[1][1],
+										   m.entry[2][1],
+										   0.0f),
+		scale);
+
+	temp.r[2] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][2],
+										   m.entry[1][2],
+										   m.entry[2][2],
+										   0.0f),
+		scale);
+
+	temp.r[3] = DirectX::XMVectorSet(
+		Transform.translate.x,
+		Transform.translate.y,
+		Transform.translate.z,
+		1.0f);
+
+	return temp;
+}
+
+void VoxelConeTracingGI::AddInstance(RE::BSTriShape* a_geometry)
+{
+	const auto& transform = a_geometry->world;
+	const auto& modelData = a_geometry->GetModelData().modelBound;
+	if (a_geometry->worldBound.radius == 0)
+		return;
+
+	auto effect = a_geometry->GetGeometryRuntimeData().properties[RE::BSGeometry::States::kEffect];
+	auto lightingShader = netimmerse_cast<RE::BSLightingShaderProperty*>(effect.get());
+
+	if (!lightingShader)
+		return;
+
+	if (!lightingShader->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kZBufferWrite, RE::BSShaderProperty::EShaderPropertyFlag::kZBufferTest))
+		return;
+
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kLODObjects, RE::BSShaderProperty::EShaderPropertyFlag::kLODLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kHDLODObjects))
+		return;
+
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned))
+		return;
+
+	// TODO: FIX THIS
+	if (lightingShader->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape, RE::BSShaderProperty::EShaderPropertyFlag::kMultipleTextures, RE::BSShaderProperty::EShaderPropertyFlag::kMultiIndexSnow))
+		return;
+
+	const RE::NiPoint3 radius = { modelData.radius, modelData.radius, modelData.radius };
+	const RE::NiPoint3 aabbMinVec = transform * (modelData.center - radius);
+	const RE::NiPoint3 aabbMaxVec = transform * (modelData.center + radius);
+
+	auto rendererData = a_geometry->GetGeometryRuntimeData().rendererData;
+
+	if (!rendererData || !rendererData->vertexBuffer || !rendererData->indexBuffer)
+		return;
+
+	BufferData* vertexBuffer;
+	BufferData* indexBuffer;
+
+	{
+		auto it2 = vertexBuffers.find((ID3D11Buffer*)rendererData->vertexBuffer);
+		if (it2 == vertexBuffers.end())
+			return;
+		vertexBuffer = &it2->second;
+	}
+
+	{
+		auto it2 = indexBuffers.find((ID3D11Buffer*)rendererData->indexBuffer);
+		if (it2 == indexBuffers.end())
+			return;
+		indexBuffer = &it2->second;
+	}
+
+	auto vertexDesc = *(uint64_t*)&rendererData->vertexDesc;
+
+	InputLayoutData* inputLayoutData;
+
+	{
+		auto it2 = vertexDescToInputLayout.find(vertexDesc);
+		if (it2 == vertexDescToInputLayout.end())
+			return;
+		auto inputLayout = it2->second;
+		auto it3 = inputLayouts.find(inputLayout);
+		if (it3 == inputLayouts.end())
+			return;
+		inputLayoutData = &it3->second;
+	}
+
+	InstanceData instanceData = {};
+
+	{
+		instanceData.min = { aabbMinVec.x, aabbMinVec.y, aabbMinVec.z };
+		instanceData.max = { aabbMaxVec.x, aabbMaxVec.y, aabbMaxVec.z };
+	}
+
+	float4x4 xmmTransform = GetXMFromNiTransform(transform);
+
+	for (uint row = 0; row < 3; ++row) {
+		for (uint col = 0; col < 4; ++col) {
+			instanceData.transform[row * 4 + col] = xmmTransform.m[col][row];
+		}
+	}
+
+	instances.insert({ a_geometry, instanceData });
+}
+
+#pragma endregion
 
 void VoxelConeTracingGI::Voxelize()
 {
@@ -670,6 +1062,12 @@ void VoxelConeTracingGI::Prepass()
 
 	state->EndPerfEvent();
 }
+
+void VoxelConeTracingGI::PostPostLoad()
+{
+	Hooks::Install();
+}
+
 
 void VoxelConeTracingGI::ClearShaderCache()
 {
