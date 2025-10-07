@@ -19,10 +19,10 @@ static constexpr uint MAX_LIGHTS = 1024;
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VoxelConeTracingGI::Settings,
-	noIndoorDir,
-	lod0Resolution,
-	lod0Size
-)
+	EnableVoxelConeTracingGI,
+	NoIndoorDir,
+	Lod0Resolution,
+	Lod0Size)
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -43,14 +43,35 @@ void VoxelConeTracingGI::SaveSettings(json& o_json)
 
 void VoxelConeTracingGI::DrawSettings()
 {
-	ImGui::SeparatorText("Tweaks");
-	ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.noIndoorDir);
+	ImGui::Checkbox("Enable Voxel Cone Tracing GI", (bool*)&settings.EnableVoxelConeTracingGI);
 
-	//ImGui::SeparatorText("Cheese");
-	ImGui::Combo("Lod0 Resolution", &settings.lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
-	ImGui::InputInt("Lod0 Size", &settings.lod0Size);
-	
-	BUFFER_VIEWER_NODE_BULLET(debugTex, 0.5f);
+
+	ImGui::Combo("Lod0 Resolution", &settings.Lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
+	ImGui::InputInt("Lod0 Size", &settings.Lod0Size);
+
+	if (ImGui::TreeNodeEx("Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.NoIndoorDir);
+		ImGui::TreePop();
+	}
+
+	if (ImGui::CollapsingHeader("Debug")) {
+
+		if (ImGui::TreeNode("Debug Texture")) {
+			ImGui::Image(debugTex->srv.get(), { debugTex->desc.Width * 0.5f, debugTex->desc.Height * 0.5f });
+			ImGui::TreePop();
+		}
+
+		//ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
+
+		if (ImGui::TreeNodeEx("Trimesh Data", ImGuiTreeNodeFlags_DefaultOpen)) {
+			for (const auto& item : shapeData) {
+				auto& bufferData = item.second;
+				ImGui::LabelText("Name", bufferData.name);
+			}		
+
+			ImGui::TreePop();
+		}
+	}
 }
 
 void VoxelConeTracingGI::SetupResources()
@@ -280,18 +301,114 @@ void VoxelConeTracingGI::SetupResources()
 
 	// Raster State
 	{
-		auto device = globals::d3d::device;
-
 		D3D11_RASTERIZER_DESC rasterDesc{};
 		rasterDesc.CullMode = D3D11_CULL_NONE;
 		rasterDesc.FillMode = D3D11_FILL_SOLID;
 		rasterDesc.DepthClipEnable = TRUE;
 		rasterDesc.MultisampleEnable = TRUE;
 
-		device->CreateRasterizerState(&rasterDesc, &voxelRasterState);
+		device->CreateRasterizerState(&rasterDesc, voxelRasterState.put());
 	}
 
 	CompileShaders();
+}
+
+DirectX::XMMATRIX GetXMFromNiTransform(const RE::NiTransform& Transform)
+{
+	DirectX::XMMATRIX temp;
+
+	const RE::NiMatrix3& m = Transform.rotate;
+	const float scale = Transform.scale;
+
+	temp.r[0] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][0],
+										   m.entry[1][0],
+										   m.entry[2][0],
+										   0.0f),
+		scale);
+
+	temp.r[1] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][1],
+										   m.entry[1][1],
+										   m.entry[2][1],
+										   0.0f),
+		scale);
+
+	temp.r[2] = DirectX::XMVectorScale(DirectX::XMVectorSet(
+										   m.entry[0][2],
+										   m.entry[1][2],
+										   m.entry[2][2],
+										   0.0f),
+		scale);
+
+	temp.r[3] = DirectX::XMVectorSet(
+		Transform.translate.x,
+		Transform.translate.y,
+		Transform.translate.z,
+		1.0f);
+
+	return temp;
+}
+
+void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass)
+{
+	if (This->shaderType != RE::BSShader::Type::Lighting)
+		return;
+
+	if (queuedReset) {
+		shapeData.clear();
+		queuedReset = false;
+	}
+
+	const auto geometry = Pass->geometry;
+	const auto triShape = geometry->AsTriShape();
+
+	if (shapeData.find(triShape) != shapeData.end())
+		return;
+
+	auto context = globals::d3d::context;
+
+	float4x4 xmmTransform = GetXMFromNiTransform(triShape->world);
+	float4x4 transform = xmmTransform.Transpose();
+
+	/*for (uint row = 0; row < 3; ++row) {
+		for (uint col = 0; col < 4; ++col) {
+			transform[row * 4 + col] = xmmTransform.m[col][row];
+		}
+	}*/
+
+	const auto& modelData = triShape->GetModelData().modelBound;
+
+	const RE::NiPoint3 r = { modelData.radius, modelData.radius, modelData.radius };
+
+	const RE::NiPoint3 aabbMin = modelData.center - r;
+	const RE::NiPoint3 aabbMax = modelData.center + r;
+
+	BufferData bufferData = {
+		.name = geometry->name.c_str(),
+		.transform = transform,
+		.min = { aabbMin.x, aabbMin.y, aabbMin.z },
+		.max = { aabbMax.x, aabbMax.y, aabbMax.z },
+	};
+
+	auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
+
+	if (rendererData != nullptr) {
+		auto vertexBufferSrc = (ID3D11Buffer*)rendererData->vertexBuffer;
+		D3D11_BUFFER_DESC vertexBufferDsc;
+		vertexBufferSrc->GetDesc(&vertexBufferDsc);
+
+		bufferData.vertexBuffer = eastl::make_unique<Buffer>(vertexBufferDsc);
+		context->CopyResource(bufferData.vertexBuffer->resource.get(), vertexBufferSrc);
+
+		auto indexBufferSrc = (ID3D11Buffer*)rendererData->indexBuffer;
+		D3D11_BUFFER_DESC indexBufferDsc;
+		indexBufferSrc->GetDesc(&indexBufferDsc);
+
+		bufferData.indexBuffer = eastl::make_unique<Buffer>(indexBufferDsc);
+		context->CopyResource(bufferData.indexBuffer->resource.get(), indexBufferSrc);
+		shapeData.emplace(triShape, std::move(bufferData));
+	}
 }
 
 void VoxelConeTracingGI::Voxelize()
@@ -324,7 +441,7 @@ void VoxelConeTracingGI::Voxelize()
 		voxelCountBuffer->uav.get()
 	};
 
-	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
 
 	auto eye = Util::GetCameraData(0);
 
@@ -424,7 +541,7 @@ void VoxelConeTracingGI::InjectLighting()
 
 	auto accumulator = *globals::game::currentAccumulator.get();
 
-	if (!settings.noIndoorDir) 
+	if (!settings.NoIndoorDir) 
 	{
 		auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(accumulator->GetRuntimeData().activeShadowSceneNode->GetRuntimeData().sunLight->light.get());
 		auto sunRuntime = dirLight->GetLightRuntimeData();
@@ -544,7 +661,7 @@ void VoxelConeTracingGI::InjectLighting()
 
 	lightBuffer->Update(lights.data(), lights.size());
 
-	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
 	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
 
 	uint lod0Resolution = GetLodResolution(0);
@@ -611,7 +728,7 @@ void VoxelConeTracingGI::Debug()
 	auto lod0Resolution = GetLodResolution(0);
 	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
 
-	float lod0Size = static_cast<float>(settings.lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
 	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
 
 	debugCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
@@ -671,6 +788,11 @@ void VoxelConeTracingGI::Prepass()
 	state->EndPerfEvent();
 }
 
+void VoxelConeTracingGI::PostPostLoad()
+{
+	Hooks::Install();
+}
+
 void VoxelConeTracingGI::ClearShaderCache()
 {
 	voxelizeCompute = nullptr;  // This is actually optional
@@ -707,4 +829,15 @@ void VoxelConeTracingGI::CompileComputeShaders()
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
 	}
+}
+
+RE::BSEventNotifyControl VoxelConeTracingGI::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
+{
+	// When entering a new cell through a loadscreen, update every frame until completion
+	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
+		if (!a_event->opening)
+			globals::features::voxelConeTracingGI.queuedReset = true;
+	}
+
+	return RE::BSEventNotifyControl::kContinue;
 }

@@ -60,25 +60,24 @@ struct VoxelConeTracingGI : public Feature
 	void Debug();
 
 	virtual void Prepass() override;
+	virtual void PostPostLoad() override;
+
+	void BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass);
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
 	static constexpr uint MAX_LIGHTS = 1024;
 	float3 center;
+	bool queuedReset;
+
 
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
-		uint noIndoorDir = false;
-		int lod0Resolution = 4;
-		int lod1Resolution = 4;
-		int lod2Resolution = 4;
-		int lod3Resolution = 4;
-
-		int lod0Size = 20;
-		int lod1Size = 60;
-		int lod2Size = 150;
-		int lod3Size = 400;
+		uint EnableVoxelConeTracingGI = true;
+		uint NoIndoorDir = false;
+		int Lod0Resolution = 4;
+		int Lod0Size = 20;
 	} settings;
 
 	uint NodeCount(uint maxDepth)
@@ -100,13 +99,13 @@ struct VoxelConeTracingGI : public Feature
 	{
 		switch (lod) {
 			case 1:
-				return dimensions[settings.lod1Resolution];
+				return dimensions[settings.Lod0Resolution];
 			case 2:
-				return dimensions[settings.lod2Resolution];
+				return dimensions[settings.Lod0Resolution];
 			case 3:
-				return dimensions[settings.lod3Resolution];
+				return dimensions[settings.Lod0Resolution];
 			default:
-				return dimensions[settings.lod0Resolution];
+				return dimensions[settings.Lod0Resolution];
 		}
 	}
 
@@ -212,4 +211,59 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
 	eastl::unique_ptr<Texture2D> debugTex = nullptr;
+
+	struct BufferData
+	{
+		const char* name;
+		float4x4 transform;
+		float3 min;
+		float3 max;
+		eastl::unique_ptr<Buffer> vertexBuffer;
+		eastl::unique_ptr<Buffer> indexBuffer;
+	};
+
+	eastl::hash_map<RE::BSTriShape*, BufferData> shapeData;
+
+	struct Hooks
+	{
+		struct BSLightingShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+			{
+				globals::features::voxelConeTracingGI.BSLightingShader_SetupVoxelization(This, Pass);
+				func(This, Pass, RenderFlags);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		static void Install()
+		{
+			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+			logger::info("[VCTGI] Installed hooks");
+		}
+	};
+
+	class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+	{
+	public:
+		virtual RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
+
+		static bool Register()
+		{
+			static MenuOpenCloseEventHandler singleton;
+			auto ui = globals::game::ui;
+
+			if (!ui) {
+				logger::error("UI event source not found");
+				return false;
+			}
+
+			ui->GetEventSource<RE::MenuOpenCloseEvent>()->AddEventSink(&singleton);
+
+			logger::info("Registered {}", typeid(singleton).name());
+
+			return true;
+		}
+	};
 };
+static_assert(sizeof(VoxelConeTracingGI) % 16 == 0);
