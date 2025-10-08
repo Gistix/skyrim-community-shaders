@@ -63,6 +63,8 @@ struct VoxelConeTracingGI : public Feature
 	virtual void PostPostLoad() override;
 
 	void BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass);
+	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
+	void DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count);
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
@@ -222,7 +224,8 @@ struct VoxelConeTracingGI : public Feature
 		eastl::unique_ptr<Buffer> indexBuffer;
 	};
 
-	eastl::hash_map<RE::BSTriShape*, BufferData> shapeData;
+	eastl::hash_set<RE::BSTriShape*> queuedTriShapes;
+	eastl::hash_map<RE::BSTriShape*, BufferData> cachedTriShapes;
 
 	struct Hooks
 	{
@@ -236,9 +239,36 @@ struct VoxelConeTracingGI : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct BSTriShape_UpdateWorldData
+		{
+			static void thunk(RE::BSTriShape* This, RE::NiUpdateData* a_data)
+			{
+				globals::features::voxelConeTracingGI.BSTriShape_UpdateWorldData(This, a_data);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct DrawTriShape
+		{
+			static void thunk(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count) {
+				func(This, GraphicsTriShape, StartIndex, Count);
+				globals::features::voxelConeTracingGI.DrawTriShape(This, GraphicsTriShape, StartIndex, Count);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+
+			if (REL::Module::IsAE()) {
+				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			} else {
+				stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
+			}
+
+			stl::detour_thunk<DrawTriShape>(REL::RelocationID(75477, 107175));
+
 			logger::info("[VCTGI] Installed hooks");
 		}
 	};

@@ -64,7 +64,7 @@ void VoxelConeTracingGI::DrawSettings()
 		//ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
 
 		if (ImGui::TreeNodeEx("Trimesh Data", ImGuiTreeNodeFlags_DefaultOpen)) {
-			for (const auto& item : shapeData) {
+			for (const auto& item : cachedTriShapes) {
 				auto& bufferData = item.second;
 				ImGui::LabelText("Name", bufferData.name);
 			}		
@@ -356,14 +356,18 @@ void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, 
 		return;
 
 	if (queuedReset) {
-		shapeData.clear();
+		cachedTriShapes.clear();
 		queuedReset = false;
 	}
 
 	const auto geometry = Pass->geometry;
 	const auto triShape = geometry->AsTriShape();
+	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
 
-	if (shapeData.find(triShape) != shapeData.end())
+	if (rendererData == nullptr)
+		return;
+
+	if (cachedTriShapes.find(triShape) != cachedTriShapes.end())
 		return;
 
 	auto context = globals::d3d::context;
@@ -390,25 +394,60 @@ void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, 
 		.min = { aabbMin.x, aabbMin.y, aabbMin.z },
 		.max = { aabbMax.x, aabbMax.y, aabbMax.z },
 	};
+	
+	auto vertexBufferSrc = (ID3D11Buffer*)rendererData->vertexBuffer;
+	D3D11_BUFFER_DESC vertexBufferDsc;
+	vertexBufferSrc->GetDesc(&vertexBufferDsc);
 
-	auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
+	bufferData.vertexBuffer = eastl::make_unique<Buffer>(vertexBufferDsc);
+	context->CopyResource(bufferData.vertexBuffer->resource.get(), vertexBufferSrc);
 
-	if (rendererData != nullptr) {
-		auto vertexBufferSrc = (ID3D11Buffer*)rendererData->vertexBuffer;
-		D3D11_BUFFER_DESC vertexBufferDsc;
-		vertexBufferSrc->GetDesc(&vertexBufferDsc);
+	auto indexBufferSrc = (ID3D11Buffer*)rendererData->indexBuffer;
+	D3D11_BUFFER_DESC indexBufferDsc;
+	indexBufferSrc->GetDesc(&indexBufferDsc);
 
-		bufferData.vertexBuffer = eastl::make_unique<Buffer>(vertexBufferDsc);
-		context->CopyResource(bufferData.vertexBuffer->resource.get(), vertexBufferSrc);
+	bufferData.indexBuffer = eastl::make_unique<Buffer>(indexBufferDsc);
+	context->CopyResource(bufferData.indexBuffer->resource.get(), indexBufferSrc);
+	cachedTriShapes.emplace(triShape, std::move(bufferData));
+}
 
-		auto indexBufferSrc = (ID3D11Buffer*)rendererData->indexBuffer;
-		D3D11_BUFFER_DESC indexBufferDsc;
-		indexBufferSrc->GetDesc(&indexBufferDsc);
+void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
+{
+	// TriShape is not cached (why?)
+	if (cachedTriShapes.find(This) == cachedTriShapes.end()) {
+		Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
+	} else {
+		RE::NiPoint3 pointA = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
 
-		bufferData.indexBuffer = eastl::make_unique<Buffer>(indexBufferDsc);
-		context->CopyResource(bufferData.indexBuffer->resource.get(), indexBufferSrc);
-		shapeData.emplace(triShape, std::move(bufferData));
+		Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
+
+		RE::NiPoint3 pointB = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
+
+		if (pointA.GetDistance(pointB) > 0.1f) {
+			// Lets queue the TriShape for rendering again
+			queuedTriShapes.emplace(This);
+		}
 	}
+}
+
+void VoxelConeTracingGI::DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count)
+{
+	auto it = queuedTriShapes.find(GraphicsTriShape);
+
+	// TriShape not queued
+	if (it == queuedTriShapes.end())
+		return;
+
+	auto it2 = cachedTriShapes.find(GraphicsTriShape);
+
+	// Trishape not cached
+	if (it2 == cachedTriShapes.end())
+		return;
+
+
+
+	// Just rendered, remove from queue
+	queuedTriShapes.erase(GraphicsTriShape);
 }
 
 void VoxelConeTracingGI::Voxelize()
