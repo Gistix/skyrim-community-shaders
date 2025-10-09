@@ -14,6 +14,9 @@
 #include "State.h"
 #include "Deferred.h"
 #include "Utils/UI.h"
+#include "Utils/Format.h"
+
+using namespace std::chrono;
 
 static constexpr uint MAX_LIGHTS = 1024;
 
@@ -45,7 +48,6 @@ void VoxelConeTracingGI::DrawSettings()
 {
 	ImGui::Checkbox("Enable Voxel Cone Tracing GI", (bool*)&settings.EnableVoxelConeTracingGI);
 
-
 	ImGui::Combo("Lod0 Resolution", &settings.Lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
 	ImGui::InputInt("Lod0 Size", &settings.Lod0Size);
 
@@ -61,13 +63,46 @@ void VoxelConeTracingGI::DrawSettings()
 			ImGui::TreePop();
 		}
 
-		//ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
+		ImGui::Text(std::format("Queue Size: {}", queuedTriShapes.size()).c_str());
 
-		if (ImGui::TreeNodeEx("Trimesh Data", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::TreeNodeEx("History", ImGuiTreeNodeFlags_DefaultOpen)) {
+			const auto num_elements = eastl::min<eastl_size_t>(5, history.size());
+
+			if (num_elements > 0) {
+				ImGui::Text(std::format("Last {} voxelization passes:", num_elements).c_str());
+
+				if (ImGui::BeginTable("VoxelizationHistoryTable", 2, ImGuiTableFlags_Borders)) {
+					const auto start_iterator = history.end() - num_elements;
+					const eastl::vector<History> last_five_elements(start_iterator, history.end());
+
+					ImGui::TableSetupColumn("Rendered TriShapes");
+					ImGui::TableSetupColumn("Elapsed time");
+					ImGui::TableHeadersRow();
+
+					for (const auto element : last_five_elements) {
+						ImGui::TableNextRow();
+
+						ImGui::TableNextColumn();
+						ImGui::Text(std::format("{}", element.rendered).c_str());
+
+						ImGui::TableNextColumn();
+						ImGui::Text(Util::TimeAgoString(element.time).c_str());
+					}
+
+					ImGui::EndTable();
+				}
+
+				ImGui::Text(std::format("Voxelization run count: {}", history.size()).c_str());
+			} else {
+				ImGui::Text("Voxelization has not ran yet.");
+			}
+		}
+
+		if (ImGui::TreeNodeEx("Cached TriShapes", ImGuiTreeNodeFlags_DefaultOpen)) {
 			for (const auto& item : cachedTriShapes) {
 				auto& bufferData = item.second;
 				ImGui::LabelText("Name", bufferData.name);
-			}		
+			}
 
 			ImGui::TreePop();
 		}
@@ -367,7 +402,7 @@ void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, 
 	if (rendererData == nullptr)
 		return;
 
-	if (cachedTriShapes.find(triShape) != cachedTriShapes.end())
+	if (cachedTriShapes.find(rendererData) != cachedTriShapes.end())
 		return;
 
 	auto context = globals::d3d::context;
@@ -408,13 +443,17 @@ void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, 
 
 	bufferData.indexBuffer = eastl::make_unique<Buffer>(indexBufferDsc);
 	context->CopyResource(bufferData.indexBuffer->resource.get(), indexBufferSrc);
-	cachedTriShapes.emplace(triShape, std::move(bufferData));
+
+	cachedTriShapes.emplace(rendererData, std::move(bufferData));
+	queuedTriShapes.emplace(rendererData);
 }
 
 void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
 {
+	const auto rendererData = This->GetGeometryRuntimeData().rendererData;
+
 	// TriShape is not cached (why?)
-	if (cachedTriShapes.find(This) == cachedTriShapes.end()) {
+	if (cachedTriShapes.find(rendererData) == cachedTriShapes.end()) {
 		Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
 	} else {
 		RE::NiPoint3 pointA = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
@@ -425,13 +464,15 @@ void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::Ni
 
 		if (pointA.GetDistance(pointB) > 0.1f) {
 			// Lets queue the TriShape for rendering again
-			queuedTriShapes.emplace(This);
+			queuedTriShapes.emplace(rendererData);
 		}
 	}
 }
 
 void VoxelConeTracingGI::DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count)
 {
+	logger::info("DrawTriShape [0x{:x}]", reinterpret_cast<uintptr_t>(GraphicsTriShape));
+
 	auto it = queuedTriShapes.find(GraphicsTriShape);
 
 	// TriShape not queued
@@ -444,7 +485,8 @@ void VoxelConeTracingGI::DrawTriShape(void* This, RE::BSGraphics::TriShape* Grap
 	if (it2 == cachedTriShapes.end())
 		return;
 
-
+	// This is temporary of course, doesn't seem to break anything which is good!
+	Hooks::DrawTriShape::func(This, GraphicsTriShape, StartIndex, Count);
 
 	// Just rendered, remove from queue
 	queuedTriShapes.erase(GraphicsTriShape);
@@ -454,6 +496,13 @@ void VoxelConeTracingGI::Voxelize()
 {
 	auto state = globals::state;
 	state->BeginPerfEvent("Voxelize");
+
+	const auto queueSize = queuedTriShapes.size();
+
+	if (queueSize < lastQueueSize) {
+		history.push_back({ steady_clock::now(), lastQueueSize - queueSize });
+		lastQueueSize = queueSize;
+	}
 
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxelize");
@@ -814,6 +863,9 @@ void VoxelConeTracingGI::Debug()
 
 void VoxelConeTracingGI::Prepass()
 {
+	if (!settings.EnableVoxelConeTracingGI)
+		return;
+
 	auto state = globals::state;
 	state->BeginPerfEvent("VoxelConeTracingGI");
 

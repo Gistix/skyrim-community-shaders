@@ -63,6 +63,7 @@ struct VoxelConeTracingGI : public Feature
 	virtual void PostPostLoad() override;
 
 	void BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass);
+
 	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
 	void DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count);
 
@@ -224,8 +225,17 @@ struct VoxelConeTracingGI : public Feature
 		eastl::unique_ptr<Buffer> indexBuffer;
 	};
 
-	eastl::hash_set<RE::BSTriShape*> queuedTriShapes;
-	eastl::hash_map<RE::BSTriShape*, BufferData> cachedTriShapes;
+	eastl::hash_set<RE::BSGraphics::TriShape*> queuedTriShapes;
+	eastl::hash_map<RE::BSGraphics::TriShape*, BufferData> cachedTriShapes;
+
+	struct History
+	{
+		const std::chrono::steady_clock::time_point& time;
+		const eastl_size_t& rendered;
+	};
+
+	eastl::vector<History> history;
+	eastl_size_t lastQueueSize = 0;
 
 	struct Hooks
 	{
