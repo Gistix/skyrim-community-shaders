@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "PCH.h"
+
 struct VoxelConeTracingGI : public Feature
 {
 	////////////////////////////////////////////////// Boilerplate
@@ -51,21 +53,25 @@ struct VoxelConeTracingGI : public Feature
 	virtual void SetupResources() override;
 	virtual void ClearShaderCache() override;
 	void CompileShaders();
-	void CompileComputeShaders();
 
 	// Do stuff
 	void Voxelize();
 	void VoxelArgs();
 	void InjectLighting();
 	void Debug();
+	void DrawVoxels();
+	void Main_RenderWorldAfter();
 
 	virtual void Prepass() override;
 	virtual void PostPostLoad() override;
 
-	void BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass);
+	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
+	void BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
+
+	void Main_RenderPlayerView(void* a1, bool a2, bool a3);
+	void Main_RenderWorld(bool a1);
 
 	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
-	void DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count);
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
@@ -73,6 +79,15 @@ struct VoxelConeTracingGI : public Feature
 	float3 center;
 	bool queuedReset;
 
+	enum VoxelDrawMode {
+		None,
+		Albedo,
+		Emission,
+		Normal,
+		Lighting,
+		Final,
+		Count
+	};
 
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
@@ -81,6 +96,10 @@ struct VoxelConeTracingGI : public Feature
 		uint NoIndoorDir = false;
 		int Lod0Resolution = 4;
 		int Lod0Size = 20;
+		uint UpdateVoxels = true;
+		uint ForceUpdate = false;
+		VoxelDrawMode VoxelDrawMode = None;
+		uint _Pad1;
 	} settings;
 
 	uint NodeCount(uint maxDepth)
@@ -129,15 +148,22 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(Node) % 4 == 0);
 
-	struct Voxel
+	struct uint3
 	{
-		float3 position;
-		// no support for half3? :(
-		float3 albedo;
-		float3 normal;
-		float3 emission;
+		uint x;
+		uint y;
+		uint z;
 	};
-	static_assert(sizeof(Voxel) % 4 == 0);
+	static_assert(sizeof(uint3) % 4 == 0);
+
+	struct alignas(16) Voxel
+	{
+		uint3 Coord;
+		float3 Albedo;
+		float3 Emission;
+		float3 Normal;
+	};
+	static_assert(sizeof(Voxel) % 16 == 0);
 
 	struct Light
 	{
@@ -148,18 +174,18 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(Light) % 4 == 0);
 
-	struct alignas(16) VoxelizeCB
+	struct alignas(16) VoxelConeTracingGICB
 	{
-		float4 NDCToView;
-		float2 RcpFrameDim;
-		float Cell2Coord;
-		float Resolution;
-		float3 Center;
-		uint MaxDepth;
-		float3 Size;
-		uint _pad0;		
-	} voxelizeCBData;
-	static_assert(sizeof(VoxelizeCB) % 16 == 0);
+		float3 Min;
+		float Size;
+		float SizeInv;
+		uint Res;
+		float ResInv;
+		float VoxelSize;
+	} voxelConeTracingGICBData;
+	static_assert(sizeof(VoxelConeTracingGICB) % 16 == 0);
+
+	VoxelConeTracingGI::VoxelConeTracingGICB GetCommonBufferData() const;
 
 	struct alignas(16) InjectLightingCB
 	{
@@ -189,21 +215,43 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::vector<Light> lights = {};
 
-	eastl::unique_ptr<ConstantBuffer> voxelizeCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> voxelConeTracingGICB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> debugCB = nullptr;
+
+	winrt::com_ptr<ID3D11VertexShader> voxelizeVertex = nullptr;
+	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
+	winrt::com_ptr<ID3D11PixelShader> voxelizePixel = nullptr;
+
+	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
+	//winrt::com_ptr<ID3D11PixelShader> drawPixel = nullptr;
+	std::array<winrt::com_ptr<ID3D11PixelShader>, VoxelDrawMode::Count> drawPixelVariants;
 
 	winrt::com_ptr<ID3D11ComputeShader> voxelizeCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
+	
+	winrt::com_ptr<ID3D11Device3> device3 = nullptr;
 
-	winrt::com_ptr<ID3D11RasterizerState> voxelRasterState = nullptr;
+	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
+	D3D11_VIEWPORT lod0Viewport = {};
 
 	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
 	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
-	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
+
+	eastl::unique_ptr<StructuredBuffer> voxelAppendBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
+
+	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
+
+	// Drawing voxels
+	eastl::unique_ptr<Buffer> voxelDrawVertexBuffer = nullptr;
+	eastl::unique_ptr<Buffer> voxelDrawInstanceBuffer = nullptr;
+	std::vector<D3D11_INPUT_ELEMENT_DESC> voxelDrawInputDesc;
+	eastl::unique_ptr<Buffer> voxelDrawIndirectArgsBuffer = nullptr;
+	winrt::com_ptr<ID3D11InputLayout> voxelDrawInputLayout = nullptr;
+	winrt::com_ptr<ID3D11DepthStencilState> voxelDrawDSS = nullptr;
 
 	eastl::unique_ptr<Buffer> voxelArgsBuffer = nullptr;
 
@@ -215,35 +263,41 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
 	eastl::unique_ptr<Texture2D> debugTex = nullptr;
 
-	struct BufferData
-	{
-		const char* name;
-		float4x4 transform;
-		float3 min;
-		float3 max;
-		eastl::unique_ptr<Buffer> vertexBuffer;
-		eastl::unique_ptr<Buffer> indexBuffer;
-	};
-
+	eastl::hash_set<RE::BSGraphics::TriShape*> cachedTriShapes;
 	eastl::hash_set<RE::BSGraphics::TriShape*> queuedTriShapes;
-	eastl::hash_map<RE::BSGraphics::TriShape*, BufferData> cachedTriShapes;
 
 	struct History
 	{
-		const std::chrono::steady_clock::time_point& time;
-		const eastl_size_t& rendered;
+		const std::chrono::steady_clock::time_point time;
+		const long rendered;
 	};
 
 	eastl::vector<History> history;
-	eastl_size_t lastQueueSize = 0;
+	long rendered = 0;
 
 	struct Hooks
 	{
-		struct BSLightingShader_SetupGeometry
+		template <RE::BSShader::Type ShaderType>
+		struct BSShader_SetupGeometry
 		{
 			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 			{
-				globals::features::voxelConeTracingGI.BSLightingShader_SetupVoxelization(This, Pass);
+				if (globals::features::voxelConeTracingGI.loaded)
+					globals::features::voxelConeTracingGI.BSShader_SetupGeometry(This, Pass);
+
+				func(This, Pass, RenderFlags);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		template <RE::BSShader::Type ShaderType>
+		struct BSShader_RestoreGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+			{
+				if (globals::features::voxelConeTracingGI.loaded)
+					globals::features::voxelConeTracingGI.BSShader_RestoreGeometry(This, Pass);
+
 				func(This, Pass, RenderFlags);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
@@ -258,26 +312,37 @@ struct VoxelConeTracingGI : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct DrawTriShape
+		struct Main_RenderPlayerView
 		{
-			static void thunk(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count) {
-				func(This, GraphicsTriShape, StartIndex, Count);
-				globals::features::voxelConeTracingGI.DrawTriShape(This, GraphicsTriShape, StartIndex, Count);
+			static void thunk(void* a1, bool a2, bool a3)
+			{
+				globals::features::voxelConeTracingGI.Main_RenderPlayerView(a1, a2, a3);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct Main_RenderWorld
+		{
+			static void thunk(bool a1)
+			{
+				globals::features::voxelConeTracingGI.Main_RenderWorld(a1);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
 		static void Install()
 		{
-			stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+			stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
+			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
+
+			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
+			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
 
 			if (REL::Module::IsAE()) {
 				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
 			} else {
 				stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
 			}
-
-			stl::detour_thunk<DrawTriShape>(REL::RelocationID(75477, 107175));
 
 			logger::info("[VCTGI] Installed hooks");
 		}

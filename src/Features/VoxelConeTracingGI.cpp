@@ -25,7 +25,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableVoxelConeTracingGI,
 	NoIndoorDir,
 	Lod0Resolution,
-	Lod0Size)
+	Lod0Size,
+	UpdateVoxels,
+	ForceUpdate,
+	VoxelDrawMode)
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -53,10 +56,32 @@ void VoxelConeTracingGI::DrawSettings()
 
 	if (ImGui::TreeNodeEx("Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.NoIndoorDir);
+		ImGui::Checkbox("Update Voxels", (bool*)&settings.UpdateVoxels);
+		ImGui::Checkbox("Force Update All Voxels", (bool*)&settings.ForceUpdate);
 		ImGui::TreePop();
 	}
 
 	if (ImGui::CollapsingHeader("Debug")) {
+		std::array<std::string, VoxelDrawMode::Count> items;
+
+		const auto& itemsView = magic_enum::enum_names<VoxelDrawMode>();
+		for (size_t i = 0; i < items.size(); i++) {
+			items[i] = std::string(itemsView[i]);
+		}
+
+		if (ImGui::BeginCombo("Display Mode", items[settings.VoxelDrawMode].c_str())) {
+			for (size_t i = 0; i < items.size(); i++) {
+				bool isSelected = (settings.VoxelDrawMode == i);
+
+				if (ImGui::Selectable(items[i].c_str(), isSelected))
+					settings.VoxelDrawMode = static_cast<VoxelDrawMode>(i);
+
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+			
+			ImGui::EndCombo();
+		}
 
 		if (ImGui::TreeNode("Debug Texture")) {
 			ImGui::Image(debugTex->srv.get(), { debugTex->desc.Width * 0.5f, debugTex->desc.Height * 0.5f });
@@ -65,7 +90,7 @@ void VoxelConeTracingGI::DrawSettings()
 
 		ImGui::Text(std::format("Queue Size: {}", queuedTriShapes.size()).c_str());
 
-		if (ImGui::TreeNodeEx("History", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::TreeNodeEx("VoxelizationHistory", ImGuiTreeNodeFlags_DefaultOpen, std::format("History ({})", history.size()).c_str())) {
 			const auto num_elements = eastl::min<eastl_size_t>(5, history.size());
 
 			if (num_elements > 0) {
@@ -96,13 +121,6 @@ void VoxelConeTracingGI::DrawSettings()
 			} else {
 				ImGui::Text("Voxelization has not ran yet.");
 			}
-		}
-
-		if (ImGui::TreeNodeEx("Cached TriShapes", ImGuiTreeNodeFlags_DefaultOpen)) {
-			for (const auto& item : cachedTriShapes) {
-				auto& bufferData = item.second;
-				ImGui::LabelText("Name", bufferData.name);
-			}
 
 			ImGui::TreePop();
 		}
@@ -112,19 +130,20 @@ void VoxelConeTracingGI::DrawSettings()
 void VoxelConeTracingGI::SetupResources()
 {
 	auto device = globals::d3d::device;
+	DX::ThrowIfFailed(device->QueryInterface(__uuidof(ID3D11Device3), device3.put_void()));
 
 	logger::debug("Creating Constant buffers...");
 	{
-		voxelizeCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VoxelizeCB>());	
+		voxelConeTracingGICB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VoxelConeTracingGICB>());	
 		injectLightingCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<InjectLightingCB>());	
 		debugCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<DebugCB>());	
 	}
 
 	logger::debug("Creating Structured buffers...");
 	{
-		uint lod0MaxDepth = OctreeMaxDepth(0);
+		/*uint lod0MaxDepth = OctreeMaxDepth(0);
 		uint lod0NodeCount = NodeCount(lod0MaxDepth);
-		uint lod0LeafNodeCount = LeafNodeCount(lod0MaxDepth);
+		//uint lod0LeafNodeCount = LeafNodeCount(lod0MaxDepth);
 
 		// Node buffer
 		eastl::vector<Node> nodes(lod0NodeCount);
@@ -133,14 +152,33 @@ void VoxelConeTracingGI::SetupResources()
 		auto nodeBufferDesc = StructuredBufferDesc<Node>(lod0NodeCount, true, false);
 		nodeBuffer = eastl::make_unique<StructuredBuffer>(nodeBufferDesc, nodes.data(), lod0NodeCount);
 		nodeBuffer->CreateUAV(); // TODO: use D3D11_BUFFER_UAV_FLAG_APPEND :pray:
-		nodeBuffer->CreateSRV();
+		nodeBuffer->CreateSRV();*/
+
+		uint lod0Resolution = GetLodResolution(0);
+		uint lod0MaxDim = lod0Resolution * lod0Resolution * lod0Resolution;
+
+		// Voxel Append Buffer
+		auto voxelAppendBufferDesc = StructuredBufferDesc<Voxel>(lod0MaxDim, true, false);
+		voxelAppendBuffer = eastl::make_unique<StructuredBuffer>(voxelAppendBufferDesc, lod0MaxDim);
+		voxelAppendBuffer->CreateUAV(true);
+		voxelAppendBuffer->CreateSRV();
+
+		// Voxel Draw Instance Buffer
+		D3D11_BUFFER_DESC voxelDrawBufferDesc = {
+			.ByteWidth = sizeof(Voxel) * lod0MaxDim,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_VERTEX_BUFFER,
+			.CPUAccessFlags = 0,
+			.MiscFlags = 0
+		};
+		voxelDrawInstanceBuffer = eastl::make_unique<Buffer>(voxelDrawBufferDesc);
 
 		// Voxel Buffer
-		eastl::vector<Voxel> voxels(lod0LeafNodeCount);
-		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(lod0LeafNodeCount, true, false);
-		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, voxels.data(), lod0LeafNodeCount);
+		/*auto voxelBufferDesc = StructuredBufferDesc<Voxel>(lod0MaxDim, true, false);
+		//eastl::vector<Voxel> voxels(lod0MaxDim);
+		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, lod0MaxDim);
 		voxelBuffer->CreateUAV();
-		voxelBuffer->CreateSRV();
+		voxelBuffer->CreateSRV();*/
 
 		// Light buffer
 		auto lightBufferDesc = StructuredBufferDesc<Light>(MAX_LIGHTS, false, true);
@@ -214,6 +252,105 @@ void VoxelConeTracingGI::SetupResources()
 		// Voxel Args buffer
 		voxelArgsBuffer = eastl::make_unique<Buffer>(argsBufferDesc);
 		voxelArgsBuffer->CreateUAV(argsUAVDesc);
+
+
+		D3D11_BUFFER_DESC drawArgsBufferDesc = {
+			.ByteWidth = 16,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS
+		};
+
+		UINT args[4] = {
+			36,
+			0,
+			0,
+			0
+		};
+
+		D3D11_SUBRESOURCE_DATA drawInitData = {};
+		drawInitData.pSysMem = args;
+
+		voxelDrawIndirectArgsBuffer = eastl::make_unique<Buffer>(drawArgsBufferDesc, &drawInitData);
+	}
+	
+	// Cube vertex buffer
+	{
+		float3 vertices[] = {
+			// Front face
+			{ 0.0f, 0.0f, 0.0f },  // 0
+			{ 1.0f, 1.0f, 0.0f },  // 1
+			{ 1.0f, 0.0f, 0.0f },  // 2
+
+			{ 1.0f, 1.0f, 0.0f },  // 3
+			{ 0.0f, 0.0f, 0.0f },  // 4
+			{ 0.0f, 1.0f, 0.0f },  // 5
+
+			// Back face
+			{ 0.0f, 0.0f, 1.0f },  // 6
+			{ 1.0f, 0.0f, 1.0f },  // 7
+			{ 1.0f, 1.0f, 1.0f },  // 8
+
+			{ 0.0f, 0.0f, 1.0f },  // 9
+			{ 1.0f, 1.0f, 1.0f },  // 10
+			{ 0.0f, 1.0f, 1.0f },  // 11
+
+			// Left face
+			{ 0.0f, 1.0f, 0.0f },  // 12
+			{ 0.0f, 0.0f, 0.0f },  // 13
+			{ 0.0f, 1.0f, 1.0f },  // 14
+
+			{ 0.0f, 1.0f, 1.0f },  // 15
+			{ 0.0f, 0.0f, 0.0f },  // 16
+			{ 0.0f, 0.0f, 1.0f },  // 17
+
+			// Right face
+			{ 1.0f, 0.0f, 0.0f },  // 18
+			{ 1.0f, 1.0f, 0.0f },  // 19
+			{ 1.0f, 1.0f, 1.0f },  // 20
+
+			{ 1.0f, 0.0f, 0.0f },  // 21
+			{ 1.0f, 1.0f, 1.0f },  // 22
+			{ 1.0f, 0.0f, 1.0f },  // 23
+
+			// Top face
+			{ 1.0f, 1.0f, 0.0f },  // 24
+			{ 0.0f, 1.0f, 0.0f },  // 25
+			{ 1.0f, 1.0f, 1.0f },  // 26
+
+			{ 1.0f, 1.0f, 1.0f },  // 27
+			{ 0.0f, 1.0f, 0.0f },  // 28
+			{ 0.0f, 1.0f, 1.0f },  // 29
+
+			// Bottom face
+			{ 0.0f, 0.0f, 0.0f },  // 30
+			{ 1.0f, 0.0f, 0.0f },  // 31
+			{ 1.0f, 0.0f, 1.0f },  // 32
+
+			{ 0.0f, 0.0f, 1.0f },  // 33
+			{ 0.0f, 0.0f, 0.0f },  // 34
+			{ 1.0f, 0.0f, 1.0f },  // 35
+		};
+
+		D3D11_BUFFER_DESC cubeVertexDesc = {};
+		cubeVertexDesc.Usage = D3D11_USAGE_DEFAULT;
+		cubeVertexDesc.ByteWidth = sizeof(vertices);
+		cubeVertexDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+		cubeVertexDesc.CPUAccessFlags = 0;
+
+		D3D11_SUBRESOURCE_DATA cubeVertexInit = {};
+		cubeVertexInit.pSysMem = vertices;
+
+		voxelDrawVertexBuffer = eastl::make_unique<Buffer>(cubeVertexDesc, &cubeVertexInit);
+
+		voxelDrawInputDesc = {
+			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+			{ "VOXELCOORD", 0, DXGI_FORMAT_R32G32B32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+			{ "VOXELALBEDO", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Albedo), D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+			{ "VOXELEMISSION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Emission), D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+			{ "VOXELNORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Normal), D3D11_INPUT_PER_INSTANCE_DATA, 1 }
+		};
 	}
 
 	logger::debug("Creating textures...");
@@ -232,7 +369,7 @@ void VoxelConeTracingGI::SetupResources()
 				.Usage = D3D11_USAGE_DEFAULT,
 				.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
 				.CPUAccessFlags = 0,
-				.MiscFlags = 0
+				.MiscFlags = 0 // D3D11_RESOURCE_MISC_GENERATE_MIPS
 			};
 
 			D3D11_SHADER_RESOURCE_VIEW_DESC lod0SRVDesc = {
@@ -275,7 +412,7 @@ void VoxelConeTracingGI::SetupResources()
 					.Quality = 0 
 				},
 				.Usage = D3D11_USAGE_DEFAULT,
-				.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+				.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET,
 				.CPUAccessFlags = 0,
 				.MiscFlags = 0
 			};
@@ -297,9 +434,18 @@ void VoxelConeTracingGI::SetupResources()
 				}
 			};
 
+			D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {
+				.Format = texDesc.Format,
+				.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D,
+				.Texture2D = {
+					.MipSlice = 0 
+				}
+			};
+
 			debugTex = eastl::make_unique<Texture2D>(texDesc); 
 			debugTex->CreateSRV(srvDesc);
 			debugTex->CreateUAV(uavDesc);
+			debugTex->CreateRTV(rtvDesc);
 		}
 
 		logger::debug("Creating samplers...");
@@ -336,13 +482,52 @@ void VoxelConeTracingGI::SetupResources()
 
 	// Raster State
 	{
-		D3D11_RASTERIZER_DESC rasterDesc{};
-		rasterDesc.CullMode = D3D11_CULL_NONE;
-		rasterDesc.FillMode = D3D11_FILL_SOLID;
-		rasterDesc.DepthClipEnable = TRUE;
-		rasterDesc.MultisampleEnable = TRUE;
+		D3D11_FEATURE_DATA_D3D11_OPTIONS2 options2 = {};
+		DX::ThrowIfFailed(device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &options2, sizeof(options2)));
+		logger::info("CheckFeatureSupport: ConservativeRasterizationTier: {}", magic_enum::enum_name(options2.ConservativeRasterizationTier));
 
-		device->CreateRasterizerState(&rasterDesc, voxelRasterState.put());
+		D3D11_RASTERIZER_DESC2 rasterDesc = {};
+		rasterDesc.FillMode = D3D11_FILL_SOLID;
+		rasterDesc.CullMode = D3D11_CULL_NONE;
+		rasterDesc.FrontCounterClockwise = FALSE;
+		rasterDesc.DepthBias = 0;
+		rasterDesc.DepthBiasClamp = 0.0f;
+		rasterDesc.SlopeScaledDepthBias = 0.0f;
+		rasterDesc.DepthClipEnable = FALSE;
+		rasterDesc.ScissorEnable = TRUE;
+		rasterDesc.MultisampleEnable = FALSE;
+		rasterDesc.AntialiasedLineEnable = FALSE;
+		rasterDesc.ForcedSampleCount = 0;
+		rasterDesc.ConservativeRaster = options2.ConservativeRasterizationTier == D3D11_CONSERVATIVE_RASTERIZATION_NOT_SUPPORTED ? D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF : D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON;
+
+		auto hr = device3->CreateRasterizerState2(&rasterDesc, voxelRasterState.put());
+
+		if (FAILED(hr)) {
+			logger::error("CreateRasterizerState2: Failed to create D3D11.3 ID3D11RasterizerState2, HRESULT: 0x{:08X}", static_cast<uint32_t>(hr));
+			DX::ThrowIfFailed(hr);
+		}
+	}
+
+	// Viewport
+	{
+		float lod0ResFloat = static_cast<float>(GetLodResolution(0));
+
+		lod0Viewport.TopLeftX = 0.0f;
+		lod0Viewport.TopLeftY = 0.0f;
+		lod0Viewport.Width = lod0ResFloat;
+		lod0Viewport.Height = lod0ResFloat;
+		lod0Viewport.MinDepth = 0.0f;
+		lod0Viewport.MaxDepth = 1.0f;
+	}
+
+	// Depth Stencil State
+	{
+		D3D11_DEPTH_STENCIL_DESC depthStencilDesc{};
+		depthStencilDesc.DepthEnable = true;
+		depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		depthStencilDesc.DepthFunc = D3D11_COMPARISON_LESS;
+		depthStencilDesc.StencilEnable = false;
+		DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, voxelDrawDSS.put()));
 	}
 
 	CompileShaders();
@@ -385,15 +570,13 @@ DirectX::XMMATRIX GetXMFromNiTransform(const RE::NiTransform& Transform)
 	return temp;
 }
 
-void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, RE::BSRenderPass* Pass)
+void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass)
 {
-	if (This->shaderType != RE::BSShader::Type::Lighting)
-		return;
-
-	if (queuedReset) {
-		cachedTriShapes.clear();
-		queuedReset = false;
-	}
+	logger::debug(
+		"BSShader_SetupGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
+		reinterpret_cast<uintptr_t>(This),
+		reinterpret_cast<uintptr_t>(Pass),
+		magic_enum::enum_name(This->shaderType.get()));
 
 	const auto geometry = Pass->geometry;
 	const auto triShape = geometry->AsTriShape();
@@ -402,58 +585,187 @@ void VoxelConeTracingGI::BSLightingShader_SetupVoxelization(RE::BSShader* This, 
 	if (rendererData == nullptr)
 		return;
 
-	if (cachedTriShapes.find(rendererData) != cachedTriShapes.end())
+	auto it = cachedTriShapes.find(rendererData);
+
+	// TriShape not cached, lets add to cache and queue
+	if (it == cachedTriShapes.end()) {
+		cachedTriShapes.emplace(rendererData);
+		queuedTriShapes.emplace(rendererData);
+	} else if (settings.ForceUpdate == TRUE) {
+		queuedTriShapes.emplace(rendererData);
+	}
+}
+
+void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass)
+{
+	logger::debug(
+		"BSShader_RestoreGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
+		reinterpret_cast<uintptr_t>(This),
+		reinterpret_cast<uintptr_t>(Pass),
+		magic_enum::enum_name(This->shaderType.get()));
+
+	const auto geometry = Pass->geometry;
+	const auto triShape = geometry->AsTriShape();
+	const auto triShapeRuntime = triShape->GetTrishapeRuntimeData();
+	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
+
+	logger::debug(
+		"BSLightingShader_RestoreGeometry - Geometry: [0x{:x}], BSTriShape: [0x{:x}], BSGraphics::TriShape: [0x{:x}]",
+		reinterpret_cast<uintptr_t>(geometry),
+		reinterpret_cast<uintptr_t>(triShape),
+		reinterpret_cast<uintptr_t>(rendererData)
+	);
+
+	if (rendererData == nullptr)
 		return;
 
-	auto context = globals::d3d::context;
+	auto it = queuedTriShapes.find(rendererData);
 
-	float4x4 xmmTransform = GetXMFromNiTransform(triShape->world);
+	// TriShape not queued
+	if (it == queuedTriShapes.end())
+		return;
+
+	auto it2 = cachedTriShapes.find(rendererData);
+
+	// TriShape not cached
+	if (it2 == cachedTriShapes.end())
+		return;
+
+	/*float4x4 xmmTransform = GetXMFromNiTransform(triShape->world);
 	float4x4 transform = xmmTransform.Transpose();
 
-	/*for (uint row = 0; row < 3; ++row) {
-		for (uint col = 0; col < 4; ++col) {
-			transform[row * 4 + col] = xmmTransform.m[col][row];
-		}
-	}*/
+	//for (uint row = 0; row < 3; ++row) {
+	//	for (uint col = 0; col < 4; ++col) {
+	//		transform[row * 4 + col] = xmmTransform.m[col][row];
+	//	}
+	//}
 
 	const auto& modelData = triShape->GetModelData().modelBound;
 
 	const RE::NiPoint3 r = { modelData.radius, modelData.radius, modelData.radius };
 
 	const RE::NiPoint3 aabbMin = modelData.center - r;
-	const RE::NiPoint3 aabbMax = modelData.center + r;
+	const RE::NiPoint3 aabbMax = modelData.center + r;*/
 
-	BufferData bufferData = {
-		.name = geometry->name.c_str(),
-		.transform = transform,
-		.min = { aabbMin.x, aabbMin.y, aabbMin.z },
-		.max = { aabbMax.x, aabbMax.y, aabbMax.z },
-	};
-	
-	auto vertexBufferSrc = (ID3D11Buffer*)rendererData->vertexBuffer;
-	D3D11_BUFFER_DESC vertexBufferDsc;
-	vertexBufferSrc->GetDesc(&vertexBufferDsc);
+	// Render here
+	auto context = globals::d3d::context;
 
-	bufferData.vertexBuffer = eastl::make_unique<Buffer>(vertexBufferDsc);
-	context->CopyResource(bufferData.vertexBuffer->resource.get(), vertexBufferSrc);
+	auto state = globals::state;
+	state->BeginPerfEvent("Voxelization");
 
-	auto indexBufferSrc = (ID3D11Buffer*)rendererData->indexBuffer;
-	D3D11_BUFFER_DESC indexBufferDsc;
-	indexBufferSrc->GetDesc(&indexBufferDsc);
+	ID3D11VertexShader* prevVertex = nullptr;
+	ID3D11PixelShader* prevPixel = nullptr;
 
-	bufferData.indexBuffer = eastl::make_unique<Buffer>(indexBufferDsc);
-	context->CopyResource(bufferData.indexBuffer->resource.get(), indexBufferSrc);
+	context->VSGetShader(&prevVertex, nullptr, nullptr);
+	context->PSGetShader(&prevPixel, nullptr, nullptr);
 
-	cachedTriShapes.emplace(rendererData, std::move(bufferData));
-	queuedTriShapes.emplace(rendererData);
+	context->VSSetShader(voxelizeVertex.get(), nullptr, 0);
+	context->GSSetShader(voxelizeGeometry.get(), nullptr, 0);
+	context->PSSetShader(voxelizePixel.get(), nullptr, 0);
+
+	context->RSSetState(voxelRasterState.get());
+
+	// Lets back everything up
+	uint numViewports = 1;
+	D3D11_VIEWPORT prevViewport = {};
+	context->RSGetViewports(&numViewports, &prevViewport);
+
+	ID3D11RenderTargetView* prevRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+	ID3D11DepthStencilView* prevDSV = nullptr;
+	context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, &prevDSV);
+
+	// Overide
+	context->RSSetViewports(1, &lod0Viewport);
+
+	ID3D11UnorderedAccessView* uav = voxelAppendBuffer->UAV();
+	context->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, 1, &uav, nullptr);
+
+	// Render
+	context->DrawIndexed(triShapeRuntime.triangleCount * 3, 0, 0);
+
+	// Restore
+	context->VSSetShader(prevVertex, nullptr, 0);
+	context->GSSetShader(nullptr, nullptr, 0);
+	context->PSSetShader(prevPixel, nullptr, 0);
+
+	context->RSSetViewports(1, &prevViewport);
+
+	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, prevDSV);
+
+	if (prevVertex)
+		prevVertex->Release();
+
+	if (prevPixel)
+		prevPixel->Release();
+
+	for (int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+		if (prevRTVs[i])
+			prevRTVs[i]->Release();
+	}
+
+	if (prevDSV)
+		prevDSV->Release();
+
+	// Just rendered, remove from queue
+	queuedTriShapes.erase(rendererData);
+	rendered++;
+
+	state->EndPerfEvent();
+}
+
+void VoxelConeTracingGI::Main_RenderPlayerView(void* a1, bool a2, bool a3)
+{
+	Hooks::Main_RenderPlayerView::func(a1, a2, a3);
+}
+
+
+void VoxelConeTracingGI::Main_RenderWorld(bool a1)
+{
+	if (queuedReset) {
+		cachedTriShapes.clear();
+		queuedTriShapes.clear();
+		history.clear();
+
+		queuedReset = false;
+	}
+
+	rendered = 0;
+
+	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
+
+	uint lod0Resolution = GetLodResolution(0);
+	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
+
+	voxelConeTracingGICBData.Min = center - (float3(lod0Size, lod0Size, lod0Size) * 0.5f);
+	voxelConeTracingGICBData.Size = lod0Size;
+	voxelConeTracingGICBData.SizeInv = 1.0f / lod0Size;
+	voxelConeTracingGICBData.Res = lod0Resolution;
+	voxelConeTracingGICBData.ResInv = 1.0f / lod0ResolutionFloat;
+	voxelConeTracingGICBData.VoxelSize = lod0Size / lod0ResolutionFloat;
+
+	voxelConeTracingGICB->Update(voxelConeTracingGICBData);
+
+	auto cb = voxelConeTracingGICB->CB();
+
+	auto context = globals::d3d::context;
+
+	context->GSSetConstantBuffers(0, 1, &cb);
+
+	Hooks::Main_RenderWorld::func(a1);
+
+	if (rendered > 0) {
+		history.push_back({ steady_clock::now(), rendered });
+	}
+
+	Main_RenderWorldAfter();
 }
 
 void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
 {
 	const auto rendererData = This->GetGeometryRuntimeData().rendererData;
 
-	// TriShape is not cached (why?)
-	if (cachedTriShapes.find(rendererData) == cachedTriShapes.end()) {
+	// TriShape not cached, already queued or updates turned off
+	if (cachedTriShapes.find(rendererData) == cachedTriShapes.end() || queuedTriShapes.find(rendererData) != queuedTriShapes.end() || settings.UpdateVoxels == false) {
 		Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
 	} else {
 		RE::NiPoint3 pointA = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
@@ -469,27 +781,15 @@ void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::Ni
 	}
 }
 
-void VoxelConeTracingGI::DrawTriShape(void* This, RE::BSGraphics::TriShape* GraphicsTriShape, uint32_t StartIndex, uint32_t Count)
+VoxelConeTracingGI::VoxelConeTracingGICB VoxelConeTracingGI::GetCommonBufferData() const
 {
-	logger::info("DrawTriShape [0x{:x}]", reinterpret_cast<uintptr_t>(GraphicsTriShape));
+	return voxelConeTracingGICBData;
+}
 
-	auto it = queuedTriShapes.find(GraphicsTriShape);
-
-	// TriShape not queued
-	if (it == queuedTriShapes.end())
-		return;
-
-	auto it2 = cachedTriShapes.find(GraphicsTriShape);
-
-	// Trishape not cached
-	if (it2 == cachedTriShapes.end())
-		return;
-
-	// This is temporary of course, doesn't seem to break anything which is good!
-	Hooks::DrawTriShape::func(This, GraphicsTriShape, StartIndex, Count);
-
-	// Just rendered, remove from queue
-	queuedTriShapes.erase(GraphicsTriShape);
+void VoxelConeTracingGI::Main_RenderWorldAfter()
+{
+	if (settings.VoxelDrawMode != VoxelDrawMode::None && settings.VoxelDrawMode != VoxelDrawMode::Count)
+		DrawVoxels();
 }
 
 void VoxelConeTracingGI::Voxelize()
@@ -497,75 +797,8 @@ void VoxelConeTracingGI::Voxelize()
 	auto state = globals::state;
 	state->BeginPerfEvent("Voxelize");
 
-	const auto queueSize = queuedTriShapes.size();
-
-	if (queueSize < lastQueueSize) {
-		history.push_back({ steady_clock::now(), lastQueueSize - queueSize });
-		lastQueueSize = queueSize;
-	}
-
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Voxelize");
-
-	auto context = globals::d3d::context;
-
-	auto renderer = globals::game::renderer;
-	auto rts = renderer->GetRuntimeData().renderTargets;
-
-	float2 res = globals::state->screenSize;
-	float2 size = Util::ConvertToDynamic(res);
-	auto resolution = std::array{ (uint)size.x, (uint)size.y };
-
-	std::array<ID3D11ShaderResourceView*, 3> srvs = { 
-		rts[ALBEDO].SRV,
-		prevDepth->srv.get(),
-		rts[NORMALROUGHNESS].SRV,
-	};
-
-	std::array<ID3D11UnorderedAccessView*, 4> uavs = {
-		nodeBuffer->UAV(),
-		nodeCountBuffer->uav.get(),
-		voxelBuffer->UAV(),
-		voxelCountBuffer->uav.get()
-	};
-
-	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
-
-	auto eye = Util::GetCameraData(0);
-
-	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
-	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
-
-	auto lod0Resolution = GetLodResolution(0);
-	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
-
-	voxelizeCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
-	voxelizeCBData.RcpFrameDim = float2(1.0) / size;
-	voxelizeCBData.Cell2Coord = 1.0f / lod0ResolutionFloat;
-	voxelizeCBData.Resolution = lod0ResolutionFloat;
-	voxelizeCBData.Center = center;
-	voxelizeCBData.MaxDepth = OctreeMaxDepth(0);
-	voxelizeCBData.Size = float3(lod0Size, lod0Size, lod0Size);
-
-	voxelizeCB->Update(voxelizeCBData);
-
-	auto cb = voxelizeCB->CB();
-
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-	context->CSSetConstantBuffers(0, 1, &cb);
-
-	context->CSSetShader(voxelizeCompute.get(), nullptr, 0);
-	context->Dispatch(resolution[0] >> 3, resolution[1] >> 3, 1);
-
-	srvs.fill(nullptr);
-	uavs.fill(nullptr);
-
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
-	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-	context->CopyResource(prevDepth->resource.get(), depth.texture);
 
 	state->EndPerfEvent();
 }
@@ -789,7 +1022,99 @@ void VoxelConeTracingGI::InjectLighting()
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 
-	//context->OMSetRenderTargetsAndUnorderedAccessViews
+	state->EndPerfEvent();
+}
+
+void VoxelConeTracingGI::DrawVoxels()
+{
+	auto state = globals::state;
+	state->BeginPerfEvent("Draw Voxels");
+
+	auto context = globals::d3d::context;
+
+	// Lets back everything up
+	ID3D11RenderTargetView* prevRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+	ID3D11DepthStencilView* prevDSV = nullptr;
+	context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, &prevDSV);
+
+	/*ID3D11VertexShader* prevVertex = nullptr;
+	ID3D11PixelShader* prevPixel = nullptr;
+
+	context->VSGetShader(&prevVertex, nullptr, nullptr);
+	context->PSGetShader(&prevPixel, nullptr, nullptr);*/
+
+	auto cb = voxelConeTracingGICB->CB();
+	context->VSSetConstantBuffers(0, 1, &cb);
+
+	context->VSSetShader(drawVertex.get(), nullptr, 0);
+
+	auto drawPixel = drawPixelVariants[settings.VoxelDrawMode - 1];
+	context->PSSetShader(drawPixel.get(), nullptr, 0);
+
+	auto renderer = globals::game::renderer;
+	auto screenSize = renderer->GetScreenSize();
+
+	D3D11_VIEWPORT viewport = {
+		.TopLeftX = 0.0f,
+		.TopLeftY = 0.0f,
+		.Width = static_cast<float>(screenSize.width),
+		.Height = static_cast<float>(screenSize.height),
+		.MinDepth = 0.0f,
+		.MaxDepth = 1.0f
+	};
+	context->RSSetViewports(1, &viewport);
+
+	context->OMSetDepthStencilState(voxelDrawDSS.get(), 0);
+
+	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+
+	//auto rtv = debugTex->rtv.get();
+	//context->OMSetRenderTargets(1, &rtv, nullptr);
+
+	auto main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	auto mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	auto depthView = mainDepth.views[0];
+
+	// Clear Color and Depth
+    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	context->ClearRenderTargetView(main.RTV, clearColor);
+	context->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+	
+	context->OMSetRenderTargets(1, &main.RTV, depthView);
+
+	context->IASetInputLayout(voxelDrawInputLayout.get());
+
+	UINT strides[2] = { sizeof(float3), sizeof(Voxel) };  // size of one vertex and one instance
+	UINT offsets[2] = { 0, 0 };
+
+	context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelAppendBuffer->resource.get());
+	ID3D11Buffer* buffers[2] = { voxelDrawVertexBuffer->resource.get(), voxelDrawInstanceBuffer->resource.get() };
+
+	context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
+	//context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	context->CopyStructureCount(voxelDrawIndirectArgsBuffer->resource.get(), 4, voxelAppendBuffer->UAV());
+
+	context->DrawInstancedIndirect(voxelDrawIndirectArgsBuffer->resource.get(), 0);
+
+	/*context->VSSetShader(prevVertex, nullptr, 0);
+	context->PSSetShader(prevPixel, nullptr, 0);
+
+	if (prevVertex)
+		prevVertex->Release();
+
+	if (prevPixel)
+		prevPixel->Release();*/
+
+	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, prevDSV);
+
+	for (int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
+		if (prevRTVs[i])
+			prevRTVs[i]->Release();
+	}
+
+	if (prevDSV)
+		prevDSV->Release();
 
 	state->EndPerfEvent();
 }
@@ -801,62 +1126,6 @@ void VoxelConeTracingGI::Debug()
 
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Debug");
-
-	auto context = globals::d3d::context;
-
-
-	auto eye = Util::GetCameraData(0);
-
-	float2 ndcToViewMult = float2(2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1));
-	float2 ndcToViewAdd = float2(-1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1));
-
-	float2 res = globals::state->screenSize;
-	float2 size = Util::ConvertToDynamic(res);
-
-	auto lod0Resolution = GetLodResolution(0);
-	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
-
-	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
-	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
-
-	debugCBData.NDCToView = float4(ndcToViewMult.x, ndcToViewMult.y, ndcToViewAdd.x, ndcToViewAdd.y);
-	debugCBData.RcpFrameDim = float2(1.0) / size;
-	debugCBData.Coord2Cell = float3(1.0f / lod0Size, 1.0f / lod0Size, 1.0f / lod0Size) * lod0ResolutionFloat;
-	debugCBData.Min = center - (lod0SizeF3 * 0.5);
-
-	debugCB->Update(debugCBData);
-
-	auto cb = debugCB->CB();
-
-	std::array<ID3D11ShaderResourceView*, 2> srvs = {
-		prevDepth->srv.get(),
-		lod0Tex->srv.get()
-	};
-
-	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-		debugTex->uav.get()
-	};
-
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
-	context->CSSetConstantBuffers(0, 1, &cb);
-
-	auto device = globals::game::renderer;
-	auto screenSize = device->GetScreenSize();
-
-    uint widthThreads = static_cast<uint>(std::ceil(screenSize.width/ 8.0f));
-	uint heightThreads = static_cast<uint>(std::ceil(screenSize.height / 8.0f));
-
-	context->CSSetShader(debugCompute.get(), nullptr, 0);
-	context->Dispatch(widthThreads, heightThreads, 1);
-
-	srvs.fill(nullptr);
-	uavs.fill(nullptr);
-
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
 
 	state->EndPerfEvent();
 }
@@ -871,10 +1140,13 @@ void VoxelConeTracingGI::Prepass()
 
 	center = float3(299, 1036, 181);
 
-	Voxelize();
+	/*Voxelize();
 	VoxelArgs();
-	InjectLighting();
-	Debug();
+	InjectLighting();*/
+	//Debug();
+
+	//UINT values[4] = { 0, 0, 0, 0 };
+	//globals::d3d::context->ClearUnorderedAccessViewUint(voxelAppendBuffer->UAV(), values);
 
 	state->EndPerfEvent();
 }
@@ -892,34 +1164,31 @@ void VoxelConeTracingGI::ClearShaderCache()
 
 void VoxelConeTracingGI::CompileShaders()
 {
-	/*if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VoxelConeTracingGI\\VoxelConeTracingGI.cs.hlsl", {}, "cs_5_0")); rawPtr)
-		voxelizeCompute.attach(rawPtr);*/
-
-	CompileComputeShaders();
-}
-
-void VoxelConeTracingGI::CompileComputeShaders()
-{
-	struct ShaderCompileInfo
-	{
-		winrt::com_ptr<ID3D11ComputeShader>* programPtr;
-		std::string_view filename;
-		std::vector<std::pair<const char*, const char*>> defines;
+	auto compileShader = [&]<typename T>(winrt::com_ptr<T>* programPtr, const std::filesystem::path& folderPath, std::string_view filename, const char* programType, std::vector<std::pair<const char*, const char*>> defines = {}, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc = {}, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr = nullptr) {
+		auto path = folderPath / filename;
+		
+		if (auto rawPtr = reinterpret_cast<T*>(Util::CompileShader(path.c_str(), defines, programType, "main", inputDesc, inputLayoutPtr ? inputLayoutPtr->put() : nullptr)))
+			programPtr->attach(rawPtr);	
 	};
 
-	std::vector<ShaderCompileInfo>
-		shaderInfos = {
-			{ &voxelizeCompute, "VoxelizeCS.hlsl", {} },
-			{ &voxelArgsCompute, "VoxelArgsCS.hlsl", {} },
-			{ &injectLightCompute, "InjectLightingCS.hlsl", {} },
-			{ &debugCompute, "DebugCS.hlsl", {} }
-		};
+	auto folderPath = std::filesystem::path("Data\\Shaders\\VoxelConeTracingGI");
 
-	for (auto& info : shaderInfos) {
-		auto path = std::filesystem::path("Data\\Shaders\\VoxelConeTracingGI") / info.filename;
-		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
-			info.programPtr->attach(rawPtr);
+	auto voxelizationFolderpath = folderPath / "Voxelization";
+	compileShader(&voxelizeVertex, voxelizationFolderpath , "VoxelizeVS.hlsl", "vs_5_0");
+	compileShader(&voxelizeGeometry, voxelizationFolderpath , "VoxelizeGS.hlsl", "gs_5_0");
+	compileShader(&voxelizePixel, voxelizationFolderpath , "VoxelizePS.hlsl", "ps_5_0");
+
+	auto debugFolderpath = folderPath / "Debug";
+	compileShader(&drawVertex, debugFolderpath, "DrawVS.hlsl", "vs_5_0", {}, voxelDrawInputDesc, &voxelDrawInputLayout);
+
+	for (size_t i = 0; i < drawPixelVariants.size(); i++) {
+		compileShader(&drawPixelVariants[i], debugFolderpath, "DrawPS.hlsl", "ps_5_0", { { "DRAW_MODE", std::to_string(i).c_str() } });
 	}
+
+	compileShader(&voxelizeCompute, folderPath , "VoxelizeCS.hlsl", "cs_5_0");
+	compileShader(&voxelArgsCompute, folderPath , "VoxelArgsCS.hlsl", "cs_5_0");
+	compileShader(&injectLightCompute, folderPath , "InjectLightingCS.hlsl", "cs_5_0");
+	compileShader(&debugCompute, folderPath , "DebugCS.hlsl", "cs_5_0");
 }
 
 RE::BSEventNotifyControl VoxelConeTracingGI::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)

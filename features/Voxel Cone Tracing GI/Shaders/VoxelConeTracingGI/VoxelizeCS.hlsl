@@ -110,13 +110,13 @@ void main(int2 pixCoord : SV_DispatchThreadID)
 				uint voxelIdx;
 				VoxelCount.InterlockedAdd(0, 1, voxelIdx);
 
-				Voxel voxel;
+				/*Voxel voxel;
 				voxel.position = positionWS;
 				voxel.normal = normalWS;
 				voxel.albedo = albedo;
 				voxel.emission = float3(depth, depthLinear, 0);
 
-				Voxels[voxelIdx] = voxel;
+				Voxels[voxelIdx] = voxel;*/
 				childNode.voxel = voxelIdx;
 			} else {
 				childNode.voxel = 0;

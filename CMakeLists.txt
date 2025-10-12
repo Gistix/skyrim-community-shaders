@@ -177,6 +177,93 @@ if(CLANG_FORMAT_PATH)
 endif()
 
 # #######################################################################################################################
+# # Shader compilation validation
+# #######################################################################################################################
+
+# Mapping from file suffix to shader model
+set(SHADER_PROFILE_MAP
+    VS vs_5_0
+    PS ps_5_0
+    GS gs_5_0
+    CS cs_5_0
+)
+
+# Extracts shader profile from filename (e.g., ShaderVS.hlsl or shader.vs.hlsl -> vs_5_0)
+function(get_shader_profile_from_name FILENAME OUT_PROFILE)
+    get_filename_component(SHADER_NAME ${FILENAME} NAME_WLE)
+
+    # Try to match CamelCase format like ShaderVS
+    string(REGEX MATCH ".*(VS|PS|GS|CS)$" _ ${SHADER_NAME})
+    set(SUFFIX ${CMAKE_MATCH_1})
+
+    # If that fails, try dot style like blur.cs (case-insensitive)
+    if(NOT SUFFIX)
+        string(TOUPPER "${SHADER_NAME}" UPPER_NAME)
+        string(REGEX MATCH "\\.([VPGC]S)$" _ "${UPPER_NAME}")
+        set(SUFFIX ${CMAKE_MATCH_1})
+    endif()
+
+    if(NOT SUFFIX)
+        message(WARNING "Shader '${FILENAME}' does not match expected naming conventions (e.g. ShaderVS.hlsl or shader.vs.hlsl), assuming 'PS'")
+		set(SUFFIX "PS")
+    endif()
+
+    list(FIND SHADER_PROFILE_MAP ${SUFFIX} INDEX)
+    if(INDEX EQUAL -1)
+        message(FATAL_ERROR "Unknown shader type suffix '${SUFFIX}' in file '${FILENAME}'")
+    endif()
+
+    math(EXPR PROFILE_INDEX "${INDEX} + 1")
+    list(GET SHADER_PROFILE_MAP ${PROFILE_INDEX} PROFILE)
+    set(${OUT_PROFILE} ${PROFILE} PARENT_SCOPE)
+endfunction()
+
+# Adds a custom command to validate shader compilation
+function(validate_shader SHADER_FILE INCLUDE_DIR)
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+    get_shader_profile_from_name(${SHADER_FILE} PROFILE)
+
+    add_custom_command(
+        OUTPUT ${SHADER_NAME}_validated
+        COMMAND "fxc.exe"
+			/DPSHADER
+            /T ${PROFILE}
+            /E main
+			/I "${CMAKE_SOURCE_DIR}/Package/Shaders"
+			/I "${INCLUDE_DIR}"
+            /nologo
+            ${SHADER_FILE}
+			> NUL
+        COMMAND ${CMAKE_COMMAND} -E touch ${SHADER_NAME}_validated
+        DEPENDS ${SHADER_FILE}
+        COMMENT "Validating shader ${SHADER_FILE} (${PROFILE})"
+        VERBATIM
+    )
+
+    add_custom_target(${SHADER_NAME}_validate ALL DEPENDS ${SHADER_NAME}_validated)
+endfunction()
+
+function(validate_feature_shaders FEATURE_PATH)
+	file(GLOB_RECURSE SHADER_FILES
+		LIST_DIRECTORIES false
+		CONFIGURE_DEPENDS
+		"${FEATURE_PATH}/Shaders/*/*.hlsl"
+	)
+
+	foreach(SHADER ${SHADER_FILES})
+		validate_shader(${SHADER} "${FEATURE_PATH}/Shaders")
+	endforeach()
+endfunction()
+
+#file(GLOB FEATURE_PATHS LIST_DIRECTORIES true ${CMAKE_SOURCE_DIR}/features/*)
+
+set(FEATURE_PATHS "${CMAKE_SOURCE_DIR}/features/Voxel Cone Tracing GI")
+
+foreach(FEATURE_PATH ${FEATURE_PATHS})
+    validate_feature_shaders(${FEATURE_PATH})
+endforeach()
+
+# #######################################################################################################################
 # # Shader validation config generation
 # #######################################################################################################################
 

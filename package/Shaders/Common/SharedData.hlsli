@@ -194,6 +194,16 @@ namespace SharedData
 		float Strength;      // [0, 1.0] The inverse blend weight of the effect
 	};
 
+	struct VoxelConeTracingGISettings
+	{
+		float3 Min;
+		float Size;
+		float SizeInv;
+		uint Res;
+		float ResInv; 
+		float VoxelSize;
+	};	
+	
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -209,6 +219,7 @@ namespace SharedData
 		TerrainVariationSettings terrainVariationSettings;
 		IBLSettings iblSettings;
 		ExtendedTranslucencySettings extendedTranslucencySettings;
+		VoxelConeTracingGISettings voxelConeTracingGISettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

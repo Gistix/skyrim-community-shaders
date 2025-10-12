@@ -132,13 +132,13 @@ public:
 		srvs.push_back(srv);
 	}
 
-	virtual void CreateUAV()
+	virtual void CreateUAV(bool append=false)
 	{
 		auto device = globals::d3d::device;
 		D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc{};
 		uav_desc.Format = DXGI_FORMAT_UNKNOWN;
 		uav_desc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-		uav_desc.Buffer.Flags = 0;
+		uav_desc.Buffer.Flags = !append ? 0 : D3D11_BUFFER_UAV_FLAG_APPEND;
 		uav_desc.Buffer.FirstElement = 0;
 		uav_desc.Buffer.NumElements = count;
 		winrt::com_ptr<ID3D11UnorderedAccessView> uav;
@@ -164,8 +164,8 @@ public:
 	std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> srvs;
 	std::vector<winrt::com_ptr<ID3D11UnorderedAccessView>> uavs;
 
-private:
 	winrt::com_ptr<ID3D11Buffer> resource;
+private:
 	D3D11_BUFFER_DESC desc;
 	UINT count;
 };

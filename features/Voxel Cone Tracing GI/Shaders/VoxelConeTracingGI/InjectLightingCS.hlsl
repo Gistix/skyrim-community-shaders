@@ -23,12 +23,13 @@ StructuredBuffer<Node> Octree : register(t2);
 RWTexture3D<half4> LOD0 : register(u0);
 
 [numthreads(64, 1, 1)]
-void main(int id: SV_DispatchThreadID)
+void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 {
 	Voxel voxel = Voxels[id];
 
-	float3 voxelPosition = voxel.position;
-	float3 voxelSurface = voxelPosition + (voxel.normal * VoxelSize * 0.5);
+	//float3 voxelPosition = voxel.position;
+	float3 voxelPosition = 0;
+	float3 voxelSurface = voxelPosition + (voxel.Normal * VoxelSize * 0.5);
 
 	float3 diffuseLighting = 0;
 
@@ -68,11 +69,13 @@ void main(int id: SV_DispatchThreadID)
 			direction = lvector;
 		}
 
-		float NdotL = max(dot(voxel.normal, normalize(direction)), 0);
+		float NdotL = max(dot(voxel.Normal, normalize(direction)), 0);
 		diffuseLighting += color * NdotL * attenuation;
 	}
 
-	uint3 uvw = (uint3)floor((voxelPosition - Min) * Coord2Cell);
-	LOD0[uvw] = half4(voxel.albedo * diffuseLighting, 1.0);
-	//LOD0[uvw] = half4(voxel.normal, 1.0);
+	uint3 uvw = (uint3)floor((voxelPosition - Min) * Coord2Cell);	
+	
+	// This quiets fxc.exe down
+	if (groupId == 0)
+		LOD0[uvw] = half4(voxel.Emission + (voxel.Albedo * diffuseLighting), 1.0);
 }

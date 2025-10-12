@@ -293,6 +293,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
 
+	logger::info("hk_D3D11CreateDeviceAndSwapChain: DriverType {}", magic_enum::enum_name(DriverType));
+
 	auto ret = ptrD3D11CreateDeviceAndSwapChain(pAdapter,
 		DriverType,
 		Software,
