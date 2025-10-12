@@ -71,6 +71,8 @@ struct VoxelConeTracingGI : public Feature
 	void Main_RenderPlayerView(void* a1, bool a2, bool a3);
 	void Main_RenderWorld(bool a1);
 
+	void PostProcess();
+
 	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
@@ -227,6 +229,9 @@ struct VoxelConeTracingGI : public Feature
 	//winrt::com_ptr<ID3D11PixelShader> drawPixel = nullptr;
 	std::array<winrt::com_ptr<ID3D11PixelShader>, VoxelDrawMode::Count> drawPixelVariants;
 
+	winrt::com_ptr<ID3D11VertexShader> accumulateVertex = nullptr;
+	winrt::com_ptr<ID3D11PixelShader> accumulatePixel = nullptr;
+
 	winrt::com_ptr<ID3D11ComputeShader> voxelizeCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
@@ -237,19 +242,25 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
 	D3D11_VIEWPORT lod0Viewport = {};
 
-	eastl::unique_ptr<StructuredBuffer> nodeBuffer = nullptr;
-	eastl::unique_ptr<Buffer> nodeCountBuffer = nullptr;
-
 	eastl::unique_ptr<StructuredBuffer> voxelAppendBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
 
+	// Multi purpose buffer for indirect arguments
+	eastl::unique_ptr<Buffer> voxelIndirectArgsBuffer = nullptr;
+
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
+
+	// Post-Processing voxelization
+	eastl::unique_ptr<Texture2DArray> voxelAccumulator = nullptr;
+	D3D11_VIEWPORT accumulateViewport = {};
+	winrt::com_ptr<ID3D11BlendState> accumulateBlendState = nullptr;
+	std::vector<D3D11_INPUT_ELEMENT_DESC> accumulateInputDesc;
+	winrt::com_ptr<ID3D11InputLayout> accumulateInputLayout = nullptr;
 
 	// Drawing voxels
 	eastl::unique_ptr<Buffer> voxelDrawVertexBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelDrawInstanceBuffer = nullptr;
-	std::vector<D3D11_INPUT_ELEMENT_DESC> voxelDrawInputDesc;
-	eastl::unique_ptr<Buffer> voxelDrawIndirectArgsBuffer = nullptr;
+	std::vector<D3D11_INPUT_ELEMENT_DESC> voxelInputDesc;
 	winrt::com_ptr<ID3D11InputLayout> voxelDrawInputLayout = nullptr;
 	winrt::com_ptr<ID3D11DepthStencilState> voxelDrawDSS = nullptr;
 

@@ -50,13 +50,14 @@ void main(
     
     GS_OUTPUT output[3];
     
-    uint i = 0;
+    float3 center = Min + (Size.xxx * 0.5f);
     
+    uint i = 0;
     [unroll]
     for (i = 0; i < 3; ++i)
     {
         // World space -> Voxel grid space:
-        float3 coord = (input[i].PositionWS.xyz - Min) * SizeInv * Res;
+        float3 coord = (input[i].PositionWS.xyz - center) * SizeInv * Res;
    
         output[i].Position.xyz = coord;
 

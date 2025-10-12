@@ -281,6 +281,67 @@ public:
 	winrt::com_ptr<ID3D11DepthStencilView> dsv;
 };
 
+class Texture2DArray
+{
+public:
+	explicit Texture2DArray(D3D11_TEXTURE2D_DESC const& a_desc) :
+		desc(a_desc)
+	{
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateTexture2D(&desc, nullptr, resource.put()));
+	}
+
+	explicit Texture2DArray(ID3D11Texture2D* a_resource)
+	{
+		a_resource->GetDesc(&desc);
+		resource.attach(a_resource);
+	}
+
+	ID3D11ShaderResourceView* SRV(size_t i = 0) const { return srvs[i].get(); }
+	ID3D11UnorderedAccessView* UAV(size_t i = 0) const { return uavs[i].get(); }
+	ID3D11RenderTargetView* RTV(size_t i = 0) const { return rtvs[i].get(); }
+	ID3D11DepthStencilView* DSV(size_t i = 0) const { return dsvs[i].get(); }
+
+	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
+	{
+		auto device = globals::d3d::device;
+		winrt::com_ptr<ID3D11ShaderResourceView> srv;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+		srvs.push_back(srv);
+	}
+
+	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
+	{
+		auto device = globals::d3d::device;
+		winrt::com_ptr<ID3D11UnorderedAccessView> uav;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
+		uavs.push_back(uav);
+	}
+
+	void CreateRTV(D3D11_RENDER_TARGET_VIEW_DESC const& a_desc)
+	{
+		auto device = globals::d3d::device;
+		winrt::com_ptr<ID3D11RenderTargetView> rtv;
+		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
+		rtvs.push_back(rtv);
+	}
+
+	void CreateDSV(D3D11_DEPTH_STENCIL_VIEW_DESC const& a_desc)
+	{
+		auto device = globals::d3d::device;
+		winrt::com_ptr<ID3D11DepthStencilView> dsv;
+		DX::ThrowIfFailed(device->CreateDepthStencilView(resource.get(), &a_desc, dsv.put()));
+		dsvs.push_back(dsv);
+	}
+
+	D3D11_TEXTURE2D_DESC desc;
+	winrt::com_ptr<ID3D11Texture2D> resource;
+	std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> srvs;
+	std::vector<winrt::com_ptr<ID3D11UnorderedAccessView>> uavs;
+	std::vector<winrt::com_ptr<ID3D11RenderTargetView>> rtvs;
+	std::vector<winrt::com_ptr<ID3D11DepthStencilView>> dsvs;
+};
+
 class Texture3D
 {
 public:

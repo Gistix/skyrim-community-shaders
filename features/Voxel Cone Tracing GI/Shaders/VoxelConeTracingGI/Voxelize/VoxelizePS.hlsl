@@ -64,6 +64,7 @@ SamplerState SampColorSampler : register(s0);
 SamplerState SampGlowSampler : register(s6);
 
 AppendStructuredBuffer<Voxel> Voxels : register(u0);
+RWByteAddressBuffer VoxelAccumCount : register(u1);
 
 void main(PS_INPUT input)
 {  
@@ -85,10 +86,15 @@ void main(PS_INPUT input)
 	
     float2 uv = input.TexCoord0.xy;
 
+	uint index = coord.x + (coord.y * SharedData::voxelConeTracingGISettings.Res) + (coord.z * SharedData::voxelConeTracingGISettings.Res * SharedData::voxelConeTracingGISettings.Res);
+	
     Voxel voxel;
 	voxel.Coord = coord;
     voxel.Albedo = TexColorSampler.Sample(SampColorSampler, uv).rgb;
 	voxel.Emission = EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb;
     voxel.Normal = input.NormalWS.xyz;
     Voxels.Append(voxel);
+	
+	uint originalValue;
+	VoxelAccumCount.InterlockedAdd(index * 4, 1, originalValue);
 }

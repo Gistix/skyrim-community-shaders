@@ -3,11 +3,11 @@
 
 struct VS_IN
 {
-    float3 Position : POSITION;       // cube vertex pos
-    uint3 Coord : VOXELCOORD; // instance voxel index
-    float3 Albedo : VOXELALBEDO;   // instance color/albedo
-    float3 Emission : VOXELEMISSION; // instance emission color
-    float3 Normal : VOXELNORMAL;    // instance normal vector
+    float3 Position : POSITION;
+    uint3 Coord : VOXELCOORD;
+    float3 Albedo : VOXELALBEDO;
+    float3 Emission : VOXELEMISSION;
+    float3 Normal : VOXELNORMAL;
 };
 
 struct VS_OUT
@@ -15,7 +15,7 @@ struct VS_OUT
     float4 Position : SV_POSITION;
     float3 Albedo : COLOR0;
     float3 Emission : COLOR1;
-    float3 Normal : NORMAL;  // or another semantic as you want
+    float3 Normal : NORMAL;
 };
 
 cbuffer VertexCB : register(b0)
