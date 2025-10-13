@@ -403,7 +403,7 @@ void VoxelConeTracingGI::SetupResources()
 				.Height = lod0Resolution,
 				.MipLevels = 1,
 				.ArraySize = 3, // Albedo, Emission and Normal
-				.Format = DXGI_FORMAT_R32G32B32A32_FLOAT,
+				.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
 				.SampleDesc = {
 					.Count = 1,
 					.Quality = 0 
@@ -664,18 +664,42 @@ DirectX::XMMATRIX GetXMFromNiTransform(const RE::NiTransform& Transform)
 
 void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass)
 {
+	const auto shaderType = This->shaderType.get();
+
 	logger::debug(
 		"BSShader_SetupGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
 		reinterpret_cast<uintptr_t>(This),
 		reinterpret_cast<uintptr_t>(Pass),
-		magic_enum::enum_name(This->shaderType.get()));
+		magic_enum::enum_name(shaderType));
 
 	const auto geometry = Pass->geometry;
 	const auto triShape = geometry->AsTriShape();
+
+	if (triShape == nullptr) {
+		logger::debug(
+			"BSShader_SetupGeometry - nullptr triShape for Pass: [0x{:x}], Shader [0x{:x}]: {}, Geometry [0x{:x}]: {}",
+			reinterpret_cast<uintptr_t>(Pass),
+			reinterpret_cast<uintptr_t>(This),
+			magic_enum::enum_name(shaderType),
+			reinterpret_cast<uintptr_t>(geometry),
+			geometry->name.c_str());
+
+		return;
+	}
+
 	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
 
-	if (rendererData == nullptr)
+	if (rendererData == nullptr) {
+		logger::debug(
+			"BSShader_SetupGeometry - nullptr rendererData for Pass: [0x{:x}], Shader [0x{:x}]: {}, Geometry [0x{:x}]: {}",
+			reinterpret_cast<uintptr_t>(Pass),
+			reinterpret_cast<uintptr_t>(This),
+			magic_enum::enum_name(shaderType),
+			reinterpret_cast<uintptr_t>(geometry),
+			geometry->name.c_str());
+
 		return;
+	}
 
 	auto it = cachedTriShapes.find(rendererData);
 
@@ -690,16 +714,64 @@ void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRender
 
 void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass)
 {
+	const auto shaderType = This->shaderType.get();
+
 	logger::debug(
 		"BSShader_RestoreGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
 		reinterpret_cast<uintptr_t>(This),
 		reinterpret_cast<uintptr_t>(Pass),
 		magic_enum::enum_name(This->shaderType.get()));
 
+	// Vertex Shader
+	auto vs = voxelizeVertex.find(shaderType);
+
+	if (vs == voxelizeVertex.end())
+		return;
+
+	auto vertexShaderVariants = vs->second;
+
+	// Pixel Shader
+	auto ps = voxelizePixel.find(shaderType);
+
+	if (ps == voxelizePixel.end())
+		return;
+
+	auto pixelShaderVariants = ps->second;
+
 	const auto geometry = Pass->geometry;
 	const auto triShape = geometry->AsTriShape();
 	const auto triShapeRuntime = triShape->GetTrishapeRuntimeData();
 	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
+
+	std::map<std::string, std::string> shaderDefines;
+
+	RE::BSShaderProperty* shaderProperty = Pass->shaderProperty;
+
+	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
+		shaderDefines.emplace("SKINNED", "");
+	}
+
+	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kModelSpaceNormals)) {
+		shaderDefines.emplace("MODELSPACENORMALS", "");
+	}
+
+	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kGlowMap)) {
+		shaderDefines.emplace("GLOWMAP", "");
+	}
+
+	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors)) {
+		shaderDefines.emplace("VC", "");
+	}
+
+	auto vertexShader = vertexShaderVariants.Get(shaderDefines);
+	
+	if (vertexShader == nullptr)
+		return;
+
+	auto pixelShader = pixelShaderVariants.Get(shaderDefines);
+
+	if (pixelShader == nullptr)
+		return;
 
 	logger::debug(
 		"BSLightingShader_RestoreGeometry - Geometry: [0x{:x}], BSTriShape: [0x{:x}], BSGraphics::TriShape: [0x{:x}]",
@@ -751,9 +823,9 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	context->VSGetShader(&prevVertex, nullptr, nullptr);
 	context->PSGetShader(&prevPixel, nullptr, nullptr);
 
-	context->VSSetShader(voxelizeVertex.get(), nullptr, 0);
+	context->VSSetShader(vertexShader.get(), nullptr, 0);
 	context->GSSetShader(voxelizeGeometry.get(), nullptr, 0);
-	context->PSSetShader(voxelizePixel.get(), nullptr, 0);
+	context->PSSetShader(pixelShader.get(), nullptr, 0);
 
 	context->RSSetState(voxelRasterState.get());
 
@@ -1293,37 +1365,46 @@ void VoxelConeTracingGI::ClearShaderCache()
 	CompileShaders();
 }
 
+template <typename T>
+void VoxelConeTracingGI::CompileShader(winrt::com_ptr<T>* programPtr, const wchar_t* path, const char* programType, std::vector<std::pair<const char*, const char*>> defines, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr)
+{
+	if (auto rawPtr = reinterpret_cast<T*>(Util::CompileShader(path, defines, programType, "main", inputDesc, inputLayoutPtr ? inputLayoutPtr->put() : nullptr)))
+		programPtr->attach(rawPtr);
+}
+
 void VoxelConeTracingGI::CompileShaders()
 {
-	auto compileShader = [&]<typename T>(winrt::com_ptr<T>* programPtr, const std::filesystem::path& folderPath, std::string_view filename, const char* programType, std::vector<std::pair<const char*, const char*>> defines = {}, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc = {}, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr = nullptr) {
-		auto path = folderPath / filename;
-		
-		if (auto rawPtr = reinterpret_cast<T*>(Util::CompileShader(path.c_str(), defines, programType, "main", inputDesc, inputLayoutPtr ? inputLayoutPtr->put() : nullptr)))
-			programPtr->attach(rawPtr);	
-	};
-
 	auto folderPath = std::filesystem::path("Data\\Shaders\\VoxelConeTracingGI");
 
 	auto voxelizationFolderPath = folderPath / "Voxelize";
-	compileShader(&voxelizeVertex, voxelizationFolderPath, "VoxelizeVS.hlsl", "vs_5_0");
-	compileShader(&voxelizeGeometry, voxelizationFolderPath, "VoxelizeGS.hlsl", "gs_5_0");
-	compileShader(&voxelizePixel, voxelizationFolderPath, "VoxelizePS.hlsl", "ps_5_0");
+
+	const std::vector<std::pair<const char*, const char*>> shaderDefines = { 
+		{ "SKINNED", "" },
+		{ "MODELSPACENORMALS", "" },
+		{ "GLOWMAP", "" },
+		{ "VC", "" }		
+	};
+
+	voxelizeVertex.emplace(RE::BSShader::Type::Lighting, ShaderVariants<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Lighting.hlsl", shaderDefines));
+	voxelizePixel.emplace(RE::BSShader::Type::Lighting, ShaderVariants<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.Lighting.hlsl", shaderDefines));
+
+	CompileShader(&voxelizeGeometry, (voxelizationFolderPath / "VoxelizeGS.hlsl").c_str(), "gs_5_0");
 
 	auto accumulateFolderPath = folderPath / "Accumulate";
-	compileShader(&accumulateVertex, accumulateFolderPath, "AccumulateVS.hlsl", "vs_5_0", {}, accumulateInputDesc, &accumulateInputLayout);
-	compileShader(&accumulatePixel, accumulateFolderPath, "AccumulatePS.hlsl", "ps_5_0");
+	CompileShader(&accumulateVertex, (accumulateFolderPath / "AccumulateVS.hlsl").c_str(), "vs_5_0", {}, accumulateInputDesc, &accumulateInputLayout);
+	CompileShader(&accumulatePixel, (accumulateFolderPath / "AccumulatePS.hlsl").c_str(), "ps_5_0");
 
 	auto debugFolderpath = folderPath / "Debug";
-	compileShader(&drawVertex, debugFolderpath, "DrawVS.hlsl", "vs_5_0", {}, voxelInputDesc, &voxelDrawInputLayout);
+	CompileShader(&drawVertex, (debugFolderpath / "DrawVS.hlsl").c_str(), "vs_5_0", {}, voxelInputDesc, &voxelDrawInputLayout);
 
 	for (size_t i = 0; i < drawPixelVariants.size(); i++) {
-		compileShader(&drawPixelVariants[i], debugFolderpath, "DrawPS.hlsl", "ps_5_0", { { "DRAW_MODE", std::to_string(i).c_str() } });
+		CompileShader(&drawPixelVariants[i], (debugFolderpath / "DrawPS.hlsl").c_str(), "ps_5_0", { { "DRAW_MODE", std::to_string(i).c_str() } });
 	}
 
-	compileShader(&voxelizeCompute, folderPath , "VoxelizeCS.hlsl", "cs_5_0");
-	compileShader(&voxelArgsCompute, folderPath , "VoxelArgsCS.hlsl", "cs_5_0");
-	compileShader(&injectLightCompute, folderPath , "InjectLightingCS.hlsl", "cs_5_0");
-	compileShader(&debugCompute, folderPath , "DebugCS.hlsl", "cs_5_0");
+	CompileShader(&voxelizeCompute, (folderPath / "VoxelizeCS.hlsl").c_str(), "cs_5_0");
+	CompileShader(&voxelArgsCompute, (folderPath / "VoxelArgsCS.hlsl").c_str(), "cs_5_0");
+	CompileShader(&injectLightCompute, (folderPath / "InjectLightingCS.hlsl").c_str(), "cs_5_0");
+	CompileShader(&debugCompute, (folderPath / "DebugCS.hlsl").c_str(), "cs_5_0");
 }
 
 RE::BSEventNotifyControl VoxelConeTracingGI::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)

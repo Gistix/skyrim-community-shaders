@@ -1,9 +1,25 @@
+#include "Common/Skinned.hlsli"
+
 struct VS_INPUT
 {
 	float4 Position		: POSITION;
 	float2 TexCoord0	: TEXCOORD0;
-	float3 Normal		: NORMAL;
-	float3 Binormal		: BINORMAL;
+#if !defined(MODELSPACENORMALS)
+	float4 Normal : NORMAL0;
+	float4 Bitangent : BINORMAL0;
+#endif  // !MODELSPACENORMALS
+
+#if defined(VC)
+	float4 Color : COLOR0;
+#	if defined(LANDSCAPE)
+	float4 LandBlendWeights1 : TEXCOORD2;
+	float4 LandBlendWeights2 : TEXCOORD3;
+#	endif  // LANDSCAPE
+#endif      // VC
+#if defined(SKINNED)
+	float4 BoneWeights : BLENDWEIGHT0;
+	float4 BoneIndices : BLENDINDICES0;
+#endif  // SKINNED
 };
 
 struct VS_OUTPUT
@@ -23,7 +39,7 @@ cbuffer PerMaterial : register(b1)
 
 cbuffer PerGeometry : register(b2)
 {
-#	if !defined(VR)
+#if !defined(VR)
 	row_major float3x4 World[1] : packoffset(c0);
 	row_major float3x4 PreviousWorld[1] : packoffset(c3);
 	float4 EyePosition[1] : packoffset(c6);
@@ -33,7 +49,7 @@ cbuffer PerGeometry : register(b2)
 	row_major float3x4 TextureProj[1] : packoffset(c10);
 	float IndexScale : packoffset(c13);
 	float4 WorldMapOverlayParameters : packoffset(c14);
-#	else   // VR has 49 vs 30 entries
+#else   // VR has 49 vs 30 entries
 	row_major float3x4 World[2] : packoffset(c0);
 	row_major float3x4 PreviousWorld[2] : packoffset(c6);
 	float4 EyePosition[2] : packoffset(c12);
@@ -43,16 +59,25 @@ cbuffer PerGeometry : register(b2)
 	row_major float3x4 TextureProj[2] : packoffset(c17);
 	float IndexScale : packoffset(c23);
 	float4 WorldMapOverlayParameters : packoffset(c24);
-#	endif  // VR
+#endif  // VR
 };
 
 VS_OUTPUT main(VS_INPUT input)
 {
+	uint eyeIndex = 0;
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 	
+#if defined(SKINNED)
+	precise int4 actualIndices = 765.01.xxxx * input.BoneIndices.xyzw;
+
+	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, actualIndices, BonesPivot[eyeIndex], input.BoneWeights);
+	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
+#else   // !SKINNED
+	precise float4 worldPosition = float4(mul(World[eyeIndex], inputPosition), 1);
+#endif  // SKINNED	
+
 	VS_OUTPUT vsout;
-	vsout.PositionWS = float4(mul(World[0], inputPosition), 1.0);
-	//vsout.TexCoord0 = input.TexCoord0;
+	vsout.PositionWS = worldPosition;
 
 	float4 uv = float4(input.TexCoord0 * TexcoordOffset.zw + TexcoordOffset.xy, 0, 0);
 #if defined(LANDSCAPE)
@@ -63,7 +88,37 @@ VS_OUTPUT main(VS_INPUT input)
 #endif
 	vsout.TexCoord0 = uv;
 	
+#if defined(SKINNED)
+	float3x3 boneRSMatrix = Skinned::GetBoneRSMatrix(Bones, actualIndices, input.BoneWeights);
+#endif	
+	
+#if defined(MODELSPACENORMALS)
+    vsout.NormalWS = float3(0, 0, 1); // Or any debug normal direction
+#else // MODELSPACENORMALS not defined
+
+    #if defined(SKINNED)
+        // Skinned mesh: transform normal using boneRSMatrix
+        float3x3 boneRSMatrixTr = transpose(boneRSMatrix);
+        float3x3 normalMatrix = transpose(
+			float3x3(
+				normalize(boneRSMatrixTr[0]),
+				normalize(boneRSMatrixTr[1]),
+				normalize(boneRSMatrixTr[2])
+			)
+		);
+    #else
+        float3x3 normalMatrix = (float3x3)World[0];     
+    #endif
+	
+	vsout.NormalWS = normalize(mul(normalMatrix, input.Normal.xyz));
+#endif
+
+#if defined(VC)
+	vsout.Color = input.Color;
+#else
+	vsout.Color = 1.0.xxxx;
+#endif  // VC	
+	
 	vsout.NormalWS = normalize(mul((float3x3)World[0], input.Normal.xyz));
-	vsout.Color = float4(0, 0, 0, 0);
 	return vsout;
 }

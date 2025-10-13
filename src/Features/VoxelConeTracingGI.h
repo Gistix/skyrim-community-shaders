@@ -54,8 +54,10 @@ struct VoxelConeTracingGI : public Feature
 	virtual void ClearShaderCache() override;
 	void CompileShaders();
 
+	template <typename T>
+	static void CompileShader(winrt::com_ptr<T>* programPtr, const wchar_t* path, const char* programType, std::vector<std::pair<const char*, const char*>> defines = {}, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc = {}, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr = nullptr);
+
 	// Do stuff
-	void Voxelize();
 	void VoxelArgs();
 	void InjectLighting();
 	void Debug();
@@ -221,9 +223,116 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> debugCB = nullptr;
 
-	winrt::com_ptr<ID3D11VertexShader> voxelizeVertex = nullptr;
+	/*struct Shader
+	{
+		template <typename ID3D11DeviceChild>
+		Shader(const std::filesystem::path& folder, const char* name, std::vector<std::pair<const char*, const char*>> defines)
+		{
+			CompileShader(&vertex, (folder / std::format("{}VS.hlsl", name)).c_str(), "vs_5_0", defines);
+			CompileShader(&geometry, (folder / std::format("{}GS.hlsl", name)).c_str(), "gs_5_0", defines);
+			CompileShader(&pixel, (folder / std::format("{}PS.hlsl", name)).c_str(), "ps_5_0", defines);			
+		}
+
+		winrt::com_ptr<ID3D11VertexShader> vertex = nullptr;
+		winrt::com_ptr<ID3D11GeometryShader> geometry = nullptr;
+		winrt::com_ptr<ID3D11PixelShader> pixel = nullptr;
+	};*/
+
+	template <typename T>
+	struct ShaderProfile;
+
+	template <>
+	struct ShaderProfile<ID3D11VertexShader>
+	{
+		static constexpr const char* Profile = "vs_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11PixelShader>
+	{
+		static constexpr const char* Profile = "ps_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11GeometryShader>
+	{
+		static constexpr const char* Profile = "gs_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11ComputeShader>
+	{
+		static constexpr const char* Profile = "cs_5_0";
+	};
+
+	template <typename T>
+	struct PipelineShader
+	{
+		PipelineShader(const std::filesystem::path& path, const std::map<std::string, std::string>& defines)
+		{
+			std::vector<std::string> names;
+			std::vector<std::string> values;
+			std::vector<std::pair<const char*, const char*>> definesChar;
+
+			names.reserve(defines.size());
+			values.reserve(defines.size());
+			definesChar.reserve(defines.size());
+
+			for (const auto& [name, value] : defines) {
+				names.push_back(name);
+				values.push_back(value);
+				definesChar.emplace_back(names.back().c_str(), values.back().c_str());
+			}
+
+			CompileShader(&shader, path.c_str(), ShaderProfile<T>::Profile, definesChar);
+		}
+
+		winrt::com_ptr<T> Get() const
+		{
+			return shader;
+		}
+
+		winrt::com_ptr<T> shader = nullptr;
+	};
+
+	template <typename T>
+	struct ShaderVariants
+	{
+		ShaderVariants(const std::filesystem::path& path, const std::vector<std::pair<const char*, const char*>>& defines)
+		{
+			const size_t defineCount = defines.size();
+			const size_t combinations = static_cast<size_t>(1) << defineCount;
+
+			for (size_t mask = 0; mask < combinations; ++mask) {
+				std::map<std::string, std::string> activeDefines;
+
+				for (size_t i = 0; i < defineCount; ++i) {
+					if (mask & (static_cast<size_t>(1) << i)) {
+						activeDefines.emplace(defines[i].first, defines[i].second);
+					}
+				}
+
+				shaders.emplace(activeDefines, PipelineShader<T>(path, activeDefines));
+			}
+		}
+
+		winrt::com_ptr<T> Get(const std::map<std::string, std::string>& defines) const
+		{
+			auto it = shaders.find(defines);
+
+			if (it != shaders.end())
+				return it->second.Get();
+
+			return nullptr;
+		}
+
+		std::map<std::map<std::string, std::string>, PipelineShader<T>> shaders;
+	};
+
+
+	std::map<RE::BSShader::Type, ShaderVariants<ID3D11VertexShader>> voxelizeVertex;
 	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
-	winrt::com_ptr<ID3D11PixelShader> voxelizePixel = nullptr;
+	std::map<RE::BSShader::Type, ShaderVariants<ID3D11PixelShader>> voxelizePixel;
 
 	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
 	//winrt::com_ptr<ID3D11PixelShader> drawPixel = nullptr;
@@ -347,7 +456,12 @@ struct VoxelConeTracingGI : public Feature
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 
 			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
+			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
+			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
+
 			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
+			//stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
+			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
 
 			if (REL::Module::IsAE()) {
 				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);

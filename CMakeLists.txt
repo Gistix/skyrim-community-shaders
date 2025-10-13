@@ -193,7 +193,7 @@ function(get_shader_profile_from_name FILENAME OUT_PROFILE)
     get_filename_component(SHADER_NAME ${FILENAME} NAME_WLE)
 
     # Try to match CamelCase format like ShaderVS
-    string(REGEX MATCH ".*(VS|PS|GS|CS)$" _ ${SHADER_NAME})
+    string(REGEX MATCH ".*(VS|PS|GS|CS)(\\..+)?$" _ ${SHADER_NAME})
     set(SUFFIX ${CMAKE_MATCH_1})
 
     # If that fails, try dot style like blur.cs (case-insensitive)
