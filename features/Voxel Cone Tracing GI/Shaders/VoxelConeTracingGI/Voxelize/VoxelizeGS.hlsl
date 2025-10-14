@@ -33,16 +33,13 @@ cbuffer GeometryCB : register(b0)
 };
 
 [maxvertexcount(3)]
-void main(
-	triangle GS_INPUT input[3],
-	inout TriangleStream<GS_OUTPUT> outputStream
-)
+void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStream)
 {
     float3 facenormal = abs(input[0].NormalWS + input[1].NormalWS + input[2].NormalWS);
 
-    uint maxi = facenormal[1] > facenormal[0] ? 1 : 0;
-    maxi = facenormal[2] > facenormal[maxi] ? 2 : maxi;
-
+    uint maxi = facenormal.y > facenormal.x ? 1 : 0;
+    maxi = facenormal.z > facenormal[maxi] ? 2 : maxi;
+    
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
@@ -57,9 +54,7 @@ void main(
     for (i = 0; i < 3; ++i)
     {
         // World space -> Voxel grid space:
-        float3 coord = (input[i].PositionWS.xyz - center) * SizeInv * Res;
-   
-        output[i].Position.xyz = coord;
+        output[i].Position.xyz = (input[i].PositionWS.xyz - center) * SizeInv * Res * 2.0;
 
 		// Project onto dominant axis:
 		[flatten]
@@ -88,8 +83,9 @@ void main(
     {
 		// Voxel grid space -> Clip space
         output[i].Position.xy *= ResInv;
-        output[i].Position.zw = float2(1, 1);
-		
+        output[i].Position.z = 0.0f;
+		output[i].Position.w = 1.0f;
+        
         output[i].TexCoord0 = input[i].TexCoord0;
         
         output[i].PositionWS = input[i].PositionWS;
@@ -104,6 +100,4 @@ void main(
          
         outputStream.Append(output[i]);    
     }
-    
-    //outputStream.RestartStrip();
 }
