@@ -220,7 +220,7 @@ endfunction()
 
 # Adds a custom command to validate shader compilation
 function(validate_shader SHADER_FILE INCLUDE_DIR)
-    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+    get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WLE)
     get_shader_profile_from_name(${SHADER_FILE} PROFILE)
 
     add_custom_command(

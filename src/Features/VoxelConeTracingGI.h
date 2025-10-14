@@ -17,6 +17,128 @@
 #pragma once
 
 #include "PCH.h"
+#include "ShaderCache.h"
+
+namespace ShaderUtils
+{
+	template <typename T>
+	struct ShaderProfile;
+
+	template <>
+	struct ShaderProfile<ID3D11VertexShader>
+	{
+		static constexpr const char* Profile = "vs_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11PixelShader>
+	{
+		static constexpr const char* Profile = "ps_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11GeometryShader>
+	{
+		static constexpr const char* Profile = "gs_5_0";
+	};
+
+	template <>
+	struct ShaderProfile<ID3D11ComputeShader>
+	{
+		static constexpr const char* Profile = "cs_5_0";
+	};
+
+	template <typename T>
+	struct PipelineShader
+	{
+		PipelineShader(const std::filesystem::path& path, const std::map<std::string, std::string>& defines)
+		{
+			std::vector<std::string> names;
+			std::vector<std::string> values;
+			std::vector<std::pair<const char*, const char*>> definesChar;
+
+			names.reserve(defines.size());
+			values.reserve(defines.size());
+			definesChar.reserve(defines.size());
+
+			for (const auto& [name, value] : defines) {
+				names.push_back(name);
+				values.push_back(value);
+				definesChar.emplace_back(names.back().c_str(), values.back().c_str());
+			}
+
+			VoxelConeTracingGI::CompileShader(&shader, path.c_str(), ShaderProfile<T>::Profile, definesChar);
+		}
+
+		winrt::com_ptr<T> Get() const
+		{
+			return shader;
+		}
+
+		winrt::com_ptr<T> shader = nullptr;
+	};
+
+	inline std::string format_map(const std::map<std::string, std::string>& m)
+	{
+		std::string result = "{";
+		bool first = true;
+		for (const auto& [k, v] : m) {
+			if (!first)
+				result += ", ";
+			result += std::format("\"{}\": \"{}\"", k, v);
+			first = false;
+		}
+		result += "}";
+		return result;
+	}
+
+	template <typename T>
+	struct ShaderPermutations
+	{
+		ShaderPermutations(const std::filesystem::path& path, const std::vector<std::pair<const char*, const char*>>& defines)
+		{
+			const size_t defineCount = defines.size();
+			const size_t combinations = static_cast<size_t>(1) << defineCount;
+
+			for (size_t mask = 0; mask < combinations; ++mask) {
+				std::map<std::string, std::string> activeDefines;
+
+				for (size_t i = 0; i < defineCount; ++i) {
+					if (mask & (static_cast<size_t>(1) << i)) {
+						activeDefines.emplace(defines[i].first, defines[i].second);
+					}
+				}
+
+				logger::info("Creating shader with active defines: {}", format_map(activeDefines));
+
+				shaders.emplace(activeDefines, PipelineShader<T>(path, activeDefines));
+			}
+		}
+
+		winrt::com_ptr<T> Get(const std::map<std::string, std::string>& defines) const
+		{
+			auto it = shaders.find(defines);
+
+			if (it != shaders.end())
+				return it->second.Get();
+
+			return nullptr;
+		}
+
+		std::map<std::map<std::string, std::string>, PipelineShader<T>> shaders;
+	};
+
+	template <typename Inserter>
+	void CollectShaderDefines(std::span<D3D_SHADER_MACRO> defines, Inserter inserter)
+	{
+		for (const auto& define: defines) {
+			if (define.Name == nullptr)
+				break;
+
+			inserter(define.Name, define.Definition == nullptr ? "" : define.Definition);
+		}
+	}
+};
 
 struct VoxelConeTracingGI : public Feature
 {
@@ -76,6 +198,11 @@ struct VoxelConeTracingGI : public Feature
 	void PostProcess();
 
 	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
+
+	uint32_t GetDescriptor(const RE::BSShader::Type& shaderType);
+
+	template <typename T>
+	std::vector<std::pair<T, T>> GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor);
 
 	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
 	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
@@ -223,119 +350,11 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> debugCB = nullptr;
 
-	/*struct Shader
-	{
-		template <typename ID3D11DeviceChild>
-		Shader(const std::filesystem::path& folder, const char* name, std::vector<std::pair<const char*, const char*>> defines)
-		{
-			CompileShader(&vertex, (folder / std::format("{}VS.hlsl", name)).c_str(), "vs_5_0", defines);
-			CompileShader(&geometry, (folder / std::format("{}GS.hlsl", name)).c_str(), "gs_5_0", defines);
-			CompileShader(&pixel, (folder / std::format("{}PS.hlsl", name)).c_str(), "ps_5_0", defines);			
-		}
-
-		winrt::com_ptr<ID3D11VertexShader> vertex = nullptr;
-		winrt::com_ptr<ID3D11GeometryShader> geometry = nullptr;
-		winrt::com_ptr<ID3D11PixelShader> pixel = nullptr;
-	};*/
-
-	template <typename T>
-	struct ShaderProfile;
-
-	template <>
-	struct ShaderProfile<ID3D11VertexShader>
-	{
-		static constexpr const char* Profile = "vs_5_0";
-	};
-
-	template <>
-	struct ShaderProfile<ID3D11PixelShader>
-	{
-		static constexpr const char* Profile = "ps_5_0";
-	};
-
-	template <>
-	struct ShaderProfile<ID3D11GeometryShader>
-	{
-		static constexpr const char* Profile = "gs_5_0";
-	};
-
-	template <>
-	struct ShaderProfile<ID3D11ComputeShader>
-	{
-		static constexpr const char* Profile = "cs_5_0";
-	};
-
-	template <typename T>
-	struct PipelineShader
-	{
-		PipelineShader(const std::filesystem::path& path, const std::map<std::string, std::string>& defines)
-		{
-			std::vector<std::string> names;
-			std::vector<std::string> values;
-			std::vector<std::pair<const char*, const char*>> definesChar;
-
-			names.reserve(defines.size());
-			values.reserve(defines.size());
-			definesChar.reserve(defines.size());
-
-			for (const auto& [name, value] : defines) {
-				names.push_back(name);
-				values.push_back(value);
-				definesChar.emplace_back(names.back().c_str(), values.back().c_str());
-			}
-
-			CompileShader(&shader, path.c_str(), ShaderProfile<T>::Profile, definesChar);
-		}
-
-		winrt::com_ptr<T> Get() const
-		{
-			return shader;
-		}
-
-		winrt::com_ptr<T> shader = nullptr;
-	};
-
-	template <typename T>
-	struct ShaderVariants
-	{
-		ShaderVariants(const std::filesystem::path& path, const std::vector<std::pair<const char*, const char*>>& defines)
-		{
-			const size_t defineCount = defines.size();
-			const size_t combinations = static_cast<size_t>(1) << defineCount;
-
-			for (size_t mask = 0; mask < combinations; ++mask) {
-				std::map<std::string, std::string> activeDefines;
-
-				for (size_t i = 0; i < defineCount; ++i) {
-					if (mask & (static_cast<size_t>(1) << i)) {
-						activeDefines.emplace(defines[i].first, defines[i].second);
-					}
-				}
-
-				shaders.emplace(activeDefines, PipelineShader<T>(path, activeDefines));
-			}
-		}
-
-		winrt::com_ptr<T> Get(const std::map<std::string, std::string>& defines) const
-		{
-			auto it = shaders.find(defines);
-
-			if (it != shaders.end())
-				return it->second.Get();
-
-			return nullptr;
-		}
-
-		std::map<std::map<std::string, std::string>, PipelineShader<T>> shaders;
-	};
-
-
-	std::map<RE::BSShader::Type, ShaderVariants<ID3D11VertexShader>> voxelizeVertex;
+	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11VertexShader>> voxelizeVertex;
 	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
-	std::map<RE::BSShader::Type, ShaderVariants<ID3D11PixelShader>> voxelizePixel;
+	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11PixelShader>> voxelizePixel;
 
 	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
-	//winrt::com_ptr<ID3D11PixelShader> drawPixel = nullptr;
 	std::array<winrt::com_ptr<ID3D11PixelShader>, VoxelDrawMode::Count> drawPixelVariants;
 
 	winrt::com_ptr<ID3D11VertexShader> accumulateVertex = nullptr;
@@ -383,8 +402,8 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
 	eastl::unique_ptr<Texture2D> debugTex = nullptr;
 
-	eastl::hash_set<RE::BSGraphics::TriShape*> cachedTriShapes;
-	eastl::hash_set<RE::BSGraphics::TriShape*> queuedTriShapes;
+	eastl::hash_set<RE::BSTriShape*> cachedTriShapes;
+	eastl::hash_set<RE::BSTriShape*> queuedTriShapes;
 
 	struct History
 	{

@@ -62,6 +62,25 @@ cbuffer PerGeometry : register(b2)
 #endif  // VR
 };
 
+cbuffer VS_PerFrame : register(b12)
+{
+#	if !defined(VR)
+	row_major float3x3 ScreenProj[1] : packoffset(c0);
+	row_major float4x4 ViewProj[1] : packoffset(c8);
+#		if defined(SKINNED)
+	float3 BonesPivot[1] : packoffset(c40);
+	float3 PreviousBonesPivot[1] : packoffset(c41);
+#		endif  // SKINNED
+#	else
+	row_major float3x3 ScreenProj[2] : packoffset(c0);
+	row_major float4x4 ViewProj[2] : packoffset(c16);
+#		if defined(SKINNED)
+	float3 BonesPivot[2] : packoffset(c80);
+	float3 PreviousBonesPivot[2] : packoffset(c82);
+#		endif  // SKINNED
+#	endif      // VR
+};
+
 VS_OUTPUT main(VS_INPUT input)
 {
 	uint eyeIndex = 0;
@@ -119,6 +138,5 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.Color = 1.0.xxxx;
 #endif  // VC	
 	
-	vsout.NormalWS = normalize(mul((float3x3)World[0], input.Normal.xyz));
 	return vsout;
 }

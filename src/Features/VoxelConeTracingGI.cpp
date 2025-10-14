@@ -15,6 +15,7 @@
 #include "Deferred.h"
 #include "Utils/UI.h"
 #include "Utils/Format.h"
+#include "ShaderCache.h"
 
 using namespace std::chrono;
 
@@ -666,61 +667,39 @@ void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRender
 {
 	const auto shaderType = This->shaderType.get();
 
-	logger::debug(
-		"BSShader_SetupGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
-		reinterpret_cast<uintptr_t>(This),
-		reinterpret_cast<uintptr_t>(Pass),
-		magic_enum::enum_name(shaderType));
-
 	const auto geometry = Pass->geometry;
 	const auto triShape = geometry->AsTriShape();
 
-	if (triShape == nullptr) {
-		logger::debug(
+	if (triShape == nullptr){
+		logger::warn(
 			"BSShader_SetupGeometry - nullptr triShape for Pass: [0x{:x}], Shader [0x{:x}]: {}, Geometry [0x{:x}]: {}",
 			reinterpret_cast<uintptr_t>(Pass),
 			reinterpret_cast<uintptr_t>(This),
 			magic_enum::enum_name(shaderType),
 			reinterpret_cast<uintptr_t>(geometry),
-			geometry->name.c_str());
-
-		return;
+			geometry->name.c_str());		
 	}
 
-	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
-
-	if (rendererData == nullptr) {
-		logger::debug(
-			"BSShader_SetupGeometry - nullptr rendererData for Pass: [0x{:x}], Shader [0x{:x}]: {}, Geometry [0x{:x}]: {}",
-			reinterpret_cast<uintptr_t>(Pass),
-			reinterpret_cast<uintptr_t>(This),
-			magic_enum::enum_name(shaderType),
-			reinterpret_cast<uintptr_t>(geometry),
-			geometry->name.c_str());
-
-		return;
-	}
-
-	auto it = cachedTriShapes.find(rendererData);
+	auto it = cachedTriShapes.find(triShape);
 
 	// TriShape not cached, lets add to cache and queue
 	if (it == cachedTriShapes.end()) {
-		cachedTriShapes.emplace(rendererData);
-		queuedTriShapes.emplace(rendererData);
+		cachedTriShapes.emplace(triShape);
+		queuedTriShapes.emplace(triShape);
 	} else if (settings.ForceUpdate == TRUE) {
-		queuedTriShapes.emplace(rendererData);
+		queuedTriShapes.emplace(triShape);
 	}
 }
 
 void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass)
 {
-	const auto shaderType = This->shaderType.get();
+	const auto geometry = Pass->geometry;
+	const auto triShape = geometry->AsTriShape();
 
-	logger::debug(
-		"BSShader_RestoreGeometry - Shader: [0x{:x}], Pass: [0x{:x}], ShaderType: {}",
-		reinterpret_cast<uintptr_t>(This),
-		reinterpret_cast<uintptr_t>(Pass),
-		magic_enum::enum_name(This->shaderType.get()));
+	if (triShape == nullptr)
+		return;
+
+	const auto shaderType = This->shaderType.get();
 
 	// Vertex Shader
 	auto vs = voxelizeVertex.find(shaderType);
@@ -728,7 +707,7 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	if (vs == voxelizeVertex.end())
 		return;
 
-	auto vertexShaderVariants = vs->second;
+	auto vertexShaderPermutations = vs->second;
 
 	// Pixel Shader
 	auto ps = voxelizePixel.find(shaderType);
@@ -736,64 +715,41 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	if (ps == voxelizePixel.end())
 		return;
 
-	auto pixelShaderVariants = ps->second;
+	auto pixelShaderPermutations = ps->second;
 
-	const auto geometry = Pass->geometry;
-	const auto triShape = geometry->AsTriShape();
-	const auto triShapeRuntime = triShape->GetTrishapeRuntimeData();
-	const auto rendererData = triShape->GetGeometryRuntimeData().rendererData;
+	auto state = globals::state;
+
+	auto vertexDescriptor = state->currentVertexDescriptor;
+	//auto pixelDescriptor = state->currentPixelDescriptor;
 
 	std::map<std::string, std::string> shaderDefines;
+	for (const auto& item: GetShaderDefines<std::string>(shaderType, vertexDescriptor)) {
+		shaderDefines.emplace(item.first, item.second);
+	};
 
-	RE::BSShaderProperty* shaderProperty = Pass->shaderProperty;
-
-	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kSkinned)) {
-		shaderDefines.emplace("SKINNED", "");
-	}
-
-	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kModelSpaceNormals)) {
-		shaderDefines.emplace("MODELSPACENORMALS", "");
-	}
-
-	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kGlowMap)) {
-		shaderDefines.emplace("GLOWMAP", "");
-	}
-
-	if (shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexColors)) {
-		shaderDefines.emplace("VC", "");
-	}
-
-	auto vertexShader = vertexShaderVariants.Get(shaderDefines);
+	auto vertexShader = vertexShaderPermutations.Get(shaderDefines);
 	
 	if (vertexShader == nullptr)
 		return;
 
-	auto pixelShader = pixelShaderVariants.Get(shaderDefines);
+	auto pixelShader = pixelShaderPermutations.Get(shaderDefines);
 
 	if (pixelShader == nullptr)
 		return;
 
-	logger::debug(
-		"BSLightingShader_RestoreGeometry - Geometry: [0x{:x}], BSTriShape: [0x{:x}], BSGraphics::TriShape: [0x{:x}]",
-		reinterpret_cast<uintptr_t>(geometry),
-		reinterpret_cast<uintptr_t>(triShape),
-		reinterpret_cast<uintptr_t>(rendererData)
-	);
-
-	if (rendererData == nullptr)
-		return;
-
-	auto it = queuedTriShapes.find(rendererData);
+	auto it = queuedTriShapes.find(triShape);
 
 	// TriShape not queued
 	if (it == queuedTriShapes.end())
 		return;
 
-	auto it2 = cachedTriShapes.find(rendererData);
+	auto it2 = cachedTriShapes.find(triShape);
 
 	// TriShape not cached
 	if (it2 == cachedTriShapes.end())
 		return;
+
+	const auto triShapeRuntime = triShape->GetTrishapeRuntimeData();
 
 	/*float4x4 xmmTransform = GetXMFromNiTransform(triShape->world);
 	float4x4 transform = xmmTransform.Transpose();
@@ -814,7 +770,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	// Render here
 	auto context = globals::d3d::context;
 
-	auto state = globals::state;
 	state->BeginPerfEvent("Voxelization");
 
 	ID3D11VertexShader* prevVertex = nullptr;
@@ -876,7 +831,7 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 		prevDSV->Release();
 
 	// Just rendered, remove from queue
-	queuedTriShapes.erase(rendererData);
+	queuedTriShapes.erase(triShape);
 	rendered++;
 
 	state->EndPerfEvent();
@@ -931,10 +886,8 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 
 void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data)
 {
-	const auto rendererData = This->GetGeometryRuntimeData().rendererData;
-
 	// TriShape not cached, already queued or updates turned off
-	if (cachedTriShapes.find(rendererData) == cachedTriShapes.end() || queuedTriShapes.find(rendererData) != queuedTriShapes.end() || settings.UpdateVoxels == false) {
+	if (cachedTriShapes.find(This) == cachedTriShapes.end() || queuedTriShapes.find(This) != queuedTriShapes.end() || settings.UpdateVoxels == false) {
 		Hooks::BSTriShape_UpdateWorldData::func(This, a_data);
 	} else {
 		RE::NiPoint3 pointA = This->world * RE::NiPoint3{ 1.0f, 1.0f, 1.0f };
@@ -945,7 +898,7 @@ void VoxelConeTracingGI::BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::Ni
 
 		if (pointA.GetDistance(pointB) > 0.1f) {
 			// Lets queue the TriShape for rendering again
-			queuedTriShapes.emplace(rendererData);
+			queuedTriShapes.emplace(This);
 		}
 	}
 }
@@ -1365,6 +1318,86 @@ void VoxelConeTracingGI::ClearShaderCache()
 	CompileShaders();
 }
 
+
+uint32_t VoxelConeTracingGI::GetDescriptor(const RE::BSShader::Type& shaderType)
+{
+	uint32_t descriptor = 0;
+
+	switch (shaderType) {
+	case RE::BSShader::Type::Lighting:
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::VC);
+		break;
+	case RE::BSShader::Type::Utility:
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Texture);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Normals);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Vc);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Skinned);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::TreeAnim);
+		descriptor |= static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::LodLandscape);
+		break;
+	default:
+		break;
+	}	
+
+	return descriptor;
+}
+
+template <typename T>
+std::vector<std::pair<T, T>> VoxelConeTracingGI::GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor)
+{	
+	std::vector<std::pair<T, T>> defines;
+
+	switch (type) {
+	case RE::BSShader::Type::Lighting:
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned))
+			defines.emplace_back("SKINNED", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals))
+			defines.emplace_back("MODELSPACENORMALS", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::VC))
+			defines.emplace_back("VC", "");
+
+		break;
+	case RE::BSShader::Type::Utility:
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Texture))
+			defines.emplace_back("TEXTURE", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Normals))
+			defines.emplace_back("NORMALS", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Vc))
+			defines.emplace_back("VC", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::Skinned))
+			defines.emplace_back("SKINNED", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::TreeAnim))
+			defines.emplace_back("TREE_ANIM", "");
+
+		if (descriptor & static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::LodLandscape))
+			defines.emplace_back("LOD_LANDSCAPE", "");
+		break;
+	default:
+		break;
+	}
+
+	return defines;
+}
+
+/*template <typename Inserter>
+void CollectShaderDefines(std::span<D3D_SHADER_MACRO> defines, Inserter inserter)
+{
+	for (const auto& define : defines) {
+		if (define.Name == nullptr)
+			break;
+
+		inserter(define.Name, define.Definition == nullptr ? "" : define.Definition);
+	}
+}*/
+
 template <typename T>
 void VoxelConeTracingGI::CompileShader(winrt::com_ptr<T>* programPtr, const wchar_t* path, const char* programType, std::vector<std::pair<const char*, const char*>> defines, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr)
 {
@@ -1378,15 +1411,26 @@ void VoxelConeTracingGI::CompileShaders()
 
 	auto voxelizationFolderPath = folderPath / "Voxelize";
 
-	const std::vector<std::pair<const char*, const char*>> shaderDefines = { 
-		{ "SKINNED", "" },
-		{ "MODELSPACENORMALS", "" },
-		{ "GLOWMAP", "" },
-		{ "VC", "" }		
-	};
 
-	voxelizeVertex.emplace(RE::BSShader::Type::Lighting, ShaderVariants<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Lighting.hlsl", shaderDefines));
-	voxelizePixel.emplace(RE::BSShader::Type::Lighting, ShaderVariants<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.Lighting.hlsl", shaderDefines));
+	uint32_t lightingDescriptor = GetDescriptor(RE::BSShader::Type::Lighting);
+	const auto lightingDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Lighting, lightingDescriptor);
+
+	for (const auto& define : lightingDefines) {
+		logger::info("Lighting Define: ('{}' : '{}')", define.first, define.second);
+	}
+
+	voxelizeVertex.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Lighting.hlsl", lightingDefines));
+	voxelizePixel.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", lightingDefines));
+
+	uint32_t utilityDescriptor = GetDescriptor(RE::BSShader::Type::Utility);
+	const auto utilityDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Utility, utilityDescriptor);
+
+	for (const auto& define : utilityDefines) {
+		logger::info("Utility Define: ('{}' : '{}')", define.first, define.second);
+	}
+
+	voxelizeVertex.emplace(RE::BSShader::Type::Utility, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Utility.hlsl", utilityDefines));
+	voxelizePixel.emplace(RE::BSShader::Type::Utility, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", utilityDefines));
 
 	CompileShader(&voxelizeGeometry, (voxelizationFolderPath / "VoxelizeGS.hlsl").c_str(), "gs_5_0");
 
