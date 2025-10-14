@@ -6,16 +6,16 @@ struct VS_IN
     float3 Position : POSITION;
     uint3 Coord : VOXELCOORD;
     float3 Albedo : VOXELALBEDO;
-    float3 Emission : VOXELEMISSION;
     float3 Normal : VOXELNORMAL;
+    float3 Emission : VOXELEMISSION;
 };
 
 struct VS_OUT
 {
     float4 Position : SV_POSITION;
     float3 Albedo : COLOR0;
-    float3 Emission : COLOR1;
     float3 Normal : NORMAL;
+    float3 Emission : COLOR1;
 };
 
 cbuffer VertexCB : register(b0)
@@ -23,7 +23,7 @@ cbuffer VertexCB : register(b0)
 	float3 Min;
 	float Size;
 	float SizeInv;
-	float Res;
+	uint Res;
 	float ResInv; 
 	float pad0;
 };
@@ -40,8 +40,8 @@ VS_OUT main(VS_IN input)
     output.Position = mul(FrameBuffer::CameraViewProj[0], float4(worldPos - FrameBuffer::CameraPosAdjust[0].xyz, 1.0f));
 
     output.Albedo = input.Albedo;
-    output.Emission = input.Emission;
     output.Normal = input.Normal;
-
+    output.Emission = input.Emission;
+    
     return output;
 }

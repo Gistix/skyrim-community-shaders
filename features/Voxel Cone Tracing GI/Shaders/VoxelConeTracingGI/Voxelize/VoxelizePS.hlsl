@@ -57,22 +57,37 @@ struct PS_INPUT
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    	
 };
 
+struct PS_OUT
+{
+    float4 Albedo   : SV_Target0;   
+    float4 Normal   : SV_Target1;
+	float4 Emission : SV_Target2; 
+};
+
+RWByteAddressBuffer VoxelMask : register(u3);
+AppendStructuredBuffer<uint4> VoxelTrack : register(u4);
+RWByteAddressBuffer VoxelCount : register(u5);
+
 Texture2D<float4> TexColorSampler : register(t0);
 Texture2D<float4> TexGlowSampler : register(t6);
 
 SamplerState SampColorSampler : register(s0);
 SamplerState SampGlowSampler : register(s6);
 
-AppendStructuredBuffer<Voxel> Voxels : register(u0);
-RWByteAddressBuffer VoxelAccumCount : register(u1);
-
-void main(PS_INPUT input)
+PS_OUT main(PS_INPUT input)
 {  
+	PS_OUT output;
+	
 	float3 uvw = (input.PositionWS.xyz - SharedData::voxelConeTracingGISettings.Min) * SharedData::voxelConeTracingGISettings.SizeInv;
 
 	[branch]
-	if (any(uvw < 0.0f) || any(uvw > 1.0f))
-		return;
+	if (any(uvw < 0.0f) || any(uvw > 1.0f)) {
+		output.Albedo = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		output.Emission = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		output.Normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
+	
+		return output;
+	}
 	
 	uint3 coord = (uint3)floor(uvw * SharedData::voxelConeTracingGISettings.Res);
 	
@@ -80,21 +95,36 @@ void main(PS_INPUT input)
 	float3 voxelAABBMin = SharedData::voxelConeTracingGISettings.Min + (coord * SharedData::voxelConeTracingGISettings.VoxelSize);
 	float3 voxelAABBMax = voxelAABBMin + SharedData::voxelConeTracingGISettings.VoxelSize.xxx;
 	
-	if (!IntersectAABB(voxelAABBMin, voxelAABBMax, input.AABBMin, input.AABBMax))
-		return;
+	if (!IntersectAABB(voxelAABBMin, voxelAABBMax, input.AABBMin, input.AABBMax)) {
+		output.Albedo = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		output.Emission = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		output.Normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		
+		return output;
+	}
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED	
 	
     float2 uv = input.TexCoord0.xy;
 
 	uint index = coord.x + (coord.y * SharedData::voxelConeTracingGISettings.Res) + (coord.z * SharedData::voxelConeTracingGISettings.Res * SharedData::voxelConeTracingGISettings.Res);
-	
-    Voxel voxel;
-	voxel.Coord = coord;
-    voxel.Albedo = TexColorSampler.Sample(SampColorSampler, uv).rgb;
-	voxel.Emission = EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb;
-    voxel.Normal = input.NormalWS.xyz;
-    Voxels.Append(voxel);
-	
+
 	uint originalValue;
-	VoxelAccumCount.InterlockedAdd(index * 4, 1, originalValue);
+	VoxelCount.InterlockedAdd(index * 4, 1, originalValue); 	
+	
+    uint wordIndex = index >> 5;
+    uint bitIndex  = index & 31;
+    uint bitMask = 1 << bitIndex;	
+	
+    uint originalWord;
+    VoxelMask.InterlockedOr(wordIndex, bitMask, originalWord);	
+	
+	if ((originalWord & bitMask) == 0) {
+		VoxelTrack.Append(uint4(coord, 0));
+	}
+	
+    output.Albedo = float4(TexColorSampler.Sample(SampColorSampler, uv).rgb, 1.0f);
+    output.Emission = float4(EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb, 1.0f);
+    output.Normal = float4(input.NormalWS.xyz, 1.0f);
+	
+	return output;
 }

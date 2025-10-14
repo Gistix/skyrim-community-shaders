@@ -77,5 +77,5 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 	
 	// This quiets fxc.exe down
 	if (groupId == 0)
-		LOD0[uvw] = half4(voxel.Emission + (voxel.Albedo * diffuseLighting), 1.0);
+		LOD0[uvw] = half4(voxel.Emissive + (voxel.Albedo * diffuseLighting), 1.0);
 }

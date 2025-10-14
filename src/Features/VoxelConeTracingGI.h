@@ -279,20 +279,29 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(Node) % 4 == 0);
 
-	struct uint3
+	struct alignas(4) uint3
 	{
 		uint x;
 		uint y;
 		uint z;
 	};
-	static_assert(sizeof(uint3) % 4 == 0);
+	static_assert(sizeof(uint3) == 12);
+
+	struct alignas(4) uint4
+	{
+		uint x;
+		uint y;
+		uint z;
+		uint w;
+	};
+	static_assert(sizeof(uint4) == 16);
 
 	struct alignas(16) Voxel
 	{
 		uint3 Coord;
 		float3 Albedo;
-		float3 Emission;
 		float3 Normal;
+		float3 Emission;
 	};
 	static_assert(sizeof(Voxel) % 16 == 0);
 
@@ -360,7 +369,9 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11VertexShader> accumulateVertex = nullptr;
 	winrt::com_ptr<ID3D11PixelShader> accumulatePixel = nullptr;
 
-	winrt::com_ptr<ID3D11ComputeShader> voxelizeCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> postProcessIndirectArgsCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> postProcessCompute = nullptr;
+
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
@@ -370,13 +381,14 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
 	D3D11_VIEWPORT lod0Viewport = {};
 
-	eastl::unique_ptr<StructuredBuffer> voxelAppendBuffer = nullptr;
+	eastl::unique_ptr<Buffer> voxelMaskBuffer = nullptr;
+	eastl::unique_ptr<StructuredBuffer> voxelTrackBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
+
+	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 
 	// Multi purpose buffer for indirect arguments
 	eastl::unique_ptr<Buffer> voxelIndirectArgsBuffer = nullptr;
-
-	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 
 	// Post-Processing voxelization
 	eastl::unique_ptr<Texture2DArray> voxelAccumulator = nullptr;
@@ -476,11 +488,11 @@ struct VoxelConeTracingGI : public Feature
 
 			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
 			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
-			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
+			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
 
 			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
 			//stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
-			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
+			//stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
 
 			if (REL::Module::IsAE()) {
 				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);

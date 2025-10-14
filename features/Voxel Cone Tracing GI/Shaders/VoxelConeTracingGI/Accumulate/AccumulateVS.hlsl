@@ -5,16 +5,16 @@ struct VS_IN
 {
     uint3 Coord     : VOXELCOORD;
     float3 Albedo   : VOXELALBEDO;
-    float3 Emission : VOXELEMISSION;
     float3 Normal   : VOXELNORMAL;
+    float3 Emission : VOXELEMISSION;    
 };
 
 struct VS_OUT
 {
     float4 Position : SV_POSITION;
     float4 Albedo   : COLOR0;
-    float4 Emission : COLOR1;
     float4 Normal   : NORMAL;
+    float4 Emission : COLOR1;    
 };
 
 cbuffer VertexCB : register(b0)

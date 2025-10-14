@@ -4,8 +4,8 @@ struct PS_INPUT
 {
     float4 Position : SV_POSITION;
     float3 Albedo   : COLOR0;
-    float3 Emission : COLOR1;
-    float3 Normal   : NORMAL;    
+    float3 Normal   : NORMAL; 
+    float3 Emission : COLOR1;    
 };
 
 half4 main(PS_INPUT input) : SV_TARGET
