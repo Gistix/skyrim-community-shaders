@@ -102,7 +102,7 @@ VS_OUTPUT main(VS_INPUT input)
 		precise float4 positionWS = mul(World[eyeIndex], positionMS);
 		float3x3 normalMatrix = (float3x3)World[0];  
 	#endif
-
+	positionWS.xyz += FrameBuffer::CameraPosAdjust[eyeIndex].xyz;
 	float3 normalWS = normalize(mul(normalMatrix, normalMS));
 	
 	VS_OUTPUT vsout;

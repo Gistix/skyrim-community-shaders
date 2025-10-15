@@ -1,3 +1,4 @@
+#include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
 
 struct VS_INPUT
@@ -94,6 +95,8 @@ VS_OUTPUT main(VS_INPUT input)
 #else   // !SKINNED
 	precise float4 worldPosition = float4(mul(World[eyeIndex], inputPosition), 1);
 #endif  // SKINNED	
+
+	worldPosition.xyz += FrameBuffer::CameraPosAdjust[eyeIndex].xyz;
 
 	VS_OUTPUT vsout;
 	vsout.PositionWS = worldPosition;

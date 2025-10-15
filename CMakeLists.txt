@@ -6,6 +6,8 @@ project(
 	LANGUAGES CXX
 )
 
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /INCREMENTAL") #  /DEBUG:FASTLINK
+
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
 # ########################################################################################################################

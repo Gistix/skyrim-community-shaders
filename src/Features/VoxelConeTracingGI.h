@@ -233,6 +233,16 @@ struct VoxelConeTracingGI : public Feature
 		uint _Pad1;
 	} settings;
 
+	bool Enabled() const
+	{
+		return (bool)settings.EnableVoxelConeTracingGI;
+	}
+
+	bool Update() const
+	{
+		return (bool)settings.UpdateVoxels;
+	}
+
 	uint NodeCount(uint maxDepth)
 	{
 		return static_cast<uint>(round((pow(8, maxDepth + 1) - 1) / 7.0));
@@ -433,7 +443,7 @@ struct VoxelConeTracingGI : public Feature
 		{
 			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 			{
-				if (globals::features::voxelConeTracingGI.loaded)
+				if (globals::features::voxelConeTracingGI.loaded && globals::features::voxelConeTracingGI.Enabled())
 					globals::features::voxelConeTracingGI.BSShader_SetupGeometry(This, Pass);
 
 				func(This, Pass, RenderFlags);
@@ -446,7 +456,7 @@ struct VoxelConeTracingGI : public Feature
 		{
 			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 			{
-				if (globals::features::voxelConeTracingGI.loaded)
+				if (globals::features::voxelConeTracingGI.loaded && globals::features::voxelConeTracingGI.Enabled())
 					globals::features::voxelConeTracingGI.BSShader_RestoreGeometry(This, Pass);
 
 				func(This, Pass, RenderFlags);
@@ -483,7 +493,7 @@ struct VoxelConeTracingGI : public Feature
 
 		static void Install()
 		{
-			stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
+			//stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 
 			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);

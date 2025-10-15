@@ -45,11 +45,11 @@ cbuffer PerGeometry : register(b2)
 
 struct PS_INPUT
 {
-    float4 Position     : SV_POSITION;
-    centroid float4 TexCoord0    : TEXCOORD0;
-    centroid float4 PositionWS   : POSITION3D;
-	centroid float3 NormalWS     : NORMAL;
-	centroid float4 Color        : COLOR0;
+    float4 Position						: SV_POSITION;
+    centroid float4 TexCoord0			: TEXCOORD0;
+	centroid float3 NormalWS			: NORMAL;
+	centroid float4 Color				: COLOR0;
+	centroid float3 Cell				: TEXCOORD1;
 	
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 	nointerpolation float3 AABBMin : AABBMIN;
@@ -78,10 +78,12 @@ PS_OUT main(PS_INPUT input)
 {  
 	PS_OUT output;
 	
-	float3 uvw = (input.PositionWS.xyz - SharedData::voxelConeTracingGISettings.Min) * SharedData::voxelConeTracingGISettings.SizeInv;
+	//float3 uvw = (input.PositionWS.xyz - SharedData::voxelConeTracingGISettings.Min) * SharedData::voxelConeTracingGISettings.SizeInv;
 
+	uint3 coord = floor(input.Cell);
+	
 	[branch]
-	if (any(uvw < 0.0f) || any(uvw > 1.0f)) {
+	if (any(coord < 0) || any(coord > SharedData::voxelConeTracingGISettings.Res)) {
 		output.Albedo = float4(0.0f, 0.0f, 0.0f, 1.0f);
 		output.Emission = float4(0.0f, 0.0f, 0.0f, 1.0f);
 		output.Normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -89,7 +91,7 @@ PS_OUT main(PS_INPUT input)
 		return output;
 	}
 	
-	uint3 coord = (uint3)floor(uvw * SharedData::voxelConeTracingGISettings.Res);
+	//uint3 coord = (uint3)floor(uvw * SharedData::voxelConeTracingGISettings.Res);
 	
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 	float3 voxelAABBMin = SharedData::voxelConeTracingGISettings.Min + (coord * SharedData::voxelConeTracingGISettings.VoxelSize);
@@ -119,7 +121,7 @@ PS_OUT main(PS_INPUT input)
     VoxelMask.InterlockedOr(wordIndex, bitMask, originalWord);	
 	
 	if ((originalWord & bitMask) == 0) {
-		VoxelTrack.Append(uint4(coord, 0));
+		VoxelTrack.Append(uint4(coord, index));
 	}
 	
     output.Albedo = float4(TexColorSampler.Sample(SampColorSampler, uv).rgb, 1.0f);
