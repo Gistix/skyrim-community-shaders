@@ -3,10 +3,10 @@
 
 struct VS_IN
 {
-    uint3 Coord     : VOXELCOORD;
+    uint3 Coord    : VOXELCOORD;
     float3 Albedo   : VOXELALBEDO;
     float3 Normal   : VOXELNORMAL;
-    float3 Emission : VOXELEMISSION;    
+    float3 Emissive : VOXELEMISSIVE;    
 };
 
 struct VS_OUT
@@ -14,7 +14,7 @@ struct VS_OUT
     float4 Position : SV_POSITION;
     float4 Albedo   : COLOR0;
     float4 Normal   : NORMAL;
-    float4 Emission : COLOR1;    
+    float4 Emissive : COLOR1;    
 };
 
 cbuffer VertexCB : register(b0)
@@ -26,8 +26,6 @@ cbuffer VertexCB : register(b0)
 	float ResInv; 
 	float VoxelSize;
 };
-
-ByteAddressBuffer VoxelAccumCount : register(t0);
 
 VS_OUT main(VS_IN input)
 {
@@ -44,12 +42,9 @@ VS_OUT main(VS_IN input)
 
     output.Position = float4(ndcX, ndcY, 0.0f, 1.0f);
 
-    uint index = coord.x + (coord.y * Res) + (coord.z * Res * Res);
-    uint accumCount = VoxelAccumCount.Load(index * 4);
+    output.Albedo = float4(input.Albedo, 1.0);
+    output.Normal = float4(input.Normal, 1.0);
+    output.Emissive = float4(input.Emissive, 0.0f);
     
-    output.Albedo = float4(input.Albedo, accumCount);
-    output.Emission = float4(input.Emission, 1.0f);
-    output.Normal = float4(input.Normal, accumCount);
-
     return output;
 }

@@ -5,7 +5,7 @@
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 
-//#define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
+#define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 
 namespace VoxelConeTracingGI
 {

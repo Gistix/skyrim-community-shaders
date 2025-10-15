@@ -164,6 +164,11 @@ void VoxelConeTracingGI::SetupResources()
 		voxelTrackBuffer->CreateUAV(true);
 		voxelTrackBuffer->CreateSRV();
 
+		auto voxelSamplesBufferDesc = StructuredBufferDesc<Voxel>(lod0MaxDim, true, false);
+		voxelSamplesBuffer = eastl::make_unique<StructuredBuffer>(voxelSamplesBufferDesc, lod0MaxDim);
+		voxelSamplesBuffer->CreateUAV(true);
+		voxelSamplesBuffer->CreateSRV();
+		
 		// Voxel Draw Instance Buffer
 		D3D11_BUFFER_DESC voxelDrawBufferDesc = {
 			.ByteWidth = sizeof(Voxel) * lod0MaxDim,
@@ -258,15 +263,23 @@ void VoxelConeTracingGI::SetupResources()
 		voxelArgsBuffer->CreateUAV(argsUAVDesc);
 
 		// Multi purpose indirect arguments buffer
-		UINT indirectArgsInit[8] = {
-			36,  // Cube vertices
-			0,   // Voxel Count
-			0,
-			0,
-			0,  // ThreadGroupCountX
-			1,  // ThreadGroupCountY
-			1,  // ThreadGroupCountZ
-			0
+		UINT indirectArgsInit[11] = {
+			// Used to draw voxels to the screen
+			36, // 0 - Vertices (Cube)
+			0,  // 1 - Instance Count (Voxel Count)
+			0,	// 2
+			0,  // 3
+
+			// Used to draw samples to the texture
+			0,  // 4 - Vertices (Voxel Sample Count)
+			1,  // 5 - Instance Count
+			0,  // 6
+			0,  // 7
+
+			// Used to read accumulated samples texture into buffer
+			0,  // 8 - ThreadGroupCountX (Voxel Count / 64)
+			1,  // 9 - ThreadGroupCountY
+			1   // 10 - ThreadGroupCountZ
 		};
 
 		uint indirectArgsByteWidth = sizeof(indirectArgsInit);
@@ -373,14 +386,14 @@ void VoxelConeTracingGI::SetupResources()
 			{ "VOXELCOORD", 0, DXGI_FORMAT_R32G32B32_UINT, 1, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
 			{ "VOXELALBEDO", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Albedo), D3D11_INPUT_PER_INSTANCE_DATA, 1 },
 			{ "VOXELNORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Normal), D3D11_INPUT_PER_INSTANCE_DATA, 1 },
-			{ "VOXELEMISSION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Emission), D3D11_INPUT_PER_INSTANCE_DATA, 1 }
+			{ "VOXELEMISSION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Emissive), D3D11_INPUT_PER_INSTANCE_DATA, 1 }
 		};
 		
 		accumulateInputDesc = {
 			{ "VOXELCOORD", 0, DXGI_FORMAT_R32G32B32_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 			{ "VOXELALBEDO", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Albedo), D3D11_INPUT_PER_VERTEX_DATA, 0 },
 			{ "VOXELNORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Normal), D3D11_INPUT_PER_VERTEX_DATA, 0 }, 
-			{ "VOXELEMISSION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Emission), D3D11_INPUT_PER_VERTEX_DATA, 0 }
+			{ "VOXELEMISSIVE", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Emissive), D3D11_INPUT_PER_VERTEX_DATA, 0 }
 		};
 	}
 
@@ -602,6 +615,8 @@ void VoxelConeTracingGI::SetupResources()
 	// Blend States
 	{
 		D3D11_BLEND_DESC blendDesc = {};
+		blendDesc.IndependentBlendEnable = TRUE;
+
 		blendDesc.RenderTarget[0].BlendEnable = TRUE;
 		blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
 		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
@@ -620,7 +635,6 @@ void VoxelConeTracingGI::SetupResources()
 		blendDesc.RenderTarget[1].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		blendDesc.RenderTarget[1].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 		
-
 		blendDesc.RenderTarget[2].BlendEnable = TRUE;
 		blendDesc.RenderTarget[2].SrcBlend = D3D11_BLEND_ONE;
 		blendDesc.RenderTarget[2].DestBlend = D3D11_BLEND_ONE;
@@ -857,11 +871,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	float prevBlendFactor[4] = {};
 	UINT prevBlendMask = 0;
 	context->OMGetBlendState(&prevBlendState, prevBlendFactor, &prevBlendMask);
-	/*UINT prevUAVSlot = 0;
-	UINT prevNumUAVs = 8;
-	ID3D11UnorderedAccessView* prevUAVs[8] = {};
-
-	context->OMGetRenderTargetsAndUnorderedAccessViews(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs.data(), &prevDSV, &prevUAVSlot, &prevNumUAVs, prevUAVs);*/
 
 	context->VSSetShader(vertexShader.get(), nullptr, 0);
 	context->GSSetShader(voxelizeGeometry.get(), nullptr, 0);
@@ -869,28 +878,19 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 
 	context->RSSetState(voxelRasterState.get());
 
-	// Override
-	std::array<ID3D11RenderTargetView*, 3> rtvs = {
-		voxelAccumulator->RTV(0),
-		voxelAccumulator->RTV(1),
-		voxelAccumulator->RTV(2)
-	};
-
-	std::array<ID3D11UnorderedAccessView*, 3> uavs = {
+	std::array<ID3D11UnorderedAccessView*, 4> uavs = {
 		voxelMaskBuffer->uav.get(),
 		voxelTrackBuffer->UAV(),
-		voxelCountBuffer->uav.get()
+		voxelCountBuffer->uav.get(),
+		voxelSamplesBuffer->UAV()
 	};
 
-	context->RSSetViewports(1, &accumulateViewport);
+	context->RSSetViewports(1, &lod0Viewport);
 
-	uint numRTV = (UINT)rtvs.size();
-	uint uavStartSlot = numRTV;
-
-	context->OMSetRenderTargetsAndUnorderedAccessViews(numRTV, rtvs.data(), nullptr, uavStartSlot, (uint)uavs.size(), uavs.data(), nullptr);
+	context->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, (uint)uavs.size(), uavs.data(), nullptr);
 
 	float blendFactor[4] = { 0, 0, 0, 0 };
-	context->OMSetBlendState(accumulateBlendState.get(), blendFactor, 0xFFFFFFFF);
+	context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);
 
 	// Render
 	context->DrawIndexed(triShapeRuntime.triangleCount * 3, 0, 0);
@@ -923,7 +923,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 
 	context->RSSetViewports(1, &prevViewport);
 
-	rtvs.fill(nullptr);
 	uavs.fill(nullptr);
 
 	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, prevDSV);
@@ -1031,23 +1030,14 @@ void VoxelConeTracingGI::Main_RenderWorldAfter()
 	auto state = globals::state;
 	state->BeginPerfEvent("VXGI - WorldAfter");
 
-	auto context = globals::d3d::context;
-
-	// Copy voxel count to second element (instance count)
-	context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4, voxelTrackBuffer->UAV());
-
 	PostProcess();
 
 	if (settings.VoxelDrawMode != VoxelDrawMode::None && settings.VoxelDrawMode != VoxelDrawMode::Count) {
-		// Copy voxel buffer to draw buffer
-		context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelBuffer->resource.get());
-
 		DrawVoxels();
 	}
 
 	state->EndPerfEvent();
 }
-
 
 void VoxelConeTracingGI::PostProcess()
 {
@@ -1058,6 +1048,12 @@ void VoxelConeTracingGI::PostProcess()
 	
 	// Prepare indirect arguments buffer (ThreadGroupCountX = voxelCount/64)
 	{
+		// Copy voxel count to [1]
+		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 1, voxelTrackBuffer->UAV());
+
+		// Copy sample count to [7]
+		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, voxelSamplesBuffer->UAV());
+
 		std::array<ID3D11UnorderedAccessView*, 1> uavs = {
 			voxelIndirectArgsBuffer->uav.get()
 		};
@@ -1068,7 +1064,57 @@ void VoxelConeTracingGI::PostProcess()
 		context->Dispatch(1, 1, 1);
 	}
 
-	// Read and average from the accumulated RTS into the final voxel buffer
+	// Write samples to RTVs
+	{
+		std::array<ID3D11RenderTargetView*, 3> rtvs = {
+			voxelAccumulator->RTV(0),
+			voxelAccumulator->RTV(1),
+			voxelAccumulator->RTV(2)
+		};
+
+		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		context->ClearRenderTargetView(rtvs[0], clearColor);
+		context->ClearRenderTargetView(rtvs[1], clearColor);
+		context->ClearRenderTargetView(rtvs[2], clearColor);
+
+		context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
+
+		context->RSSetViewports(1, &accumulateViewport);
+
+		context->OMSetDepthStencilState(nullptr, 0);
+
+		float blendFactor[4] = { 0, 0, 0, 0 };
+		context->OMSetBlendState(accumulateBlendState.get(), blendFactor, 0xFFFFFFFF);
+
+		auto cb = voxelConeTracingGICB->CB();
+		context->VSSetConstantBuffers(0, 1, &cb);
+
+		context->VSSetShader(accumulateVertex.get(), nullptr, 0);
+		context->PSSetShader(accumulatePixel.get(), nullptr, 0);
+
+		context->IASetInputLayout(accumulateInputLayout.get());
+
+		UINT stride = sizeof(Voxel);
+		UINT offset = 0;
+
+		context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelSamplesBuffer->resource.get());
+
+		const auto& buffer = voxelDrawInstanceBuffer->resource.get();
+		context->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+
+		/*const auto& srv = voxelCountBuffer->srv.get();
+		context->VSSetShaderResources(0, 1, &srv);*/
+
+		context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 4);
+
+		rtvs.fill(nullptr);
+		context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
+
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	}
+
+	// Read and average from the accumulated RTVs into the final voxel buffer
 	{
 		context->CSSetShader(postProcessCompute.get(), nullptr, 0);
 
@@ -1091,13 +1137,33 @@ void VoxelConeTracingGI::PostProcess()
 		context->CSSetConstantBuffers(0, 1, &cb);
 
 		context->CSSetShader(postProcessCompute.get(), nullptr, 0);
-		context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 16);
+		context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 8);
 
 		srvs.fill(nullptr);
 		uavs.fill(nullptr);
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+	}
+
+	// Reset all buffers
+	{
+		UINT clearValues[4] = { 0, 0, 0, 0 };
+		UINT initialCount;
+
+		const auto& maskUAV = voxelMaskBuffer->uav.get();
+		context->ClearUnorderedAccessViewUint(maskUAV, clearValues);
+	
+		const auto& trackUAV = voxelTrackBuffer->UAV();
+		initialCount = 0;
+		context->CSSetUnorderedAccessViews(0, 1, &trackUAV, &initialCount);
+
+		const auto& samplesUAV = voxelSamplesBuffer->UAV();
+		initialCount = 0;
+		context->CSSetUnorderedAccessViews(0, 1, &samplesUAV, &initialCount);
+
+		const auto& countUAV = voxelCountBuffer->uav.get();
+		context->ClearUnorderedAccessViewUint(countUAV, clearValues);
 	}
 
 	state->EndPerfEvent();
@@ -1109,6 +1175,8 @@ void VoxelConeTracingGI::DrawVoxels()
 	state->BeginPerfEvent("Draw Voxels");
 
 	auto context = globals::d3d::context;
+
+	context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelBuffer->resource.get());
 
 	// Lets back everything up
 	ID3D11RenderTargetView* prevRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
@@ -1144,7 +1212,7 @@ void VoxelConeTracingGI::DrawVoxels()
 
 	context->OMSetDepthStencilState(voxelDrawDSS.get(), 0);
 
-	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
 	//auto rtv = debugTex->rtv.get();
 	//context->OMSetRenderTargets(1, &rtv, nullptr);
@@ -1170,7 +1238,12 @@ void VoxelConeTracingGI::DrawVoxels()
 	context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
 	//context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-	context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 0);
+	//context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 0);
+
+	uint lod0Res = GetLodResolution(0);
+	uint instanceCount = lod0Res * lod0Res * lod0Res;
+
+	context->DrawInstanced(36, instanceCount, 0, 0);
 
 	/*context->VSSetShader(prevVertex, nullptr, 0);
 	context->PSSetShader(prevPixel, nullptr, 0);

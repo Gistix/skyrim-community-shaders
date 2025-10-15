@@ -19,23 +19,26 @@ ByteAddressBuffer SampleCount		: register(t4);
 RWStructuredBuffer<Voxel> Voxels : register(u0);
 
 [numthreads(64, 1, 1)]
-void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
+void main(uint id: SV_DispatchThreadID)
 {
 	uint4 voxelTrack = VoxelTrack[id];
 
 	uint3 coord = voxelTrack.xyz;
-	uint index = voxelTrack.w;
-	
-	uint2 coord2D = uint2(coord.x + coord.z * Res, coord.y);
+	uint index = voxelTrack.w; // index = coord.x + (coord.y * Res) + (coord.z * Res * Res)
 	
 	uint samples = SampleCount.Load(index * 4);
 		
-	Voxel voxel;
+	[branch]
+	if (samples > 0) {	
+		uint2 coord2D = uint2(coord.x + coord.z * Res, coord.y);
+		
+		Voxel voxel;
 	
-	voxel.Coord = coord;
-	voxel.Albedo = Albedo[coord2D].rgb / samples;
-	voxel.Normal = normalize(Normal[coord2D].rgb / samples);
-	voxel.Emissive = Emissive[coord2D].rgb;
+		voxel.Coord = coord;
+		voxel.Albedo = Albedo[coord2D].rgb / samples;
+		voxel.Normal = normalize(Normal[coord2D].rgb / samples);
+		voxel.Emissive = Emissive[coord2D].rgb;
 	
-	Voxels[id] = voxel;
+		Voxels[index] = voxel;
+	}
 }

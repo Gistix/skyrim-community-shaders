@@ -20,5 +20,5 @@ half4 main(PS_INPUT input) : SV_TARGET
     output = normalize(input.Normal) * 0.5 + 0.5;
 #endif
     
-    return half4(output, 1.0f);
+    return half4(output, all(output < 0.001) ? 0.0f : 1.0f);
 }

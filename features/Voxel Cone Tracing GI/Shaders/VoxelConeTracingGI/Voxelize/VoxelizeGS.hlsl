@@ -52,11 +52,12 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     for (i = 0; i < 3; ++i)
     {
         float3 uvw = (input[i].PositionWS.xyz - Min) * SizeInv; // [0..1]
+        float3 coords = uvw * Res; // [0..Res]
         
-        output[i].Cell = floor(uvw * Res); // [0..Res]
+        output[i].Cell = floor(coords); 
         
         // World space -> Voxel grid space:
-        output[i].Position.xyz = (uvw * Res * 2.0) - Res.xxx; // [-Res..Res]
+        output[i].Position.xyz = (coords * 2.0) - Res.xxx; // [-Res..Res]
 
 		// Project onto dominant axis:
 		[flatten]
@@ -83,15 +84,9 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     [unroll]
     for (i = 0; i < 3; ++i)  
     {
-        // Voxel grid space -> Texture clip space
-        float3 positionUVW = (output[i].Position.xyz + Res.xxx) * 0.5; // [0..Res]
-
-        float u = (positionUVW.x + positionUVW.z * Res) + 0.5f;
-        float v = positionUVW.y + 0.5f;
-		
-        output[i].Position.x = (u / (Res * Res)) * 2.0f - 1.0f;
-        output[i].Position.y = (v * ResInv) * 2.0f - 1.0f;
-        output[i].Position.z = 0.0f;
+        // Voxel grid space -> Clip space
+        output[i].Position.xy *= ResInv;
+        output[i].Position.z = 1.0f;
 		output[i].Position.w = 1.0f;
         
         output[i].TexCoord0 = input[i].TexCoord0;

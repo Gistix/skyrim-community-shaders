@@ -57,16 +57,10 @@ struct PS_INPUT
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    	
 };
 
-struct PS_OUT
-{
-    float4 Albedo   : SV_Target0;   
-    float4 Normal   : SV_Target1;
-	float4 Emission : SV_Target2; 
-};
-
-RWByteAddressBuffer VoxelMask : register(u3);
-AppendStructuredBuffer<uint4> VoxelTrack : register(u4);
-RWByteAddressBuffer VoxelCount : register(u5);
+RWByteAddressBuffer VoxelMask : register(u0);
+AppendStructuredBuffer<uint4> VoxelTrack : register(u1);
+RWByteAddressBuffer VoxelSampleCount : register(u2);
+AppendStructuredBuffer<Voxel> VoxelSamples : register(u3);
 
 Texture2D<float4> TexColorSampler : register(t0);
 Texture2D<float4> TexGlowSampler : register(t6);
@@ -74,21 +68,15 @@ Texture2D<float4> TexGlowSampler : register(t6);
 SamplerState SampColorSampler : register(s0);
 SamplerState SampGlowSampler : register(s6);
 
-PS_OUT main(PS_INPUT input)
-{  
-	PS_OUT output;
-	
+void main(PS_INPUT input)
+{
 	//float3 uvw = (input.PositionWS.xyz - SharedData::voxelConeTracingGISettings.Min) * SharedData::voxelConeTracingGISettings.SizeInv;
 
 	uint3 coord = floor(input.Cell);
 	
 	[branch]
 	if (any(coord < 0) || any(coord > SharedData::voxelConeTracingGISettings.Res)) {
-		output.Albedo = float4(0.0f, 0.0f, 0.0f, 1.0f);
-		output.Emission = float4(0.0f, 0.0f, 0.0f, 1.0f);
-		output.Normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
-	
-		return output;
+		return;
 	}
 	
 	//uint3 coord = (uint3)floor(uvw * SharedData::voxelConeTracingGISettings.Res);
@@ -97,21 +85,16 @@ PS_OUT main(PS_INPUT input)
 	float3 voxelAABBMin = SharedData::voxelConeTracingGISettings.Min + (coord * SharedData::voxelConeTracingGISettings.VoxelSize);
 	float3 voxelAABBMax = voxelAABBMin + SharedData::voxelConeTracingGISettings.VoxelSize.xxx;
 	
+	[branch]
 	if (!IntersectAABB(voxelAABBMin, voxelAABBMax, input.AABBMin, input.AABBMax)) {
-		output.Albedo = float4(0.0f, 0.0f, 0.0f, 1.0f);
-		output.Emission = float4(0.0f, 0.0f, 0.0f, 1.0f);
-		output.Normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
-		
-		return output;
+		return;
 	}
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED	
 	
-    float2 uv = input.TexCoord0.xy;
-
 	uint index = coord.x + (coord.y * SharedData::voxelConeTracingGISettings.Res) + (coord.z * SharedData::voxelConeTracingGISettings.Res * SharedData::voxelConeTracingGISettings.Res);
 
 	uint originalValue;
-	VoxelCount.InterlockedAdd(index * 4, 1, originalValue); 	
+	VoxelSampleCount.InterlockedAdd(index * 4, 1, originalValue); 	
 	
     uint wordIndex = index >> 5;
     uint bitIndex  = index & 31;
@@ -123,10 +106,15 @@ PS_OUT main(PS_INPUT input)
 	if ((originalWord & bitMask) == 0) {
 		VoxelTrack.Append(uint4(coord, index));
 	}
+
+	float2 uv = input.TexCoord0.xy;
 	
-    output.Albedo = float4(TexColorSampler.Sample(SampColorSampler, uv).rgb, 1.0f);
-    output.Emission = float4(EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb, 1.0f);
-    output.Normal = float4(input.NormalWS.xyz, 1.0f);
+	Voxel voxelSample;
 	
-	return output;
+	voxelSample.Coord = coord;
+	voxelSample.Albedo = TexColorSampler.Sample(SampColorSampler, uv).rgb;
+	voxelSample.Normal = input.NormalWS.xyz;
+	voxelSample.Emissive = EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb;
+	
+	VoxelSamples.Append(voxelSample);
 }

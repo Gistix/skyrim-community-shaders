@@ -306,12 +306,12 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(uint4) == 16);
 
-	struct alignas(16) Voxel
+	struct alignas(4) Voxel
 	{
 		uint3 Coord;
 		float3 Albedo;
 		float3 Normal;
-		float3 Emission;
+		float3 Emissive;
 	};
 	static_assert(sizeof(Voxel) % 16 == 0);
 
@@ -394,7 +394,7 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<Buffer> voxelMaskBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelTrackBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
-
+	eastl::unique_ptr<StructuredBuffer> voxelSamplesBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 
 	// Multi purpose buffer for indirect arguments
