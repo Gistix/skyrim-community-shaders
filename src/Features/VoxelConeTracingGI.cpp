@@ -25,8 +25,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VoxelConeTracingGI::Settings,
 	EnableVoxelConeTracingGI,
 	NoIndoorDir,
-	Lod0Resolution,
-	Lod0Size,
+	Resolution,
+	Size,
+	SizeMultiplier,
 	UpdateVoxels,
 	ForceUpdate,
 	VoxelDrawMode)
@@ -52,8 +53,13 @@ void VoxelConeTracingGI::DrawSettings()
 {
 	ImGui::Checkbox("Enable Voxel Cone Tracing GI", (bool*)&settings.EnableVoxelConeTracingGI);
 
-	ImGui::Combo("Lod0 Resolution", &settings.Lod0Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
-	ImGui::InputInt("Lod0 Size", &settings.Lod0Size);
+	ImGui::Combo("Resolution", &settings.Resolution, dimensionsLabels, IM_ARRAYSIZE(dimensionsLabels));
+
+	ImGui::InputInt("Root size", &settings.Size);
+	settings.Size = std::max(1, settings.Size);
+
+	ImGui::InputInt("Clipmap size multiplier", &settings.SizeMultiplier);
+	settings.SizeMultiplier = std::max(2, settings.SizeMultiplier);
 
 	if (ImGui::TreeNodeEx("Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.NoIndoorDir);
@@ -140,7 +146,7 @@ void VoxelConeTracingGI::SetupResources()
 		debugCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<DebugCB>());	
 	}
 
-	uint lod0Resolution = GetLodResolution(0);
+	uint lod0Resolution = GetResolution();
 	uint lod0MaxDim = lod0Resolution * lod0Resolution * lod0Resolution;
 
 	logger::debug("Creating Structured buffers...");
@@ -636,7 +642,7 @@ void VoxelConeTracingGI::SetupResources()
 
 	// Viewport
 	{
-		float lod0ResFloat = static_cast<float>(GetLodResolution(0));
+		float lod0ResFloat = static_cast<float>(GetResolution());
 
 		lod0Viewport.TopLeftX = 0.0f;
 		lod0Viewport.TopLeftY = 0.0f;
@@ -956,9 +962,9 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 
 		rendered = 0;
 
-		float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
+		float lod0Size = static_cast<float>(settings.Size) / Util::Units::GAME_UNIT_TO_M;
 
-		uint lod0Resolution = GetLodResolution(0);
+		uint lod0Resolution = GetResolution();
 		float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
 
 		voxelConeTracingGICBData.Min = center - (float3(lod0Size, lod0Size, lod0Size) * 0.5f);
@@ -1125,7 +1131,11 @@ void VoxelConeTracingGI::PostProcess()
 		context->CSSetConstantBuffers(0, 1, &cb);
 
 		context->CSSetShader(postProcessCompute.get(), nullptr, 0);
-		context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 8);
+
+		float resolutionFloat = static_cast<float>(GetResolution());
+		uint threadGroups = static_cast<uint>(ceil(resolutionFloat / 8.0f));
+
+		context->Dispatch(threadGroups, threadGroups, threadGroups);
 
 		srvs.fill(nullptr);
 		uavs.fill(nullptr);
@@ -1231,7 +1241,7 @@ void VoxelConeTracingGI::DrawVoxels()
 
 	//context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 0);
 
-	uint lod0Res = GetLodResolution(0);
+	uint lod0Res = GetResolution();
 	uint instanceCount = lod0Res * lod0Res * lod0Res;
 
 	context->DrawInstanced(36, instanceCount, 0, 0);
@@ -1403,10 +1413,10 @@ void VoxelConeTracingGI::InjectLighting()
 
 	lightBuffer->Update(lights.data(), lights.size());
 
-	float lod0Size = static_cast<float>(settings.Lod0Size) / Util::Units::GAME_UNIT_TO_M;
+	float lod0Size = static_cast<float>(settings.Size) / Util::Units::GAME_UNIT_TO_M;
 	float3 lod0SizeF3 = float3(lod0Size, lod0Size, lod0Size);
 
-	uint lod0Resolution = GetLodResolution(0);
+	uint lod0Resolution = GetResolution();
 	float lod0ResolutionFloat = static_cast<float>(lod0Resolution);
 
 	injectLightingCBData.VoxelSize = lod0SizeF3 / lod0ResolutionFloat;

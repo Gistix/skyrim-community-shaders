@@ -19,10 +19,23 @@ ByteAddressBuffer SampleCount		: register(t4);
 RWStructuredBuffer<Voxel> Voxels : register(u0);
 RWTexture3D<half4> LOD0 : register(u1);
 
-[numthreads(64, 1, 1)]
-void main(uint id: SV_DispatchThreadID)
+[numthreads(8, 8, 8)]
+void main(uint3 id: SV_DispatchThreadID)
 {
-	uint4 voxelTrack = VoxelTrack[id];
+	//uint index = id.x + (id.y * Res) + (id.z * Res * Res);
+	uint2 coord = uint2(id.x + id.z * Res, id.y);
+	
+	float4 albedo = Albedo[coord];
+	albedo.rgb /= albedo.a;
+		
+	float4 normal = Normal[coord];
+	normal.xyz = normalize(normal.xyz / normal.w);
+		
+	float3 emissive = Emissive[coord].rgb;	
+	
+	LOD0[id] = half4((saturate(dot(float3(0, 1, 0), normal.xyz)) * albedo.rgb) + emissive, 1.0f);
+	
+	/*uint4 voxelTrack = VoxelTrack[id];
 
 	uint3 coord = voxelTrack.xyz;
 	uint index = voxelTrack.w; // index = coord.x + (coord.y * Res) + (coord.z * Res * Res)
@@ -36,15 +49,7 @@ void main(uint id: SV_DispatchThreadID)
 		float3 albedo = Albedo[coord2D].rgb / samples;		
 		float3 normal = normalize(Normal[coord2D].rgb / samples);
 		float3 emissive = Emissive[coord2D].rgb;
-		
-		/*float4 albedo = Albedo[coord2D];
-		albedo.rgb /= albedo.a;
-		
-		float4 normal = Normal[coord2D];
-		normal.xyz = normalize(normal.xyz / normal.w);
-		
-		float3 emissive = Emissive[coord2D].rgb;*/
-		
+				
 		Voxel voxel;
 	
 		voxel.Coord = coord;
@@ -55,5 +60,5 @@ void main(uint id: SV_DispatchThreadID)
 		Voxels[index] = voxel;
 		
 		LOD0[coord] = half4((saturate(dot(float3(0, 1, 0), normal.xyz)) * albedo.rgb) + emissive, 1.0f);
-	}
+	}*/
 }

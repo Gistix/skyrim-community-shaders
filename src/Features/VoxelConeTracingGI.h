@@ -204,8 +204,8 @@ struct VoxelConeTracingGI : public Feature
 	template <typename T>
 	std::vector<std::pair<T, T>> GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor);
 
-	const char* dimensionsLabels[8] = { "4", "8", "16", "32", "64", "128", "256", "512" };
-	const uint dimensions[8] = { 4, 8, 16, 32, 64, 128, 256, 512 };
+	const char* dimensionsLabels[8] = { "16", "32", "64", "128", "256", "512" };
+	const uint dimensions[8] = { 16, 32, 64, 128, 256, 512 };
 	static constexpr uint MAX_LIGHTS = 1024;
 	float3 center;
 	bool queuedReset;
@@ -225,12 +225,12 @@ struct VoxelConeTracingGI : public Feature
 	{
 		uint EnableVoxelConeTracingGI = true;
 		uint NoIndoorDir = false;
-		int Lod0Resolution = 4;
-		int Lod0Size = 20;
+		int Resolution = 64;
+		int	Size = 20;
+		int SizeMultiplier = 2;
 		uint UpdateVoxels = true;
 		uint ForceUpdate = false;
-		VoxelDrawMode VoxelDrawMode = None;
-		uint _Pad1;
+		VoxelDrawMode VoxelDrawMode = VoxelDrawMode::None;
 	} settings;
 
 	bool Enabled() const
@@ -253,23 +253,14 @@ struct VoxelConeTracingGI : public Feature
 		return static_cast<uint>(pow(8, maxDepth));
 	}
 
-	uint OctreeMaxDepth(uint lod=0) {
-		uint lodResolution = GetLodResolution(lod);
+	uint OctreeMaxDepth() {
+		uint lodResolution = GetResolution();
 		return static_cast<uint>(ceil(log2(lodResolution)));
 	}
 
-	uint GetLodResolution(uint lod=0)
+	uint GetResolution() const
 	{
-		switch (lod) {
-			case 1:
-				return dimensions[settings.Lod0Resolution];
-			case 2:
-				return dimensions[settings.Lod0Resolution];
-			case 3:
-				return dimensions[settings.Lod0Resolution];
-			default:
-				return dimensions[settings.Lod0Resolution];
-		}
+		return static_cast<uint>(settings.Resolution);
 	}
 
 	uint MipLevels(uint resolution) 
