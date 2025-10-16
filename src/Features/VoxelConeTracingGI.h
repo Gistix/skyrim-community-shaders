@@ -393,8 +393,10 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::unique_ptr<Buffer> voxelMaskBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelTrackBuffer = nullptr;
-	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
+	eastl::unique_ptr<Buffer> voxelSampleCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelSamplesBuffer = nullptr;
+
+	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 
 	// Multi purpose buffer for indirect arguments
@@ -413,8 +415,6 @@ struct VoxelConeTracingGI : public Feature
 	std::vector<D3D11_INPUT_ELEMENT_DESC> voxelInputDesc;
 	winrt::com_ptr<ID3D11InputLayout> voxelDrawInputLayout = nullptr;
 	winrt::com_ptr<ID3D11DepthStencilState> voxelDrawDSS = nullptr;
-
-	eastl::unique_ptr<Buffer> voxelArgsBuffer = nullptr;
 
 	eastl::unique_ptr<StructuredBuffer> lightBuffer = nullptr;
 

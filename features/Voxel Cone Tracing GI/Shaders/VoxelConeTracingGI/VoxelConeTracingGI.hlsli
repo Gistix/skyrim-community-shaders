@@ -14,9 +14,7 @@ namespace VoxelConeTracingGI
 
 bool IntersectAABB(float3 boxAMin, float3 boxAMax, float3 boxBMin, float3 boxBMax)
 {
-    return (boxAMin.x <= boxBMax.x && boxAMax.x >= boxBMin.x) &&
-           (boxAMin.y <= boxBMax.y && boxAMax.y >= boxBMin.y) &&
-           (boxAMin.z <= boxBMax.z && boxAMax.z >= boxBMin.z);
+    return all(boxAMax >= boxBMin) && all(boxBMax >= boxAMin);
 }
 
 #define FP_Z (16.5)
