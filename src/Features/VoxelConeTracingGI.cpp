@@ -230,14 +230,16 @@ void VoxelConeTracingGI::SetupResources()
 		D3D11_BUFFER_DESC voxelDrawBufferDesc = {
 			.ByteWidth = sizeof(Voxel) * maxVoxelCount,
 			.Usage = D3D11_USAGE_DEFAULT,
-			.BindFlags = D3D11_BIND_VERTEX_BUFFER,
+			.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_UNORDERED_ACCESS,
 			.CPUAccessFlags = 0,
 			.MiscFlags = 0
 		};
 		voxelDrawInstanceBuffer = eastl::make_unique<Buffer>(voxelDrawBufferDesc);
+		voxelDrawInstanceBuffer->CreateUAV();
 
 		// Voxel Buffer
 		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(maxVoxelCount, true, false);
+		//voxelBufferDesc.BindFlags |= D3D11_BIND_VERTEX_BUFFER;
 		//eastl::vector<Voxel> voxels(maxVoxelCount);
 		voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, maxVoxelCount);
 		voxelBuffer->CreateUAV(true);
@@ -1022,7 +1024,14 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 		renderingWorld = false;
 
 		if (rendered > 0) {
-			history.push_back({ steady_clock::now(), rendered });
+			const auto& record = History(steady_clock::now(), rendered);
+
+			if (history.size() < MAX_HISTORY) {
+				history.push_back(record);
+			} else {
+				history.erase_first(history.begin());
+				history.push_back(record);
+			}
 		}
 
 		Main_RenderWorldAfter();
@@ -1315,6 +1324,8 @@ void VoxelConeTracingGI::InjectLighting()
 	lights.reserve(MAX_LIGHTS);
 
 	auto accumulator = *globals::game::currentAccumulator.get();
+
+	bool interior = Util::IsInterior();
 
 	if (!settings.NoIndoorDir) 
 	{

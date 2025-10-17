@@ -151,18 +151,20 @@ struct VoxelConeTracingGI : public Feature
 	virtual inline std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return {
-			"This is a terse description.",
+			"Voxel Cone Tracing approximates global illumination by tracing cones in a 3D texture instead of using expensive rays, it is fast but memory intensive.",
 			{
-				"This is a subfeature.",
-				"This is another subfeature.",
-				"Cheese.",
+				"World space indirect lighting.",
+				"Diffuse and Specular .",
+				"Support for multiple bounces.",
+				"Per-lighting source settings.",
+				"Interior and exterior specific quality/performance settings."
 			}
 		};
 	}
 
 	// Functionality
-	virtual bool inline SupportsVR() override { return true; }
-	virtual inline std::string_view GetShaderDefineName() override { return "SHADER_MACRO"; }
+	virtual bool inline SupportsVR() override { return false; }
+	virtual inline std::string_view GetShaderDefineName() override { return "VCT"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override { return t == RE::BSShader::Type::Lighting; };
 
 	// Settings & UI
@@ -206,8 +208,9 @@ struct VoxelConeTracingGI : public Feature
 
 	static constexpr const char* resolutionsLabels[6] = { "16", "32", "64", "128", "256", "512" };
 	static constexpr uint resolutions[6] = { 16, 32, 64, 128, 256, 512 };
-
 	static constexpr uint MAX_LIGHTS = 1024;
+	static constexpr eastl_size_t MAX_HISTORY = 60 * 60 * 60;
+
 	float3 center;
 	bool queuedReset;
 	bool renderingWorld;
@@ -222,21 +225,61 @@ struct VoxelConeTracingGI : public Feature
 		Count
 	};
 
+	enum UpdateRate
+	{
+		None,
+		EveryFrame,
+		EverySecond,
+		EveryThirdFrame,
+		EveryFourth
+	};
+
+	enum TraceResolution
+	{
+		Full,
+		HalfRes,
+		QuarterRes
+	};
+
+	struct TraceSettings
+	{
+		float ConeStepMultiplier = 1.0f;
+		float DiffuseRadiusMultiplier = 1.0f;
+		float SpecularRadiusMultiplier = 1.0f;	
+	};
+
+	struct LightingProfile
+	{
+		float DirectMultiplier = 1.0f;
+		float DirectionalMultiplier = 1.0f;
+		float EmissiveMultiplier = 1.0f;
+		float AmbientMultiplier = 1.0f;
+		float DiffuseMultiplier = 1.0f;
+		float SpecularMultiplier = 1.0f;
+	};
+
+	struct EnvironmentSettings
+	{
+		LightingProfile Lighting;
+		TraceSettings Trace;
+		uint Bounces = 0;
+	};
+
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
 		uint EnableVoxelConeTracingGI = true;
-		uint NoIndoorDir = false;
 		uint Resolution = 64;
 		int	Size = 20;
 		int ClipmapCount = 4;
 		int ScaleFactor = 2;
-		uint UpdateVoxels = true;
+		EnvironmentSettings Interior;
+		EnvironmentSettings Exterior;
+		TraceResolution Resolution; 
+		UpdateRate UpdateRate = UpdateRate::EveryFrame;
 		uint ForceUpdate = false;
 		VoxelDrawMode VoxelDrawMode = VoxelDrawMode::None;
-		float3 pad0;
 	} settings;
-	static_assert(sizeof(Settings) % 16 == 0);
 
 	bool Enabled() const
 	{
@@ -245,7 +288,15 @@ struct VoxelConeTracingGI : public Feature
 
 	bool Update() const
 	{
-		return (bool)settings.UpdateVoxels;
+		return (bool)settings.UpdateRate != UpdateRate::None;
+	}
+
+	EnvironmentSettings EnvironmentSettings() const 
+	{
+		if (Util::IsInterior())
+			return settings.Interior;
+		else
+			return settings.Exterior;	
 	}
 
 	uint NodeCount(uint maxDepth)
@@ -514,4 +565,3 @@ struct VoxelConeTracingGI : public Feature
 		}
 	};
 };
-static_assert(sizeof(VoxelConeTracingGI) % 16 == 0);

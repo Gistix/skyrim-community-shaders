@@ -40,11 +40,12 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     uint maxi = facenormal.y > facenormal.x ? 1 : 0;
     maxi = facenormal.z > facenormal[maxi] ? 2 : maxi;
     
-#ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
-#endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    
-    
+
+    if (!IntersectAABB(Min, Min + Size.xxx, aabbMin, aabbMax))
+        return;
+        
     GS_OUTPUT output[3];
     
     uint i = 0;
