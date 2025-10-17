@@ -40,7 +40,7 @@ VS_OUT main(VS_IN input)
     float ndcX = (pixelCoord.x / (Res * Res)) * 2.0f - 1.0f;
     float ndcY = (pixelCoord.y * ResInv) * 2.0f - 1.0f;
 
-    output.Position = float4(ndcX, ndcY, 0.0f, 1.0f);
+    output.Position = float4(ndcX, -ndcY, 0.0f, 1.0f);
 
     output.Albedo = float4(input.Albedo, 1.0);
     output.Normal = float4(input.Normal, 1.0);

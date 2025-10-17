@@ -10,7 +10,7 @@ struct PS_INPUT
 
 half4 main(PS_INPUT input) : SV_TARGET
 {
-    half3 output;
+    half3 output = 0;
     
 #if DRAW_MODE == DRAW_ALBEDO
     output = input.Albedo;

@@ -82,6 +82,15 @@ cbuffer VS_PerFrame : register(b12)
 #	endif      // VR
 };
 
+cbuffer VS_PerFramePS : register(b13)
+{
+#if !defined(VR)
+	float4 CameraPosAdjust[1] : packoffset(c0);
+#else
+	float4 CameraPosAdjust[2] : packoffset(c0);
+#endif  // !VR
+}
+
 VS_OUTPUT main(VS_INPUT input)
 {
 	uint eyeIndex = 0;
@@ -96,7 +105,8 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 worldPosition = float4(mul(World[eyeIndex], inputPosition), 1);
 #endif  // SKINNED	
 
-	worldPosition.xyz += FrameBuffer::CameraPosAdjust[eyeIndex].xyz;
+	// Copied from framebuffer, if we use the original here it will clash with VS_PerFrame (same constant buffer slot)
+	worldPosition.xyz += CameraPosAdjust[eyeIndex].xyz;
 
 	VS_OUTPUT vsout;
 	vsout.PositionWS = worldPosition;

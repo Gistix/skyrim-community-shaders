@@ -204,11 +204,13 @@ struct VoxelConeTracingGI : public Feature
 	template <typename T>
 	std::vector<std::pair<T, T>> GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor);
 
-	const char* dimensionsLabels[8] = { "16", "32", "64", "128", "256", "512" };
-	const uint dimensions[8] = { 16, 32, 64, 128, 256, 512 };
+	static constexpr const char* resolutionsLabels[6] = { "16", "32", "64", "128", "256", "512" };
+	static constexpr uint resolutions[6] = { 16, 32, 64, 128, 256, 512 };
+
 	static constexpr uint MAX_LIGHTS = 1024;
 	float3 center;
 	bool queuedReset;
+	bool renderingWorld;
 
 	enum VoxelDrawMode {
 		None,
@@ -225,13 +227,16 @@ struct VoxelConeTracingGI : public Feature
 	{
 		uint EnableVoxelConeTracingGI = true;
 		uint NoIndoorDir = false;
-		int Resolution = 64;
+		uint Resolution = 64;
 		int	Size = 20;
-		int SizeMultiplier = 2;
+		int ClipmapCount = 4;
+		int ScaleFactor = 2;
 		uint UpdateVoxels = true;
 		uint ForceUpdate = false;
 		VoxelDrawMode VoxelDrawMode = VoxelDrawMode::None;
+		float3 pad0;
 	} settings;
+	static_assert(sizeof(Settings) % 16 == 0);
 
 	bool Enabled() const
 	{
@@ -254,13 +259,8 @@ struct VoxelConeTracingGI : public Feature
 	}
 
 	uint OctreeMaxDepth() {
-		uint lodResolution = GetResolution();
+		uint lodResolution = settings.Resolution;
 		return static_cast<uint>(ceil(log2(lodResolution)));
-	}
-
-	uint GetResolution() const
-	{
-		return static_cast<uint>(settings.Resolution);
 	}
 
 	uint MipLevels(uint resolution) 
@@ -328,6 +328,12 @@ struct VoxelConeTracingGI : public Feature
 
 	VoxelConeTracingGI::VoxelConeTracingGICB GetCommonBufferData() const;
 
+	struct alignas(16) VSFrameBufferPS
+	{
+		float4 CameraPosAdjust;
+	} vsFrameBufferPSData;
+	static_assert(sizeof(VSFrameBufferPS) % 16 == 0);
+
 	struct alignas(16) InjectLightingCB
 	{
 		float3 VoxelSize;
@@ -339,26 +345,11 @@ struct VoxelConeTracingGI : public Feature
 	} injectLightingCBData;
 	static_assert(sizeof(InjectLightingCB) % 16 == 0);
 
-	struct alignas(16) DebugCB
-	{
-		float4 NDCToView;
-
-		float2 RcpFrameDim;
-		float2 _pad0;
-
-		float3 Coord2Cell;
-		uint _pad1;
-
-		float3 Min;
-		uint pad2;
-	} debugCBData;
-	static_assert(sizeof(DebugCB) % 16 == 0);
-
 	eastl::vector<Light> lights = {};
 
 	eastl::unique_ptr<ConstantBuffer> voxelConeTracingGICB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> vsFrameBufferPSCB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
-	eastl::unique_ptr<ConstantBuffer> debugCB = nullptr;
 
 	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11VertexShader>> voxelizeVertex;
 	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
