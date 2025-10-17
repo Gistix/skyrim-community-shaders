@@ -8,12 +8,12 @@
 
 cbuffer InjectLightingCB : register(b0)
 {
-	float3 VoxelSize;
-	uint LightCount;
-	float3 Coord2Cell;
-	uint _pad0;
 	float3 Min;
-	uint _pad1;
+	float Size;
+	float ResInv; 
+	float VoxelSize;
+	uint LightCount;
+	uint Pad0;
 }
 
 StructuredBuffer<Light> Lights : register(t0);
@@ -27,9 +27,11 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 {
 	Voxel voxel = Voxels[id];
 
-	//float3 voxelPosition = voxel.position;
-	float3 voxelPosition = 0;
-	float3 voxelSurface = voxelPosition + (voxel.Normal * VoxelSize * 0.5);
+	uint3 coord = voxel.Coord;
+	float3 normal = voxel.Normal;
+	
+	float3 voxelPosition = Min + ((coord + 0.5.xxx) * Size * ResInv);
+	float3 voxelSurface = voxelPosition + (normal * VoxelSize * 0.5);
 
 	float3 diffuseLighting = 0;
 
@@ -69,13 +71,9 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 			direction = lvector;
 		}
 
-		float NdotL = max(dot(voxel.Normal, normalize(direction)), 0);
-		diffuseLighting += color * NdotL * attenuation;
+		float NdotL = dot(normal, normalize(direction));
+		diffuseLighting += color * saturate(NdotL) * attenuation;
 	}
 
-	uint3 uvw = (uint3)floor((voxelPosition - Min) * Coord2Cell);	
-	
-	// This quiets fxc.exe down
-	if (groupId == 0)
-		LOD0[uvw] = half4(voxel.Emissive + (voxel.Albedo * diffuseLighting), 1.0);
+	LOD0[coord] = half4(voxel.Emissive + (voxel.Albedo * diffuseLighting), 1.0);
 }

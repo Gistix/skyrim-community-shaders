@@ -13,6 +13,7 @@ struct VS_IN
 struct VS_OUT
 {
     float4 Position : SV_POSITION;
+    uint3 Coord : TEXCOORD0;   
     float3 Albedo : COLOR0;
     float3 Normal : NORMAL;
     float3 Emission : COLOR1;
@@ -39,6 +40,7 @@ VS_OUT main(VS_IN input)
 
     output.Position = mul(FrameBuffer::CameraViewProj[0], float4(worldPos - FrameBuffer::CameraPosAdjust[0].xyz, 1.0f));
 
+    output.Coord = input.Coord;
     output.Albedo = input.Albedo;
     output.Normal = input.Normal;
     output.Emission = input.Emission;

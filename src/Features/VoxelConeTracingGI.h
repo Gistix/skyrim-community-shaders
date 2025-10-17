@@ -336,12 +336,12 @@ struct VoxelConeTracingGI : public Feature
 
 	struct alignas(16) InjectLightingCB
 	{
-		float3 VoxelSize;
-		uint LightCount;
-		float3 Coord2Cell;
-		uint _pad0;
 		float3 Min;
-		uint _pad1;	
+		float Size;
+		float ResInv;
+		float VoxelSize;
+		uint LightCount;
+		uint Pad0;
 	} injectLightingCBData;
 	static_assert(sizeof(InjectLightingCB) % 16 == 0);
 

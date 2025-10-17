@@ -127,7 +127,6 @@ VS_OUTPUT main(VS_INPUT input)
 #if defined(MODELSPACENORMALS)
     vsout.NormalWS = float3(0, 0, 1); // Or any debug normal direction
 #else // MODELSPACENORMALS not defined
-
     #if defined(SKINNED)
         // Skinned mesh: transform normal using boneRSMatrix
         float3x3 boneRSMatrixTr = transpose(boneRSMatrix);
@@ -139,10 +138,10 @@ VS_OUTPUT main(VS_INPUT input)
 			)
 		);
     #else
-        float3x3 normalMatrix = (float3x3)World[0];     
+        float3x3 normalMatrix = (float3x3)World[eyeIndex];     
     #endif
 	
-	vsout.NormalWS = normalize(mul(normalMatrix, input.Normal.xyz));
+	vsout.NormalWS = normalize(mul(normalMatrix, input.Normal.xyz * 2.0f - 1.0f));
 #endif
 
 #if defined(VC)

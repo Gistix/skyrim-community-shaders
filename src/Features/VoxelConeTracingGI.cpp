@@ -284,7 +284,7 @@ void VoxelConeTracingGI::SetupResources()
 		};
 
 		// Multi purpose indirect arguments buffer
-		UINT indirectArgsInit[8] = {
+		UINT indirectArgsInit[11] = {
 			// Used to draw voxels to the screen
 			36, // 0 - Vertices (Cube)
 			0,  // 1 - Instance Count (Voxel Count)
@@ -295,7 +295,12 @@ void VoxelConeTracingGI::SetupResources()
 			0,  // 4 - Vertices (Voxel Sample Count)
 			1,  // 5 - Instance Count
 			0,  // 6
-			0  // 7
+			0,  // 7
+
+			// Used to inject lighting into voxels
+			0,  // 8 - ThreadGroupCountX (Voxel Count / 64)
+			1,  // 9 - ThreadGroupCountY
+			1   // 10 - ThreadGroupCountZ
 		};
 
 		uint indirectArgsByteWidth = sizeof(indirectArgsInit);
@@ -1055,6 +1060,8 @@ void VoxelConeTracingGI::Main_RenderWorldAfter()
 
 	PostProcess();
 
+	InjectLighting();
+
 	if (settings.VoxelDrawMode != VoxelDrawMode::None && settings.VoxelDrawMode != VoxelDrawMode::Count) {
 		DrawVoxels();
 	}
@@ -1144,9 +1151,8 @@ void VoxelConeTracingGI::PostProcess()
 			voxelAccumulator->SRV(2)
 		};
 
-		std::array<ID3D11UnorderedAccessView*, 2> uavs = {
-			voxelBuffer->UAV(),
-			lod0Tex->uav.get()
+		std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+			voxelBuffer->UAV()
 		};
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
@@ -1169,7 +1175,10 @@ void VoxelConeTracingGI::PostProcess()
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 
 		// Generate mip maps
-		context->GenerateMips(lod0Tex->srv.get());
+		//context->GenerateMips(lod0Tex->srv.get());
+
+		// Copy voxel count to [1]
+		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 1, voxelBuffer->UAV());
 
 		state->EndPerfEvent();
 	}
@@ -1183,9 +1192,6 @@ void VoxelConeTracingGI::DrawVoxels()
 	state->BeginPerfEvent("Draw Voxels");
 
 	auto context = globals::d3d::context;
-
-	// Copy voxel count to [1]
-	context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 1, voxelBuffer->UAV());
 
 	// Copy voxels to buffer with vertex bind support
 	context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelBuffer->resource.get());
@@ -1208,6 +1214,13 @@ void VoxelConeTracingGI::DrawVoxels()
 
 	auto drawPixel = drawPixelVariants[settings.VoxelDrawMode - 1];
 	context->PSSetShader(drawPixel.get(), nullptr, 0);
+
+	std::array<ID3D11ShaderResourceView*, 1> srvs = {
+		lod0Tex->srv.get()
+	};
+
+	if (settings.VoxelDrawMode == VoxelDrawMode::Lighting || settings.VoxelDrawMode == VoxelDrawMode::Final)
+		context->PSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 
 	auto renderer = globals::game::renderer;
 	auto screenSize = renderer->GetScreenSize();
@@ -1266,6 +1279,8 @@ void VoxelConeTracingGI::DrawVoxels()
 	if (prevPixel)
 		prevPixel->Release();*/
 
+	srvs.fill(nullptr);
+
 	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, prevDSV);
 
 	for (int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) {
@@ -1292,11 +1307,8 @@ bool VoxelConeTracingGI::IsGlobalLight(RE::BSLight* a_light)
 void VoxelConeTracingGI::InjectLighting()
 {
 	auto state = globals::state;
-	state->BeginPerfEvent("InjectLighting");
+	state->BeginPerfEvent("Inject Lighting");
 
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "Voxel Cone Tracing - Light Injection");
-	
 	auto context = globals::d3d::context;
 
 	lights.clear();
@@ -1424,43 +1436,63 @@ void VoxelConeTracingGI::InjectLighting()
 
 	lightBuffer->Update(lights.data(), lights.size());
 
-	float size = static_cast<float>(settings.Size) / Util::Units::GAME_UNIT_TO_M;
-	float3 sizeF3 = float3(size, size, size);
 
-	float resolutionFloat = static_cast<float>(settings.Resolution);
+	// Prepare indirect arguments buffer (ThreadGroupCountX = voxelCount/64)
+	{
+		state->BeginPerfEvent("Prepare indirect");
 
-	injectLightingCBData.VoxelSize = sizeF3 / resolutionFloat;
-	injectLightingCBData.LightCount = std::min((uint)lights.size(), MAX_LIGHTS);
-	injectLightingCBData.Coord2Cell = float3(1.0f / size, 1.0f / size, 1.0f / size) * resolutionFloat;
-	injectLightingCBData.Min = center - (sizeF3 * 0.5);
+		std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+			voxelIndirectArgsBuffer->uav.get()
+		};
 
-	injectLightingCB->Update(injectLightingCBData);
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 
-	auto cb = injectLightingCB->CB();
+		context->CSSetShader(postProcessIndirectArgsCompute.get(), nullptr, 0);
+		context->Dispatch(1, 1, 1);
 
-	std::array<ID3D11ShaderResourceView*, 2> srvs = {
-		lightBuffer->SRV(),
-		voxelBuffer->SRV()
-	};
+		state->EndPerfEvent();
+	}
 
-	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-		lod0Tex->uav.get()
-	};
+	{
+		float size = static_cast<float>(settings.Size) / Util::Units::GAME_UNIT_TO_M;
+		float3 sizeF3 = float3(size, size, size);
 
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-	context->CSSetConstantBuffers(0, 1, &cb);
+		float resolutionFloat = static_cast<float>(settings.Resolution);
 
-	context->CSSetShader(injectLightCompute.get(), nullptr, 0);
-	context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 0);
+		injectLightingCBData.Min = center - (sizeF3 * 0.5);
+		injectLightingCBData.Size = size;
+		injectLightingCBData.ResInv = 1.0f / resolutionFloat;
+		injectLightingCBData.VoxelSize = size / resolutionFloat;
+		injectLightingCBData.LightCount = std::min((uint)lights.size(), MAX_LIGHTS);
 
-	context->GenerateMips(lod0Tex->srv.get());
+		injectLightingCB->Update(injectLightingCBData);
 
-	srvs.fill(nullptr);
-	uavs.fill(nullptr);
+		auto cb = injectLightingCB->CB();
 
-	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		std::array<ID3D11ShaderResourceView*, 2> srvs = {
+			lightBuffer->SRV(),
+			voxelBuffer->SRV()
+		};
+
+		std::array<ID3D11UnorderedAccessView*, 1> uavs = {
+			lod0Tex->uav.get()
+		};
+
+		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		context->CSSetConstantBuffers(0, 1, &cb);
+
+		context->CSSetShader(injectLightCompute.get(), nullptr, 0);
+		context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 8);
+
+		context->GenerateMips(lod0Tex->srv.get());
+
+		srvs.fill(nullptr);
+		uavs.fill(nullptr);
+
+		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+	}
 
 	state->EndPerfEvent();
 }
@@ -1477,11 +1509,6 @@ void VoxelConeTracingGI::Prepass()
 	const auto max = float3(421.93579f, 1137.04248f, 252.90166f);
 
 	center = (min + max) * 0.5f;
-
-	/*Voxelize();
-	VoxelArgs();
-	InjectLighting();*/
-	//Debug();
 
 	//UINT values[4] = { 0, 0, 0, 0 };
 	//globals::d3d::context->ClearUnorderedAccessViewUint(voxelAppendBuffer->UAV(), values);

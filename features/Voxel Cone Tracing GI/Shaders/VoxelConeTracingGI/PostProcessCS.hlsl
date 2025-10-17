@@ -15,7 +15,7 @@ Texture2D<half4> Normal			: register(t1);
 Texture2D<half4> Emissive		: register(t2);
 
 AppendStructuredBuffer<Voxel> Voxels : register(u0);
-RWTexture3D<half4> LOD0				 : register(u1);
+//RWTexture3D<half4> LOD0				 : register(u1);
 
 [numthreads(8, 8, 8)]
 void main(uint3 id: SV_DispatchThreadID)
@@ -35,7 +35,7 @@ void main(uint3 id: SV_DispatchThreadID)
 		
 		float3 emissive = Emissive[coord].rgb;	
 	
-		LOD0[id] = half4(albedo.rgb, 1.0f);
+		//LOD0[id] = half4(albedo.rgb, 1.0f);
 	
 		Voxel voxel;
 	

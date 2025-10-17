@@ -1,5 +1,6 @@
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 #include "VoxelConeTracingGI/Voxel.hlsli"
+#include "Common/Color.hlsli"
 #include "Common/SharedData.hlsli"
 
 cbuffer PerGeometry : register(b2)
@@ -82,16 +83,16 @@ void main(PS_INPUT input)
 	if (!IntersectAABB(voxelAABBMin, voxelAABBMax, input.AABBMin, input.AABBMax)) {
 		return;
 	}
-#endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED	
+#endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 
 	float2 uv = input.TexCoord0.xy;
-	
+
 	Voxel voxelSample;
 	
 	voxelSample.Coord = coord;
-	voxelSample.Albedo = TexColorSampler.Sample(SampColorSampler, uv).rgb;
-	voxelSample.Normal = input.NormalWS.xyz;
-	voxelSample.Emissive = EmitColor * TexGlowSampler.Sample(SampGlowSampler, uv).rgb;
+	voxelSample.Albedo = Color::Diffuse(TexColorSampler.Sample(SampColorSampler, uv).rgb);
+	voxelSample.Normal = normalize(input.NormalWS.xyz);
+	voxelSample.Emissive = EmitColor * Color::Diffuse(TexGlowSampler.Sample(SampGlowSampler, uv).rgb);
 	
 	VoxelSamples.Append(voxelSample);
 }
