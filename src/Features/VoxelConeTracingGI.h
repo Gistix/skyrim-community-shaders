@@ -373,12 +373,7 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
 	D3D11_VIEWPORT lod0Viewport = {};
 
-	eastl::unique_ptr<Buffer> voxelMaskBuffer = nullptr;
-	eastl::unique_ptr<StructuredBuffer> voxelTrackBuffer = nullptr;
-	eastl::unique_ptr<Buffer> voxelSampleCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelSamplesBuffer = nullptr;
-
-	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
 
 	// Multi purpose buffer for indirect arguments

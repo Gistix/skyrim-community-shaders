@@ -57,10 +57,7 @@ struct PS_INPUT
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    	
 };
 
-RWByteAddressBuffer VoxelMask : register(u0);
-AppendStructuredBuffer<uint4> VoxelTrack : register(u1);
-RWByteAddressBuffer VoxelSampleCount : register(u2);
-AppendStructuredBuffer<Voxel> VoxelSamples : register(u3);
+AppendStructuredBuffer<Voxel> VoxelSamples : register(u0);
 
 Texture2D<float4> TexColorSampler : register(t0);
 Texture2D<float4> TexGlowSampler : register(t6);
@@ -70,17 +67,13 @@ SamplerState SampGlowSampler : register(s6);
 
 void main(PS_INPUT input)
 {
-	//float3 uvw = (input.PositionWS.xyz - SharedData::voxelConeTracingGISettings.Min) * SharedData::voxelConeTracingGISettings.SizeInv;
-
-	uint3 coord = floor(input.Cell);
-	
 	[branch]
-	if (any(coord < 0) || any(coord > SharedData::voxelConeTracingGISettings.Res)) {
+	if (any(input.Cell < 0.0f) || any(input.Cell > (float)SharedData::voxelConeTracingGISettings.Res - 1.0f)) {
 		return;
 	}
 	
-	//uint3 coord = (uint3)floor(uvw * SharedData::voxelConeTracingGISettings.Res);
-	
+	uint3 coord = floor(input.Cell);
+
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 	float3 voxelAABBMin = SharedData::voxelConeTracingGISettings.Min + (coord * SharedData::voxelConeTracingGISettings.VoxelSize);
 	float3 voxelAABBMax = voxelAABBMin + SharedData::voxelConeTracingGISettings.VoxelSize.xxx;
@@ -90,22 +83,6 @@ void main(PS_INPUT input)
 		return;
 	}
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED	
-	
-	uint index = coord.x + (coord.y * SharedData::voxelConeTracingGISettings.Res) + (coord.z * SharedData::voxelConeTracingGISettings.Res * SharedData::voxelConeTracingGISettings.Res);
-
-	uint originalValue;
-	VoxelSampleCount.InterlockedAdd(index * 4, 1, originalValue); 	
-	
-    uint wordIndex = index >> 5;
-    uint bitIndex  = index & 31;
-    uint bitMask = 1 << bitIndex;	
-	
-    uint originalWord;
-    VoxelMask.InterlockedOr(wordIndex, bitMask, originalWord);	
-	
-	if ((originalWord & bitMask) == 0) {
-		VoxelTrack.Append(uint4(coord, index));
-	}
 
 	float2 uv = input.TexCoord0.xy;
 	

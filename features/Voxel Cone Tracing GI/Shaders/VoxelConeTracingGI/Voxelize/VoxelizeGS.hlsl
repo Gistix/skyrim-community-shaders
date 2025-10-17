@@ -79,7 +79,7 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
 	    output[0].Position.xy += normalize(side2N - side0N);
 	    output[1].Position.xy += normalize(side0N - side1N);
 	    output[2].Position.xy += normalize(side1N - side2N);
-    #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    
+    #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
     
     [unroll]
     for (i = 0; i < 3; ++i)  
