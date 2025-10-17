@@ -18,6 +18,8 @@
 
 #include "PCH.h"
 #include "ShaderCache.h"
+#include "Globals.h"
+#include "State.h"
 
 namespace ShaderUtils
 {
@@ -215,8 +217,10 @@ struct VoxelConeTracingGI : public Feature
 	bool queuedReset;
 	bool renderingWorld;
 	uint lastUpdateFrame = 0;
+	uint padding[3] = {};
 
-	enum DebugDrawMode {
+	enum DebugDrawMode : uint8_t
+	{
 		None,
 		Albedo,
 		Emission,
@@ -226,30 +230,39 @@ struct VoxelConeTracingGI : public Feature
 		Count
 	};
 
-	// Controls influence to GI calculation (lighting multipliers, optional bounce count)
+	// Controls influence to injected lighting
 	struct LightingInSettings
 	{
 		float DirectMultiplier = 1.0f;
 		float DirectionalMultiplier = 1.0f;
 		float EmissiveMultiplier = 1.0f;
 		float AmbientMultiplier = 1.0f;
+
+		auto operator<=>(const LightingInSettings&) const = default;
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingInSettings, DirectMultiplier, DirectionalMultiplier, EmissiveMultiplier, AmbientMultiplier)
 	};
 
 	// Controls tracing, heavy performance/quality impact - tune responsibly
 	struct TraceSettings
 	{
-		uint Bounces = 0;
+		uint8_t AdditionalBounces = 0;
 		float ConeStepMultiplier = 1.0f;
 		float DiffuseRadiusMultiplier = 1.0f;
 		float SpecularRadiusMultiplier = 1.0f;
-		uint DownscaleFactor = 0; 
+		uint8_t DownscaleFactor = 0;
+
+		auto operator<=>(const TraceSettings&) const = default;
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TraceSettings, AdditionalBounces, ConeStepMultiplier, DiffuseRadiusMultiplier, SpecularRadiusMultiplier, DownscaleFactor)
 	};
 
 	// Controls application of final global illumination to the scene
 	struct LightingOutSettings
 	{
 		float DiffuseStrength = 1.0f;
-		float SpecularStrength = 1.0f;	
+		float SpecularStrength = 1.0f;
+
+		auto operator<=>(const LightingOutSettings&) const = default;
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingOutSettings, DiffuseStrength, SpecularStrength)
 	};
 
 	// For Interior/Exterior specific tuning
@@ -258,21 +271,25 @@ struct VoxelConeTracingGI : public Feature
 		LightingInSettings Input;
 		TraceSettings Trace;
 		LightingOutSettings Output;
+
+		auto operator<=>(const EnvironmentSettings&) const = default;
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, Input, Trace, Output)
 	};
 
 	struct Settings
 	{
-		uint EnableVoxelConeTracingGI = true;
-		uint Resolution = 64;
+		uint8_t EnableVoxelConeTracingGI = true;
+		uint16_t Resolution = 64;
 		int	Size = 20;
 		int ClipmapCount = 4;
 		int ScaleFactor = 2;
+		uint8_t UpdateRate = 1;
+		uint8_t ForceUpdate = false;
 		EnvironmentSettings Interior;
 		EnvironmentSettings Exterior;
-		uint UpdateRate = 1;
-		uint ForceUpdate = false;
 		DebugDrawMode DebugDrawMode = DebugDrawMode::None;
 	} settings;
+	static_assert(sizeof(Settings) % 16 == 0);
 
 	bool Enabled() const
 	{
@@ -287,7 +304,7 @@ struct VoxelConeTracingGI : public Feature
 		return globals::state->frameCount > lastUpdateFrame + (settings.UpdateRate - 1);
 	}
 
-	GIEnvironmentSettings CurrentEnvironmentSettings() const 
+	EnvironmentSettings CurrentEnvironmentSettings() const 
 	{
 		if (Util::IsInterior())
 			return settings.Interior;

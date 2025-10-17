@@ -10,8 +10,6 @@
 #include "LightLimitFix.h"
 #include "InverseSquareLighting.h"
 
-#include "Globals.h"
-#include "State.h"
 #include "Deferred.h"
 #include "Utils/UI.h"
 #include "Utils/Format.h"
@@ -24,13 +22,14 @@ static constexpr uint MAX_LIGHTS = 1024;
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VoxelConeTracingGI::Settings,
 	EnableVoxelConeTracingGI,
-	NoIndoorDir,
 	Resolution,
 	Size,
 	ClipmapCount,
 	ScaleFactor,
-	UpdateVoxels,
+	UpdateRate,
 	ForceUpdate,
+	Interior,
+	Exterior,
 	DebugDrawMode)
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -54,140 +53,13 @@ void VoxelConeTracingGI::DrawSettings()
 {
 	ImGui::Checkbox("Enable Voxel Cone Tracing GI", (bool*)&settings.EnableVoxelConeTracingGI);
 
-	{
-		auto find = [](auto& array, uint value) -> int {
-			for (size_t i = 0; i < std::size(array); ++i) {
-				if (array[i] == value) {
-					return static_cast<int>(i);
-				}
-			}
+    if (!settings.EnableVoxelConeTracingGI)
+		ImGui::BeginDisabled(true);
 
-			return 0;
-		};
 
-		int resolution = find(resolutions, settings.Resolution); 
 
-		if (ImGui ::Combo("Resolution", &resolution, resolutionsLabels, IM_ARRAYSIZE(resolutionsLabels))) {
-			settings.Resolution = resolutions[resolution];
-
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("Volume resolution per axis\n");
-			}
-		}
-	}
-
-	ImGui::InputInt("Size", &settings.Size);
-	settings.Size = std::max(1, settings.Size);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("World size of first volume\n");
-	}
-
-	ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 2, 8);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("Number of clipmaps to use\n");
-	}
-
-	{
-		ImGui::SliderInt("Clipmap Scale Factor", &settings.ScaleFactor, 2, 10);
-
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("The world space size multiplier for each subsequent clipmap\n");
-		}
-
-		const auto& clipmapCount = settings.ClipmapCount;
-
-		std::string label;
-
-		for (int i = 0; i < clipmapCount; ++i) {
-			label += std::format("Clip{} Size: {}", i, settings.Size * std::pow(settings.ScaleFactor, i));
-
-			if (i < clipmapCount-1) {
-				label += ", ";
-			}
-		}
-
-		ImGui::Text(label.c_str());
-	}
-	
-	if (ImGui::TreeNodeEx("Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("Optional tweaks\n");
-		}
-
-		ImGui::Checkbox("Disable Indoor Directional", (bool*)&settings.NoIndoorDir);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("Disables directional lights when indoors for better direct and indirect lighting\n");
-		}
-
-		//ImGui::Checkbox("Update Voxels", (bool*)&settings.UpdateVoxels);
-		//ImGui::Checkbox("Force Update All Voxels", (bool*)&settings.ForceUpdate);
-		ImGui::TreePop();
-	}
-
-	if (ImGui::CollapsingHeader("Debug")) {
-		std::array<std::string, DebugDrawMode::Count> items;
-
-		const auto& itemsView = magic_enum::enum_names<DebugDrawMode>();
-		for (size_t i = 0; i < items.size(); i++) {
-			items[i] = std::string(itemsView[i]);
-		}
-
-		if (ImGui::BeginCombo("Display Mode", items[settings.DebugDrawMode].c_str())) {
-			for (size_t i = 0; i < items.size(); i++) {
-				bool isSelected = (settings.DebugDrawMode == i);
-
-				if (ImGui::Selectable(items[i].c_str(), isSelected))
-					settings.DebugDrawMode = static_cast<DebugDrawMode>(i);
-
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
-			}
-			
-			ImGui::EndCombo();
-		}
-
-		/*if (ImGui::TreeNode("Debug Texture")) {
-			ImGui::Image(debugTex->srv.get(), { debugTex->desc.Width * 0.5f, debugTex->desc.Height * 0.5f });
-			ImGui::TreePop();
-		}*/
-
-		ImGui::Text(std::format("Queue Size: {}", queuedTriShapes.size()).c_str());
-
-		if (ImGui::TreeNodeEx("VoxelizationHistory", ImGuiTreeNodeFlags_DefaultOpen, std::format("History ({})", history.size()).c_str())) {
-			const auto num_elements = eastl::min<eastl_size_t>(5, history.size());
-
-			if (num_elements > 0) {
-				ImGui::Text(std::format("Last {} voxelization passes:", num_elements).c_str());
-
-				if (ImGui::BeginTable("VoxelizationHistoryTable", 2, ImGuiTableFlags_Borders)) {
-					const auto start_iterator = history.end() - num_elements;
-					const eastl::vector<History> last_five_elements(start_iterator, history.end());
-
-					ImGui::TableSetupColumn("Rendered TriShapes");
-					ImGui::TableSetupColumn("Elapsed time");
-					ImGui::TableHeadersRow();
-
-					for (const auto element : last_five_elements) {
-						ImGui::TableNextRow();
-
-						ImGui::TableNextColumn();
-						ImGui::Text(std::format("{}", element.rendered).c_str());
-
-						ImGui::TableNextColumn();
-						ImGui::Text(Util::TimeAgoString(element.time).c_str());
-					}
-
-					ImGui::EndTable();
-				}
-
-				ImGui::Text(std::format("Voxelization run count: {}", history.size()).c_str());
-			} else {
-				ImGui::Text("Voxelization has not ran yet.");
-			}
-
-			ImGui::TreePop();
-		}
-	}
+	if (!settings.EnableVoxelConeTracingGI)
+		ImGui::EndDisabled(); 
 }
 
 void VoxelConeTracingGI::SetupResources()
@@ -225,17 +97,6 @@ void VoxelConeTracingGI::SetupResources()
 		voxelSamplesBuffer = eastl::make_unique<StructuredBuffer>(voxelSamplesBufferDesc, maxVoxelCount);
 		voxelSamplesBuffer->CreateUAV(true);
 		voxelSamplesBuffer->CreateSRV();
-		
-		// Voxel Draw Instance Buffer
-		D3D11_BUFFER_DESC voxelDrawBufferDesc = {
-			.ByteWidth = sizeof(Voxel) * maxVoxelCount,
-			.Usage = D3D11_USAGE_DEFAULT,
-			.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_UNORDERED_ACCESS,
-			.CPUAccessFlags = 0,
-			.MiscFlags = 0
-		};
-		voxelDrawInstanceBuffer = eastl::make_unique<Buffer>(voxelDrawBufferDesc);
-		voxelDrawInstanceBuffer->CreateUAV();
 
 		// Voxel Buffer
 		auto voxelBufferDesc = StructuredBufferDesc<Voxel>(maxVoxelCount, true, false);
@@ -330,6 +191,28 @@ void VoxelConeTracingGI::SetupResources()
 
 		voxelIndirectArgsBuffer = eastl::make_unique<Buffer>(indirectArgsBufferDesc, &indirectArgsInitData);
 		voxelIndirectArgsBuffer->CreateUAV(indirectArgsUAVDesc);
+
+		// Voxel Draw Instance Buffer
+		D3D11_BUFFER_DESC voxelDrawBufferDesc = {
+			.ByteWidth = sizeof(Voxel) * maxVoxelCount,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = 0
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC voxelDrawInstanceUAVDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = {
+				.FirstElement = 0,
+				.NumElements = voxelDrawBufferDesc.ByteWidth / 4u,
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW 
+			}
+		};
+
+		voxelDrawInstanceBuffer = eastl::make_unique<Buffer>(voxelDrawBufferDesc);
+		voxelDrawInstanceBuffer->CreateUAV(voxelDrawInstanceUAVDesc);
 	}
 	
 	// Cube vertex buffer
