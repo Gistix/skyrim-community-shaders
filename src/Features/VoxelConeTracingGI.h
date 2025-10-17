@@ -214,8 +214,9 @@ struct VoxelConeTracingGI : public Feature
 	float3 center;
 	bool queuedReset;
 	bool renderingWorld;
+	uint lastUpdateFrame = 0;
 
-	enum VoxelDrawMode {
+	enum DebugDrawMode {
 		None,
 		Albedo,
 		Emission,
@@ -225,47 +226,40 @@ struct VoxelConeTracingGI : public Feature
 		Count
 	};
 
-	enum UpdateRate
-	{
-		None,
-		EveryFrame,
-		EverySecond,
-		EveryThirdFrame,
-		EveryFourth
-	};
-
-	enum TraceResolution
-	{
-		Full,
-		HalfRes,
-		QuarterRes
-	};
-
-	struct TraceSettings
-	{
-		float ConeStepMultiplier = 1.0f;
-		float DiffuseRadiusMultiplier = 1.0f;
-		float SpecularRadiusMultiplier = 1.0f;	
-	};
-
-	struct LightingProfile
+	// Controls influence to GI calculation (lighting multipliers, optional bounce count)
+	struct LightingInSettings
 	{
 		float DirectMultiplier = 1.0f;
 		float DirectionalMultiplier = 1.0f;
 		float EmissiveMultiplier = 1.0f;
 		float AmbientMultiplier = 1.0f;
-		float DiffuseMultiplier = 1.0f;
-		float SpecularMultiplier = 1.0f;
 	};
 
+	// Controls tracing, heavy performance/quality impact - tune responsibly
+	struct TraceSettings
+	{
+		uint Bounces = 0;
+		float ConeStepMultiplier = 1.0f;
+		float DiffuseRadiusMultiplier = 1.0f;
+		float SpecularRadiusMultiplier = 1.0f;
+		uint DownscaleFactor = 0; 
+	};
+
+	// Controls application of final global illumination to the scene
+	struct LightingOutSettings
+	{
+		float DiffuseStrength = 1.0f;
+		float SpecularStrength = 1.0f;	
+	};
+
+	// For Interior/Exterior specific tuning
 	struct EnvironmentSettings
 	{
-		LightingProfile Lighting;
+		LightingInSettings Input;
 		TraceSettings Trace;
-		uint Bounces = 0;
+		LightingOutSettings Output;
 	};
 
-	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
 		uint EnableVoxelConeTracingGI = true;
@@ -275,10 +269,9 @@ struct VoxelConeTracingGI : public Feature
 		int ScaleFactor = 2;
 		EnvironmentSettings Interior;
 		EnvironmentSettings Exterior;
-		TraceResolution Resolution; 
-		UpdateRate UpdateRate = UpdateRate::EveryFrame;
+		uint UpdateRate = 1;
 		uint ForceUpdate = false;
-		VoxelDrawMode VoxelDrawMode = VoxelDrawMode::None;
+		DebugDrawMode DebugDrawMode = DebugDrawMode::None;
 	} settings;
 
 	bool Enabled() const
@@ -288,10 +281,13 @@ struct VoxelConeTracingGI : public Feature
 
 	bool Update() const
 	{
-		return (bool)settings.UpdateRate != UpdateRate::None;
+		if (settings.UpdateRate == 0)
+			return false;
+
+		return globals::state->frameCount > lastUpdateFrame + (settings.UpdateRate - 1);
 	}
 
-	EnvironmentSettings EnvironmentSettings() const 
+	GIEnvironmentSettings CurrentEnvironmentSettings() const 
 	{
 		if (Util::IsInterior())
 			return settings.Interior;
@@ -407,7 +403,7 @@ struct VoxelConeTracingGI : public Feature
 	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11PixelShader>> voxelizePixel;
 
 	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
-	std::array<winrt::com_ptr<ID3D11PixelShader>, VoxelDrawMode::Count> drawPixelVariants;
+	std::array<winrt::com_ptr<ID3D11PixelShader>, DebugDrawMode::Count> drawPixelVariants;
 
 	winrt::com_ptr<ID3D11VertexShader> accumulateVertex = nullptr;
 	winrt::com_ptr<ID3D11PixelShader> accumulatePixel = nullptr;
@@ -461,7 +457,7 @@ struct VoxelConeTracingGI : public Feature
 		const long rendered;
 	};
 
-	eastl::vector<History> history;
+	std::deque<History> history;
 	long rendered = 0;
 
 	struct Hooks

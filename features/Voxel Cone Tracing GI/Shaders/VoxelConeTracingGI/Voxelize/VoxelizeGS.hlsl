@@ -43,6 +43,8 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 
+    // Early out if triangle is outside volume
+    [branch]
     if (!IntersectAABB(Min, Min + Size.xxx, aabbMin, aabbMax))
         return;
         

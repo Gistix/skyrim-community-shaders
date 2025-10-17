@@ -31,7 +31,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ScaleFactor,
 	UpdateVoxels,
 	ForceUpdate,
-	VoxelDrawMode)
+	DebugDrawMode)
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -125,19 +125,19 @@ void VoxelConeTracingGI::DrawSettings()
 	}
 
 	if (ImGui::CollapsingHeader("Debug")) {
-		std::array<std::string, VoxelDrawMode::Count> items;
+		std::array<std::string, DebugDrawMode::Count> items;
 
-		const auto& itemsView = magic_enum::enum_names<VoxelDrawMode>();
+		const auto& itemsView = magic_enum::enum_names<DebugDrawMode>();
 		for (size_t i = 0; i < items.size(); i++) {
 			items[i] = std::string(itemsView[i]);
 		}
 
-		if (ImGui::BeginCombo("Display Mode", items[settings.VoxelDrawMode].c_str())) {
+		if (ImGui::BeginCombo("Display Mode", items[settings.DebugDrawMode].c_str())) {
 			for (size_t i = 0; i < items.size(); i++) {
-				bool isSelected = (settings.VoxelDrawMode == i);
+				bool isSelected = (settings.DebugDrawMode == i);
 
 				if (ImGui::Selectable(items[i].c_str(), isSelected))
-					settings.VoxelDrawMode = static_cast<VoxelDrawMode>(i);
+					settings.DebugDrawMode = static_cast<DebugDrawMode>(i);
 
 				if (isSelected)
 					ImGui::SetItemDefaultFocus();
@@ -1026,15 +1026,17 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 		if (rendered > 0) {
 			const auto& record = History(steady_clock::now(), rendered);
 
-			if (history.size() < MAX_HISTORY) {
-				history.push_back(record);
-			} else {
-				history.erase_first(history.begin());
-				history.push_back(record);
+			if (history.size() >= MAX_HISTORY) {
+				history.pop_front();
 			}
+
+			history.push_back(record);
 		}
 
 		Main_RenderWorldAfter();
+
+		// Let's make sure its at the absolute end of everything
+		lastUpdateFrame = globals::state->frameCount;
 	}
 }
 
@@ -1071,7 +1073,7 @@ void VoxelConeTracingGI::Main_RenderWorldAfter()
 
 	InjectLighting();
 
-	if (settings.VoxelDrawMode != VoxelDrawMode::None && settings.VoxelDrawMode != VoxelDrawMode::Count) {
+	if (settings.DebugDrawMode != DebugDrawMode::None && settings.DebugDrawMode != DebugDrawMode::Count) {
 		DrawVoxels();
 	}
 
@@ -1221,14 +1223,14 @@ void VoxelConeTracingGI::DrawVoxels()
 
 	context->VSSetShader(drawVertex.get(), nullptr, 0);
 
-	auto drawPixel = drawPixelVariants[settings.VoxelDrawMode - 1];
+	auto drawPixel = drawPixelVariants[settings.DebugDrawMode - 1];
 	context->PSSetShader(drawPixel.get(), nullptr, 0);
 
 	std::array<ID3D11ShaderResourceView*, 1> srvs = {
 		lod0Tex->srv.get()
 	};
 
-	if (settings.VoxelDrawMode == VoxelDrawMode::Lighting || settings.VoxelDrawMode == VoxelDrawMode::Final)
+	if (settings.DebugDrawMode == DebugDrawMode::Lighting || settings.DebugDrawMode == DebugDrawMode::Final)
 		context->PSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 
 	auto renderer = globals::game::renderer;
@@ -1325,9 +1327,10 @@ void VoxelConeTracingGI::InjectLighting()
 
 	auto accumulator = *globals::game::currentAccumulator.get();
 
-	bool interior = Util::IsInterior();
+	const auto& envSettings = CurrentEnvironmentSettings();
+	const auto& inSettings = envSettings.Input;
 
-	if (!settings.NoIndoorDir) 
+	if (inSettings.DirectionalMultiplier > 0.0f) 
 	{
 		auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(accumulator->GetRuntimeData().activeShadowSceneNode->GetRuntimeData().sunLight->light.get());
 		auto sunRuntime = dirLight->GetLightRuntimeData();
@@ -1338,10 +1341,12 @@ void VoxelConeTracingGI::InjectLighting()
 
 		auto diffuse = sunRuntime.diffuse;
 
+		float lightMultiplier = inSettings.DirectMultiplier * inSettings.DirectionalMultiplier;
+
 		lights.push_back({
 			.lvector = -directionF3,
 			.range = 0,
-			.color = { diffuse.red, diffuse.green, diffuse.blue },
+			.color = float3(diffuse.red, diffuse.green, diffuse.blue) * lightMultiplier,
 			.type = 0
 		});
 	}
