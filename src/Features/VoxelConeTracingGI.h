@@ -209,7 +209,7 @@ struct VoxelConeTracingGI : public Feature
 	std::vector<std::pair<T, T>> GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor);
 
 	static constexpr const char* resolutionsLabels[6] = { "16", "32", "64", "128", "256", "512" };
-	static constexpr uint resolutions[6] = { 16, 32, 64, 128, 256, 512 };
+	static constexpr uint16_t resolutions[6] = { 16, 32, 64, 128, 256, 512 };
 	static constexpr uint MAX_LIGHTS = 1024;
 	static constexpr eastl_size_t MAX_HISTORY = 60 * 60 * 60;
 
@@ -217,7 +217,7 @@ struct VoxelConeTracingGI : public Feature
 	bool queuedReset;
 	bool renderingWorld;
 	uint lastUpdateFrame = 0;
-	uint padding[3] = {};
+	uint padding[5] = {};
 
 	enum DebugDrawMode : uint8_t
 	{
@@ -238,21 +238,19 @@ struct VoxelConeTracingGI : public Feature
 		float EmissiveMultiplier = 1.0f;
 		float AmbientMultiplier = 1.0f;
 
-		auto operator<=>(const LightingInSettings&) const = default;
 		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingInSettings, DirectMultiplier, DirectionalMultiplier, EmissiveMultiplier, AmbientMultiplier)
 	};
 
 	// Controls tracing, heavy performance/quality impact - tune responsibly
 	struct TraceSettings
 	{
-		uint8_t AdditionalBounces = 0;
 		float ConeStepMultiplier = 1.0f;
 		float DiffuseRadiusMultiplier = 1.0f;
 		float SpecularRadiusMultiplier = 1.0f;
-		uint8_t DownscaleFactor = 0;
+		uint8_t AdditionalBounces = 0;
+		uint8_t ResolutionMode = 0;
 
-		auto operator<=>(const TraceSettings&) const = default;
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TraceSettings, AdditionalBounces, ConeStepMultiplier, DiffuseRadiusMultiplier, SpecularRadiusMultiplier, DownscaleFactor)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TraceSettings, ConeStepMultiplier, DiffuseRadiusMultiplier, SpecularRadiusMultiplier, AdditionalBounces, ResolutionMode)
 	};
 
 	// Controls application of final global illumination to the scene
@@ -261,19 +259,17 @@ struct VoxelConeTracingGI : public Feature
 		float DiffuseStrength = 1.0f;
 		float SpecularStrength = 1.0f;
 
-		auto operator<=>(const LightingOutSettings&) const = default;
 		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingOutSettings, DiffuseStrength, SpecularStrength)
 	};
 
 	// For Interior/Exterior specific tuning
 	struct EnvironmentSettings
 	{
-		LightingInSettings Input;
-		TraceSettings Trace;
-		LightingOutSettings Output;
+		LightingInSettings Incoming;
+		TraceSettings Tracing;
+		LightingOutSettings Outgoing;
 
-		auto operator<=>(const EnvironmentSettings&) const = default;
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, Input, Trace, Output)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, Incoming, Tracing, Outgoing)
 	};
 
 	struct Settings
@@ -284,12 +280,14 @@ struct VoxelConeTracingGI : public Feature
 		int ClipmapCount = 4;
 		int ScaleFactor = 2;
 		uint8_t UpdateRate = 1;
-		uint8_t ForceUpdate = false;
+		uint8_t ForceUpdate = true;
 		EnvironmentSettings Interior;
 		EnvironmentSettings Exterior;
 		DebugDrawMode DebugDrawMode = DebugDrawMode::None;
 	} settings;
-	static_assert(sizeof(Settings) % 16 == 0);
+
+	void DrawGeneralSettings();
+	void DrawEnvironmentSettings(EnvironmentSettings& environmentSettings, const char* environmentName);
 
 	bool Enabled() const
 	{

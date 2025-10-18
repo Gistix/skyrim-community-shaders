@@ -49,14 +49,227 @@ void VoxelConeTracingGI::SaveSettings(json& o_json)
 	o_json = settings;
 }
 
+void VoxelConeTracingGI::DrawGeneralSettings()
+{
+	if (ImGui::CollapsingHeader("General settings")) {
+		// Resolution
+		{
+			auto find = [](auto& array, uint value) -> int {
+				for (size_t i = 0; i < std::size(array); ++i) {
+					if (array[i] == value) {
+						return static_cast<int>(i);
+					}
+				}
+
+				return 0;
+			};
+
+			int resolution = find(resolutions, settings.Resolution);
+
+			if (ImGui ::Combo("Resolution", &resolution, resolutionsLabels, IM_ARRAYSIZE(resolutionsLabels))) {
+				settings.Resolution = resolutions[resolution];
+			}
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("Volume resolution per axis\n");
+			}
+		}
+
+		// Size
+		ImGui::InputInt("Size", &settings.Size);
+		settings.Size = std::max(1, settings.Size);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("World size of first volume\n");
+		}
+
+		// Clipmaps ammount
+		ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 2, 8);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("Number of clipmaps to use\n");
+		}
+
+		// Clipmap scale factor
+		{
+			ImGui::SliderInt("Clipmap Scale Factor", &settings.ScaleFactor, 2, 10);
+
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("The world space size multiplier for each subsequent clipmap\n");
+			}
+
+			const auto& clipmapCount = settings.ClipmapCount;
+
+			std::string label;
+
+			for (int i = 0; i < clipmapCount; ++i) {
+				label += std::format("Clip{} size: {}", i, settings.Size * std::pow(settings.ScaleFactor, i));
+
+				if (i < clipmapCount - 1) {
+					label += ", ";
+				}
+			}
+
+			ImGui::Text(label.c_str());
+		}
+
+		// Update rate
+		{
+			int updateRate = static_cast<int>(settings.UpdateRate);
+
+			ImGui::SliderInt("Voxelization rate", &updateRate, 1, 8);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("How often to update voxelization. 1 - Every frame, 2 - Every other frame, 3 - Every third frame, etc...");
+			}
+			settings.UpdateRate = static_cast<uint8_t>(updateRate);
+		}
+
+		// Force update all voxels
+		{
+			bool forceUpdate = settings.ForceUpdate;
+			ImGui::Checkbox("Force Update All Voxels", &forceUpdate);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("Enables eager voxelization, by default the world is scanned for changes and rendered efficiently");
+			}
+			settings.ForceUpdate = forceUpdate;
+		}
+	}
+}
+
+void VoxelConeTracingGI::DrawEnvironmentSettings(EnvironmentSettings& environmentSettings, const char* environmentName)
+{
+	if (ImGui::CollapsingHeader(environmentName)) {
+		if (ImGui::TreeNodeEx("Incoming lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+			auto& incoming = environmentSettings.Incoming;
+
+			ImGui::SliderFloat("Direct Multiplier", &incoming.DirectMultiplier, 0.0f, 10.0f);
+			ImGui::SliderFloat("Emissive Multiplier", &incoming.EmissiveMultiplier, 0.0f, 10.0f);
+			ImGui::SliderFloat("Ambient Multiplier", &incoming.AmbientMultiplier, 0.0f, 10.0f);
+			ImGui::SliderFloat("Directional light/Sun Multiplier", &incoming.DirectionalMultiplier, 0.0f, 10.0f);
+
+			ImGui::TreePop();
+		}
+
+		if (ImGui::TreeNodeEx("Tracing - heavy performance/quality impact", ImGuiTreeNodeFlags_DefaultOpen)) {
+			auto& tracing = environmentSettings.Tracing;
+
+			ImGui::SliderFloat("Cone step length", &tracing.ConeStepMultiplier, 0.25f, 2.0f);
+			ImGui::SliderFloat("Diffuse cone radius", &tracing.DiffuseRadiusMultiplier, 0.25f, 2.0f);
+			ImGui::SliderFloat("Specular cone radius", &tracing.SpecularRadiusMultiplier, 0.25f, 2.0f);
+
+			if (ImGui::BeginTable("Resolution mode", 3)) {
+				int resolutionMode = static_cast<int>(tracing.ResolutionMode);
+
+				ImGui::TableNextColumn();
+				ImGui::RadioButton("Full Res", &resolutionMode, 0);
+				ImGui::TableNextColumn();
+				ImGui::RadioButton("Half Res", &resolutionMode, 1);
+				ImGui::TableNextColumn();
+				ImGui::RadioButton("Quarter Res", &resolutionMode, 2);
+
+				tracing.ResolutionMode = static_cast<uint8_t>(resolutionMode);
+
+				ImGui::EndTable();
+			}
+
+			int additionalBounces = static_cast<int>(tracing.AdditionalBounces);
+			ImGui::SliderInt("Additional Bounces", &additionalBounces, 0, 8);
+			tracing.AdditionalBounces = static_cast<uint8_t>(additionalBounces);
+
+			ImGui::TreePop();
+		}
+
+		if (ImGui::TreeNodeEx("Outgoing global illumination", ImGuiTreeNodeFlags_DefaultOpen)) {
+			auto& outgoing = environmentSettings.Outgoing;
+
+			ImGui::SliderFloat("Diffuse Strength", &outgoing.DiffuseStrength, 0.0f, 10.0f);
+			ImGui::SliderFloat("Specular Strength", &outgoing.SpecularStrength, 0.0f, 10.0f);
+
+			ImGui::TreePop();
+		}		
+	}
+}
+
 void VoxelConeTracingGI::DrawSettings()
 {
-	ImGui::Checkbox("Enable Voxel Cone Tracing GI", (bool*)&settings.EnableVoxelConeTracingGI);
+	bool enable = settings.EnableVoxelConeTracingGI;
+	ImGui::Checkbox("Enable Voxel Cone Tracing GI", &enable);
+	settings.EnableVoxelConeTracingGI = enable;
 
     if (!settings.EnableVoxelConeTracingGI)
 		ImGui::BeginDisabled(true);
 
+	{
+		DrawGeneralSettings();
 
+		DrawEnvironmentSettings(settings.Interior, "Interior");
+		DrawEnvironmentSettings(settings.Exterior, "Exterior");
+
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx("Statistics", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Text(std::format("Queue Size: {}", queuedTriShapes.size()).c_str());
+
+		if (ImGui::TreeNodeEx("VoxelizationHistory", ImGuiTreeNodeFlags_DefaultOpen, std::format("History ({})", history.size()).c_str())) {
+			const auto num_elements = eastl::min<eastl_size_t>(5, history.size());
+
+			if (num_elements > 0) {
+				ImGui::Text(std::format("Last {} voxelization passes:", num_elements).c_str());
+
+				if (ImGui::BeginTable("VoxelizationHistoryTable", 2, ImGuiTableFlags_Borders)) {
+					const auto start_iterator = history.end() - std::min(num_elements, history.size());
+					const std::vector<History> last_five_elements(start_iterator, history.end());
+
+					ImGui::TableSetupColumn("Rendered TriShapes");
+					ImGui::TableSetupColumn("Elapsed time");
+					ImGui::TableHeadersRow();
+
+					for (const auto element : last_five_elements) {
+						ImGui::TableNextRow();
+
+						ImGui::TableNextColumn();
+						ImGui::Text(std::format("{}", element.rendered).c_str());
+
+						ImGui::TableNextColumn();
+						ImGui::Text(Util::TimeAgoString(element.time).c_str());
+					}
+
+					ImGui::EndTable();
+				}
+
+				ImGui::Text(std::format("Voxelization run count: {}", history.size()).c_str());
+			} else {
+				ImGui::Text("Voxelization has not ran yet.");
+			}
+
+			ImGui::TreePop();
+		}
+
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx("Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
+		std::array<std::string, DebugDrawMode::Count> items;
+
+		const auto& itemsView = magic_enum::enum_names<DebugDrawMode>();
+		for (size_t i = 0; i < items.size(); i++) {
+			items[i] = std::string(itemsView[i]);
+		}
+
+		if (ImGui::BeginCombo("Display Mode", items[settings.DebugDrawMode].c_str())) {
+			for (size_t i = 0; i < items.size(); i++) {
+				bool isSelected = (settings.DebugDrawMode == i);
+
+				if (ImGui::Selectable(items[i].c_str(), isSelected))
+					settings.DebugDrawMode = static_cast<DebugDrawMode>(i);
+
+				if (isSelected)
+					ImGui::SetItemDefaultFocus();
+			}
+
+			ImGui::EndCombo();
+		}
+
+		ImGui::TreePop();
+	}
 
 	if (!settings.EnableVoxelConeTracingGI)
 		ImGui::EndDisabled(); 
@@ -206,13 +419,13 @@ void VoxelConeTracingGI::SetupResources()
 			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
 			.Buffer = {
 				.FirstElement = 0,
-				.NumElements = voxelDrawBufferDesc.ByteWidth / 4u,
+				.NumElements = voxelDrawBufferDesc.ByteWidth,
 				.Flags = D3D11_BUFFER_UAV_FLAG_RAW 
 			}
 		};
 
 		voxelDrawInstanceBuffer = eastl::make_unique<Buffer>(voxelDrawBufferDesc);
-		voxelDrawInstanceBuffer->CreateUAV(voxelDrawInstanceUAVDesc);
+		//voxelDrawInstanceBuffer->CreateUAV(voxelDrawInstanceUAVDesc);
 	}
 	
 	// Cube vertex buffer
@@ -1211,7 +1424,7 @@ void VoxelConeTracingGI::InjectLighting()
 	auto accumulator = *globals::game::currentAccumulator.get();
 
 	const auto& envSettings = CurrentEnvironmentSettings();
-	const auto& inSettings = envSettings.Input;
+	const auto& inSettings = envSettings.Incoming;
 
 	if (inSettings.DirectionalMultiplier > 0.0f) 
 	{
@@ -1224,12 +1437,10 @@ void VoxelConeTracingGI::InjectLighting()
 
 		auto diffuse = sunRuntime.diffuse;
 
-		float lightMultiplier = inSettings.DirectMultiplier * inSettings.DirectionalMultiplier;
-
 		lights.push_back({
 			.lvector = -directionF3,
 			.range = 0,
-			.color = float3(diffuse.red, diffuse.green, diffuse.blue) * lightMultiplier,
+			.color = float3(diffuse.red, diffuse.green, diffuse.blue) * inSettings.DirectMultiplier * inSettings.DirectionalMultiplier,
 			.type = 0
 		});
 	}
@@ -1328,7 +1539,7 @@ void VoxelConeTracingGI::InjectLighting()
 		lights.push_back({ 
 			.lvector = lightData.positionWS[0].data,
 			.range = lightData.radius,
-			.color = lightData.color,
+			.color = lightData.color * inSettings.DirectMultiplier,
 		    .type = 1,
 		});
 	}
