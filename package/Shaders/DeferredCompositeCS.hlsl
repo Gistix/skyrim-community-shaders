@@ -81,6 +81,11 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, out float ao, out float3 il, i
 #	endif
 #endif
 
+#if defined(VCTGI)
+Texture2D<float4> VCTGIDiffuseTexture : register(t16);
+Texture2D<float4> VCTGISpecularTexture : register(t17);
+#endif
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	// Early exit if dispatch thread is outside screen bounds
 	if (any(dispatchID.xy >= uint2(SharedData::BufferDim.xy)))
@@ -112,6 +117,10 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, out float ao, out float3 il, i
 	float3 linDiffuseColor = Color::GammaToLinear(diffuseColor);
 	float3 normalWS = normalize(mul(FrameBuffer::CameraViewInverse[eyeIndex], float4(normalVS, 0)).xyz);
 
+#if defined(SSGI) || defined(VCTGI)
+	float3 linAlbedo = Color::GammaToLinear(albedo / Color::PBRLightingScale);
+#endif
+	
 #if defined(SSGI)
 
 	float ssgiAo;
@@ -139,8 +148,6 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, out float ao, out float3 il, i
 
 	linDiffuseColor = Color::GammaToLinear(diffuseColor);
 
-	float3 linAlbedo = Color::GammaToLinear(albedo / Color::PBRLightingScale);
-
 	float3 multiBounceAO = Color::MultiBounceAO(linAlbedo, ssgiAo);
 
 	linDiffuseColor *= sqrt(multiBounceAO);
@@ -152,6 +159,14 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, out float ao, out float3 il, i
 	linDiffuseColor = Color::GammaToLinear(diffuseColor);
 
 	linDiffuseColor += ssgiIl * linAlbedo;
+#endif
+
+#if defined(VCTGI)
+	float4 diffuseVCTGI = VCTGIDiffuseTexture[dispatchID.xy];
+	float4 specularVCTGI = VCTGISpecularTexture[dispatchID.xy];
+
+	linDiffuseColor += linAlbedo * diffuseVCTGI.rgb;
+	specularColor += specularVCTGI.rgb;
 #endif
 
 	float3 color = linDiffuseColor + specularColor;

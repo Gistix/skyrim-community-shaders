@@ -13,6 +13,7 @@
 #include "Features/SubsurfaceScattering.h"
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
+#include "Features/VoxelConeTracingGI.h"
 
 #include "Hooks.h"
 
@@ -421,6 +422,11 @@ void Deferred::DeferredPasses()
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
 	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
 
+	auto& vctgi = globals::features::voxelConeTracingGI;
+	if (vctgi.loaded)
+		vctgi.DrawVCTGI();
+	auto [vctgi_diffuse, vctgi_specular] = vctgi.GetOutputTextures();
+
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 
 	auto& sss = globals::features::subsurfaceScattering;
@@ -439,7 +445,7 @@ void Deferred::DeferredPasses()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
-		ID3D11ShaderResourceView* srvs[16]{
+		ID3D11ShaderResourceView* srvs[18]{
 			specular.SRV,
 			albedo.SRV,
 			normalRoughness.SRV,
@@ -456,6 +462,8 @@ void Deferred::DeferredPasses()
 			ssgi_hq_spec ? ssgi_gi_spec : nullptr,
 			ibl.loaded ? ibl.diffuseIBLTexture->srv.get() : nullptr,
 			ibl.loaded ? ibl.diffuseSkyIBLTexture->srv.get() : nullptr,
+			vctgi.loaded ? vctgi_diffuse : nullptr,
+			vctgi.loaded ? vctgi_specular : nullptr
 		};
 
 		if (dynamicCubemaps.loaded)
@@ -639,6 +647,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 		if (globals::features::screenSpaceGI.loaded)
 			defines.push_back({ "SSGI", nullptr });
 
+		if (globals::features::voxelConeTracingGI.loaded)
+			defines.push_back({ std::string(globals::features::voxelConeTracingGI.GetShaderDefineName()).c_str(), nullptr });
+
 		if (globals::features::ibl.loaded)
 			defines.push_back({ "IBL", nullptr });
 
@@ -663,6 +674,9 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 
 		if (globals::features::screenSpaceGI.loaded)
 			defines.push_back({ "SSGI", nullptr });
+
+		if (globals::features::voxelConeTracingGI.loaded)
+			defines.push_back({ std::string(globals::features::voxelConeTracingGI.GetShaderDefineName()).c_str(), nullptr });
 
 		if (globals::features::ibl.loaded)
 			defines.push_back({ "IBL", nullptr });

@@ -1,15 +1,25 @@
 #ifndef __VOXELCONETRACINGGI_DEPENDENCY_HLSL__
 #define __VOXELCONETRACINGGI_DEPENDENCY_HLSL__
 
+#include "Common/Game.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 
 #define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 
+#define M_TO_GAME_UNIT (1.0 / (GAME_UNIT_TO_M))
+#define M_TO_GAME_UNITS_SQ ((M_TO_GAME_UNIT) * (M_TO_GAME_UNIT))
+
 namespace VoxelConeTracingGI
 {
-    
+    struct Clipmap 
+	{
+		float3 Min;
+		float Size;
+		float3 Max;
+		float SizeRpc;
+	};
 }
 
 bool IntersectAABB(float3 boxAMin, float3 boxAMax, float3 boxBMin, float3 boxBMax)

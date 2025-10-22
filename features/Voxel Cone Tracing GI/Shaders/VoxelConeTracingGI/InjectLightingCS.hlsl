@@ -1,10 +1,11 @@
 #include "Common/Game.hlsli"
+#include "Common/Color.hlsli"
+
 #include "VoxelConeTracingGI/Light.hlsli"
 #include "VoxelConeTracingGI/Octree.hlsli"
 #include "VoxelConeTracingGI/Voxel.hlsli"
 
-#define M_TO_GAME_UNIT (1.0 / GAME_UNIT_TO_M)
-#define M_TO_GAME_UNITS_SQ (M_TO_GAME_UNIT * M_TO_GAME_UNIT)
+#include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 
 cbuffer InjectLightingCB : register(b0)
 {
@@ -13,7 +14,11 @@ cbuffer InjectLightingCB : register(b0)
 	float ResInv; 
 	float VoxelSize;
 	uint LightCount;
+	float EmissiveMult;
+	float AmbientMult;
 	uint Pad0;
+	uint Pad1;
+	uint Pad2;	
 }
 
 StructuredBuffer<Light> Lights : register(t0);
@@ -28,10 +33,11 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 	Voxel voxel = Voxels[id];
 
 	uint3 coord = voxel.Coord;
+	
+	float3 position = Min + ((coord + 0.5.xxx) * Size * ResInv);
 	float3 normal = voxel.Normal;
 	
-	float3 voxelPosition = Min + ((coord + 0.5.xxx) * Size * ResInv);
-	float3 voxelSurface = voxelPosition + (normal * VoxelSize * 0.5);
+	float3 voxelSurface = position + (normal * VoxelSize * 0.5);
 
 	float3 diffuseLighting = 0;
 
@@ -41,7 +47,7 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 
 		float3 lvector = light.lvector;
 		float range = light.range;
-		float3 color = light.color;
+		float3 color = Color::GammaToLinear(light.color);
 		uint type = light.type;
 
 		float3 direction;
@@ -53,7 +59,7 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 		}
 		else if (type == 1) // Point
 		{
-			float3 vlVector = (lvector - voxelPosition) * GAME_UNIT_TO_M;
+			float3 vlVector = (lvector - position) * (GAME_UNIT_TO_M);
 
 			float distanceSqr = dot(vlVector, vlVector);
 
@@ -75,5 +81,11 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 		diffuseLighting += color * saturate(NdotL) * attenuation;
 	}
 
-	LOD0[coord] = half4(voxel.Emissive + (voxel.Albedo * diffuseLighting), 1.0);
+	float3 diffuseColor = voxel.Albedo * diffuseLighting;
+	float3 ambientColor = Color::GammaToLinear(max(0, mul(SharedData::DirectionalAmbient, float4(normal, 1.0)))) * AmbientMult;	
+	float3 emissiveColor = voxel.Emissive * EmissiveMult;
+	
+	float3 finalColor = diffuseColor + ambientColor + emissiveColor;
+
+	LOD0[coord] = half4(finalColor, 1.0); // Alpha is used to test visibility during cone tracing
 }

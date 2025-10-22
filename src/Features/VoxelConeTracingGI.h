@@ -21,6 +21,8 @@
 #include "Globals.h"
 #include "State.h"
 
+using namespace magic_enum::bitwise_operators;
+
 namespace ShaderUtils
 {
 	template <typename T>
@@ -97,23 +99,32 @@ namespace ShaderUtils
 	template <typename T>
 	struct ShaderPermutations
 	{
-		ShaderPermutations(const std::filesystem::path& path, const std::vector<std::pair<const char*, const char*>>& defines)
+		ShaderPermutations() {}
+		ShaderPermutations(const std::filesystem::path& path, const std::vector<std::pair<const char*, const char*>>& defines, const std::vector<std::pair<const char*, const char*>>& constDefines = {})
 		{
 			const size_t defineCount = defines.size();
 			const size_t combinations = static_cast<size_t>(1) << defineCount;
 
 			for (size_t mask = 0; mask < combinations; ++mask) {
+				std::map<std::string, std::string> activeDefinesKey;
 				std::map<std::string, std::string> activeDefines;
 
 				for (size_t i = 0; i < defineCount; ++i) {
 					if (mask & (static_cast<size_t>(1) << i)) {
+						activeDefinesKey.emplace(defines[i].first, defines[i].second);
 						activeDefines.emplace(defines[i].first, defines[i].second);
 					}
 				}
 
-				logger::info("Creating shader with active defines: {}", format_map(activeDefines));
+				// Defines that are always enabled and do not become a "key"
+				for (const auto& constDefine : constDefines) {
+					activeDefines.emplace(constDefine.first, constDefine.second);
+				}
 
-				shaders.emplace(activeDefines, PipelineShader<T>(path, activeDefines));
+				//logger::info("Creating shader with active defines: {}", format_map(activeDefines));
+				logger::info("Active defines: {}", format_map(activeDefines));
+
+				shaders.emplace(activeDefinesKey, PipelineShader<T>(path, activeDefines));
 			}
 		}
 
@@ -166,7 +177,7 @@ struct VoxelConeTracingGI : public Feature
 
 	// Functionality
 	virtual bool inline SupportsVR() override { return false; }
-	virtual inline std::string_view GetShaderDefineName() override { return "VCT"; }
+	virtual inline std::string_view GetShaderDefineName() override { return "VCTGI"; }
 	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override { return t == RE::BSShader::Type::Lighting; };
 
 	// Settings & UI
@@ -178,32 +189,51 @@ struct VoxelConeTracingGI : public Feature
 	// Resources
 	virtual void SetupResources() override;
 	virtual void ClearShaderCache() override;
+
+	void SetupVolumeTextures();
+	void SetupScreenTextures();
+	void SetupBuffers();
+	void SetupViewport();
+
 	void CompileShaders();
+
+	void CompileStaticShaders();
+	void ClearStaticShaders();
+
+	void CompileVCTShader();
+	void ClearVCTShader();
+	//void GenerateCones();
 
 	template <typename T>
 	static void CompileShader(winrt::com_ptr<T>* programPtr, const wchar_t* path, const char* programType, std::vector<std::pair<const char*, const char*>> defines = {}, const std::vector<D3D11_INPUT_ELEMENT_DESC>& inputDesc = {}, winrt::com_ptr<ID3D11InputLayout>* inputLayoutPtr = nullptr);
 
 	// Do stuff
-	void VoxelArgs();
-	void InjectLighting();
 	void Debug();
-	void DrawVoxels();
 	void Main_RenderWorldAfter();
 
 	virtual void Prepass() override;
 	virtual void PostPostLoad() override;
 
-	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
+	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
 	void BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
 
 	void Main_RenderPlayerView(void* a1, bool a2, bool a3);
 	void Main_RenderWorld(bool a1);
+	void BSBatchRenderer_RenderPassImmediately(RE::BSRenderPass * a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags);
 
 	void PostProcess();
+	void InjectLighting();
+	void ScreenConeTrace();
+	void DrawVCTGI();
+
+	void DebugDrawVoxels();
 
 	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
 
-	uint32_t GetDescriptor(const RE::BSShader::Type& shaderType);
+	uint32_t GetVertexDescriptor(const RE::BSShader::Type& shaderType);
+	uint32_t GetPixelDescriptor(const RE::BSShader::Type& shaderType);
+
+	std::vector<float4> GenerateFibonacciCosineHemisphereSamples(int n);
 
 	template <typename T>
 	std::vector<std::pair<T, T>> GetShaderDefines(const RE::BSShader::Type& type, const uint32_t& descriptor);
@@ -217,7 +247,17 @@ struct VoxelConeTracingGI : public Feature
 	bool queuedReset;
 	bool renderingWorld;
 	uint lastUpdateFrame = 0;
-	uint padding[5] = {};
+	uint padding[2] = {};
+
+	enum class ChangedSetting : uint32_t
+	{
+		None = 0,
+		VolumeResolution = 1 << 0,
+		ConeCount = 1 << 1,
+		ScreenResolution = 1 << 2
+	};
+
+	ChangedSetting changedSettings = ChangedSetting::None;
 
 	enum DebugDrawMode : uint8_t
 	{
@@ -230,51 +270,73 @@ struct VoxelConeTracingGI : public Feature
 		Count
 	};
 
-	// Controls influence to injected lighting
-	struct LightingInSettings
+	// Controls influence of injected lighting
+	struct LightingSettings
 	{
-		float DirectMultiplier = 1.0f;
-		float DirectionalMultiplier = 1.0f;
-		float EmissiveMultiplier = 1.0f;
-		float AmbientMultiplier = 1.0f;
+		float Direct = 1.0f;
+		float Directional = 1.0f;
+		float Omni = 1.0f;
+		float Emissive = 1.0f;
+		float Ambient = 1.0f;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingInSettings, DirectMultiplier, DirectionalMultiplier, EmissiveMultiplier, AmbientMultiplier)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingSettings, Direct, Directional, Omni, Emissive, Ambient)
 	};
+
+	struct alignas(16) StepSettings
+	{
+		float Length = 1.0f;
+		float Radius = 1.0f;
+		float MipScale = 1.0f;
+		float Alpha = 1.0f;
+
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(StepSettings, Length, Radius, MipScale, Alpha)
+	};
+	static_assert(sizeof(StepSettings) % 16 == 0);
+
+	struct ConeSettings
+	{
+		StepSettings Step;
+		int Count = 5;
+		int MinAngle = 0;
+		int Angle = 60;
+		int Distance = 75;
+		float Alpha = 0.95f;
+		float Offset = 1.0f;
+		float Strength = 1.0f;
+		uint Pad0;
+		uint Pad1;
+
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ConeSettings, Count, Step, MinAngle, Angle, Distance, Alpha, Offset, Strength)
+	};
+	static_assert(sizeof(ConeSettings) % 16 == 0);
 
 	// Controls tracing, heavy performance/quality impact - tune responsibly
-	struct TraceSettings
+	struct alignas(16) TraceSettings
 	{
-		float ConeStepMultiplier = 1.0f;
-		float DiffuseRadiusMultiplier = 1.0f;
-		float SpecularRadiusMultiplier = 1.0f;
-		uint8_t AdditionalBounces = 0;
-		uint8_t ResolutionMode = 0;
+		ConeSettings Diffuse;
+		ConeSettings Specular;
+		uint ResolutionMode = 0;
+		uint AdditionalBounces = 0;
+		uint Pad0;
+		uint Pad1;
+		uint Pad2;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TraceSettings, ConeStepMultiplier, DiffuseRadiusMultiplier, SpecularRadiusMultiplier, AdditionalBounces, ResolutionMode)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TraceSettings, Diffuse, Specular, ResolutionMode, AdditionalBounces)
 	};
-
-	// Controls application of final global illumination to the scene
-	struct LightingOutSettings
-	{
-		float DiffuseStrength = 1.0f;
-		float SpecularStrength = 1.0f;
-
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingOutSettings, DiffuseStrength, SpecularStrength)
-	};
+	static_assert(sizeof(TraceSettings) % 16 == 0);
 
 	// For Interior/Exterior specific tuning
 	struct EnvironmentSettings
-	{
-		LightingInSettings Incoming;
+	{ 
+		LightingSettings Lighting;
 		TraceSettings Tracing;
-		LightingOutSettings Outgoing;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, Incoming, Tracing, Outgoing)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(EnvironmentSettings, Lighting, Tracing)
 	};
 
 	struct Settings
 	{
-		uint8_t EnableVoxelConeTracingGI = true;
+		uint8_t Enabled = true;
 		uint16_t Resolution = 64;
 		int	Size = 20;
 		int ClipmapCount = 4;
@@ -288,10 +350,11 @@ struct VoxelConeTracingGI : public Feature
 
 	void DrawGeneralSettings();
 	void DrawEnvironmentSettings(EnvironmentSettings& environmentSettings, const char* environmentName);
+	void DrawConeSettings(ConeSettings& coneSettings, bool diffuse);
 
 	bool Enabled() const
 	{
-		return (bool)settings.EnableVoxelConeTracingGI;
+		return (bool)settings.Enabled;
 	}
 
 	bool Update() const
@@ -390,11 +453,11 @@ struct VoxelConeTracingGI : public Feature
 
 	VoxelConeTracingGI::VoxelConeTracingGICB GetCommonBufferData() const;
 
-	struct alignas(16) VSFrameBufferPS
+	struct alignas(16) VSFrameBufferPSCB
 	{
 		float4 CameraPosAdjust;
 	} vsFrameBufferPSData;
-	static_assert(sizeof(VSFrameBufferPS) % 16 == 0);
+	static_assert(sizeof(VSFrameBufferPSCB) % 16 == 0);
 
 	struct alignas(16) InjectLightingCB
 	{
@@ -403,19 +466,44 @@ struct VoxelConeTracingGI : public Feature
 		float ResInv;
 		float VoxelSize;
 		uint LightCount;
+		float EmissiveMult;
+		float AmbientMult;
 		uint Pad0;
+		uint Pad1;
+		uint Pad2;
 	} injectLightingCBData;
 	static_assert(sizeof(InjectLightingCB) % 16 == 0);
+
+	struct ScreenTraceCB
+	{
+		float4 NDCToView;
+		float2 RcpFrameDim;
+		float MaxMipLevel;
+		float Pad0;
+		float4 Cones[32];
+	} screenTraceCBData;
+	static_assert(sizeof(ScreenTraceCB) % 16 == 0);
+
+	/*struct alignas(4) ConeTraceCB
+	{
+		ConeSettings Diffuse;
+		ConeSettings Specular;
+		uint ResolutionMode = 0;
+		uint AdditionalBounces = 0;
+	} coneTraceCBata;
+	static_assert(sizeof(ConeTraceCB) % 16 == 0);*/
 
 	eastl::vector<Light> lights = {};
 
 	eastl::unique_ptr<ConstantBuffer> voxelConeTracingGICB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> vsFrameBufferPSCB = nullptr;
 	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> screenTraceCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> coneTraceCB = nullptr;
 
-	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11VertexShader>> voxelizeVertex;
+	std::unordered_map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11VertexShader>> voxelizeVertex;
 	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
-	std::map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11PixelShader>> voxelizePixel;
+	std::unordered_map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11PixelShader>> voxelizePixel;
 
 	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
 	std::array<winrt::com_ptr<ID3D11PixelShader>, DebugDrawMode::Count> drawPixelVariants;
@@ -428,12 +516,16 @@ struct VoxelConeTracingGI : public Feature
 
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> injectLightCompute = nullptr;
+
+	winrt::com_ptr<ID3D11ComputeShader> vctGIInteriorCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> vctGIExteriorCompute = nullptr;
+
 	winrt::com_ptr<ID3D11ComputeShader> debugCompute = nullptr;
 	
 	winrt::com_ptr<ID3D11Device3> device3 = nullptr;
 
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
-	D3D11_VIEWPORT lod0Viewport = {};
+	D3D11_VIEWPORT voxelizeViewport = {};
 
 	eastl::unique_ptr<StructuredBuffer> voxelSamplesBuffer = nullptr;
 	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
@@ -457,14 +549,21 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::unique_ptr<StructuredBuffer> lightBuffer = nullptr;
 
-	eastl::unique_ptr<Texture3D> lod0Tex = nullptr;
-	winrt::com_ptr<ID3D11SamplerState> lod0Sampler = nullptr;
+	//eastl::unique_ptr<Texture3D> lod0Tex = nullptr;
+	eastl::vector<eastl::unique_ptr<Texture3D>> volumeClipmaps;
+	winrt::com_ptr<ID3D11SamplerState> volumeSampler = nullptr;
 
-	eastl::unique_ptr<Texture2D> prevDepth = nullptr;
-	eastl::unique_ptr<Texture2D> debugTex = nullptr;
+	eastl::unique_ptr<Texture2D> diffuseGI = nullptr;
+	eastl::unique_ptr<Texture2D> specularGI = nullptr;
+
+	inline auto GetOutputTextures()
+	{
+		return (loaded && settings.Enabled) ? std::make_tuple(diffuseGI->srv.get(), specularGI->srv.get()) : std::make_tuple(nullptr, nullptr);
+	}
 
 	eastl::hash_set<RE::BSTriShape*> cachedTriShapes;
 	eastl::hash_set<RE::BSTriShape*> queuedTriShapes;
+	eastl::hash_set<RE::BSGeometry*> unCulledGeometry;
 
 	struct History
 	{
@@ -482,10 +581,9 @@ struct VoxelConeTracingGI : public Feature
 		{
 			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 			{
-				if (globals::features::voxelConeTracingGI.loaded && globals::features::voxelConeTracingGI.Enabled())
-					globals::features::voxelConeTracingGI.BSShader_SetupGeometry(This, Pass);
-
-				func(This, Pass, RenderFlags);
+				//if (globals::features::voxelConeTracingGI.loaded && globals::features::voxelConeTracingGI.Enabled())
+				
+				globals::features::voxelConeTracingGI.BSShader_SetupGeometry(This, Pass, RenderFlags);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -530,24 +628,33 @@ struct VoxelConeTracingGI : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct BSBatchRenderer_RenderPassImmediately
+		{
+			static void thunk(RE::BSRenderPass* a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags)
+			{
+				globals::features::voxelConeTracingGI.BSBatchRenderer_RenderPassImmediately(a_pass, a_technique, a_alphaTest, a_renderFlags);
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			//stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 
 			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
-			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
-			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
+			stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
 
 			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Lighting>>(RE::VTABLE_BSLightingShader[0]);
-			//stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
-			//stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Utility>>(RE::VTABLE_BSUtilityShader[0]);
+			stl::write_vfunc<0x7, BSShader_RestoreGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
 
 			if (REL::Module::IsAE()) {
 				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
 			} else {
 				stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
 			}
+
+			stl::write_thunk_call<BSBatchRenderer_RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));
 
 			logger::info("[VCTGI] Installed hooks");
 		}
