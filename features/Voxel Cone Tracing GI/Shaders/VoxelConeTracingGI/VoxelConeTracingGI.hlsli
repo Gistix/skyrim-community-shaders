@@ -5,22 +5,22 @@
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
+#include "VoxelConeTracingGI/Includes/VCTGINamespace.hlsli"
 
 #define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 
-#define M_TO_GAME_UNIT (1.0 / (GAME_UNIT_TO_M))
+#define M_TO_GAME_UNIT (1.0f / (GAME_UNIT_TO_M))
 #define M_TO_GAME_UNITS_SQ ((M_TO_GAME_UNIT) * (M_TO_GAME_UNIT))
 
-namespace VoxelConeTracingGI
-{
-    struct Clipmap 
-	{
-		float3 Min;
-		float Size;
-		float3 Max;
-		float SizeRpc;
-	};
-}
+#define RCP_SCALE (1.0f / 10000.0f)
+
+#define MODE_ISOTROPIC	0
+#define MODE_SH1		1
+#define MODE_SH2		2
+
+#ifndef VOXELMODE
+#define VOXELMODE MODE_ISOTROPIC
+#endif
 
 bool IntersectAABB(float3 boxAMin, float3 boxAMax, float3 boxBMin, float3 boxBMax)
 {

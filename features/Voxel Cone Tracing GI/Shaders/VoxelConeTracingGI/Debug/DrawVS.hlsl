@@ -1,6 +1,8 @@
 #include "Common/Game.hlsli"
 #include "Common/FrameBuffer.hlsli"
 
+#include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
+
 struct VS_IN
 {
     float3 Position : POSITION;
@@ -19,24 +21,22 @@ struct VS_OUT
     float3 Emission : COLOR1;
 };
 
-cbuffer VertexCB : register(b0)
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float SizeInv;
-	uint Res;
-	float ResInv; 
-	float pad0;
-};
+	VoxelConeTracingGI::ConstantBuffer VCTGI;
+}
 
 VS_OUT main(VS_IN input)
 {
     VS_OUT output;
 
-    float3 voxelPos = Min + (input.Coord * ResInv * Size);
+    uint clipIdx = 0;
+    VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
+    
+    float3 voxelPos = clipmap.Min + ((input.Coord * VCTGI.ResRcp * clipmap.Size) * RCP_SCALE);
 
     // Translate cube vertex by voxel position
-    float3 worldPos = (input.Position * Size * ResInv) + voxelPos;
+    float3 worldPos = ((input.Position * clipmap.Size * VCTGI.ResRcp) * RCP_SCALE) + voxelPos;
 
     output.Position = mul(FrameBuffer::CameraViewProj[0], float4(worldPos - FrameBuffer::CameraPosAdjust[0].xyz, 1.0f));
 

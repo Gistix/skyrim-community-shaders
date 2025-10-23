@@ -1,13 +1,10 @@
 #include "VoxelConeTracingGI/Voxel.hlsli"
 
-cbuffer PostProcessCB : register(b0)
+#include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
+
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float SizeInv;
-	uint Res;
-	float ResInv;
-	float VoxelSize;
+	VoxelConeTracingGI::ConstantBuffer VCTGI;
 }
 
 Texture2D<half4> Albedo			: register(t0);
@@ -19,7 +16,7 @@ AppendStructuredBuffer<Voxel> Voxels : register(u0);
 [numthreads(8, 8, 8)]
 void main(uint3 id: SV_DispatchThreadID)
 {
-	uint2 coord = uint2(id.x + id.z * Res, id.y);
+	uint2 coord = uint2(id.x + id.z * VCTGI.Res, id.y);
 	
 	float4 albedo = Albedo[coord];
 	

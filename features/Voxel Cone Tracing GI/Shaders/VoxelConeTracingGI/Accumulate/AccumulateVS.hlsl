@@ -1,6 +1,8 @@
 #include "Common/Game.hlsli"
 #include "Common/FrameBuffer.hlsli"
 
+#include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
+
 struct VS_IN
 {
     uint3 Coord    : VOXELCOORD;
@@ -17,14 +19,9 @@ struct VS_OUT
     float4 Emissive : COLOR1;    
 };
 
-cbuffer VertexCB : register(b0)
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float SizeInv;
-	uint Res;
-	float ResInv; 
-	float VoxelSize;
+	VoxelConeTracingGI::ConstantBuffer VCTGI;
 };
 
 VS_OUT main(VS_IN input)
@@ -34,11 +31,11 @@ VS_OUT main(VS_IN input)
     uint3 coord = input.Coord;
 
     float2 pixelCoord;
-    pixelCoord.x = (coord.x + coord.z * Res) + 0.5f;
+    pixelCoord.x = (coord.x + coord.z * VCTGI.Res) + 0.5f;
     pixelCoord.y = coord.y + 0.5f;    
     
-    float ndcX = (pixelCoord.x / (Res * Res)) * 2.0f - 1.0f;
-    float ndcY = (pixelCoord.y * ResInv) * 2.0f - 1.0f;
+    float ndcX = (pixelCoord.x / (VCTGI.Res * VCTGI.Res)) * 2.0f - 1.0f;
+    float ndcY = ((pixelCoord.y * VCTGI.ResRcp) * RCP_SCALE) * 2.0f - 1.0f;
 
     output.Position = float4(ndcX, -ndcY, 0.0f, 1.0f);
 

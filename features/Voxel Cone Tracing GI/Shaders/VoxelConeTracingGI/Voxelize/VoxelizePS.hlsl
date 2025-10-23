@@ -1,8 +1,8 @@
+#include "Common/SharedData.hlsli"
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 #include "VoxelConeTracingGI/Voxel.hlsli"
 
 #include "Common/Color.hlsli"
-#include "Common/SharedData.hlsli"
 #include "Common/Permutation.hlsli"
 
 struct PS_INPUT
@@ -29,16 +29,23 @@ AppendStructuredBuffer<Voxel> VoxelSamples : register(u0);
 
 void main(PS_INPUT input)
 {
+	const VoxelConeTracingGI::ConstantBuffer VCTGI = SharedData::voxelConeTracingGISettings;
+	
 	[branch]
-	if (any(input.Cell < 0.0f) || any(input.Cell > (float)SharedData::voxelConeTracingGISettings.Res - 1.0f)) {
+	if (any(input.Cell < 0.0f) || any(input.Cell > (float)VCTGI.Res - 1.0f)) {
 		return;
 	}
 	
 	uint3 coord = floor(input.Cell);
 
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
-	float3 voxelAABBMin = SharedData::voxelConeTracingGISettings.Min + (coord * SharedData::voxelConeTracingGISettings.VoxelSize);
-	float3 voxelAABBMax = voxelAABBMin + SharedData::voxelConeTracingGISettings.VoxelSize.xxx;
+    uint clipIdx = 0;
+	
+    VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
+	float voxelSize = (clipmap.Size * VCTGI.ResRcp) * RCP_SCALE;
+		
+	float3 voxelAABBMin = clipmap.Min + (coord * voxelSize);
+	float3 voxelAABBMax = voxelAABBMin + voxelSize;
 	
 	[branch]
 	if (!IntersectAABB(voxelAABBMin, voxelAABBMax, input.AABBMin, input.AABBMax)) {

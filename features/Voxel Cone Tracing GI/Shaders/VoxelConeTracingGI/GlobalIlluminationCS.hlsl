@@ -9,14 +9,13 @@
 
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 
-cbuffer VoxelConeTracingGICB : register(b0)
+#ifndef DIFFUSE_CONES
+	#define DIFFUSE_CONES (5)
+#endif
+
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float SizeInv;
-	uint Res;
-	float ResInv;
-	float VoxelSize;
+	VoxelConeTracingGI::ConstantBuffer VCTGI;
 }
 
 cbuffer ScreenTraceCB : register(b1)
@@ -73,22 +72,27 @@ RWTexture2D<half4> SpecularGI			: register(u1);
 
 half4 ConeTraceOctree(float3 origin, float3 normal, float3 direction, float aperture, ConeSettings cone)
 {
+	uint clipIdx = 0;
+	VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx]; // hardcoded for now
+	
+	float voxelSize = (clipmap.Size * VCTGI.ResRcp) * RCP_SCALE;
+	
     float3 color = float3(0, 0, 0);
     float alpha = 0;
-    float dist = VoxelSize;
+    float dist = voxelSize;
     float occlusion = 0;
         
-    float3 startPos = origin + (normal * VoxelSize * cone.Offset);
+    float3 startPos = origin + (normal * voxelSize * cone.Offset);
 
 	float maxDistance = cone.Distance * (M_TO_GAME_UNIT);
-
+	
     while(dist < maxDistance && alpha < cone.Alpha) {	
-        float diameter = max(VoxelSize, aperture * dist * cone.Step.Radius);
+        float diameter = max(voxelSize, aperture * dist * cone.Step.Radius);
             
         float3 samplePos = startPos + dist * direction;
-        float mipLevel = clamp(log2(diameter / VoxelSize), 0.0, MaxMipLevel * cone.Step.MipScale);     
+        float mipLevel = clamp(log2(diameter / voxelSize), 0.0, MaxMipLevel * cone.Step.MipScale);     
             
-        float3 volumeCoord = (samplePos - Min) * SizeInv;
+        float3 volumeCoord = ((samplePos - clipmap.Min) * clipmap.SizeRcp) * RCP_SCALE;
             
 		half4 sampledColor = Voxels.SampleLevel(samplerVoxels, volumeCoord, mipLevel);
 
@@ -137,8 +141,10 @@ void main(int2 id: SV_DispatchThreadID)
 	//const float3 normalWS = normalize(FrameBuffer::ViewToWorld(normalVS, false, eyeIndex));
 	const float3 normalWS = normalize(ViewToWorldVector(normalVS, FrameBuffer::CameraViewInverse[eyeIndex]));	
 	
+	const VoxelConeTracingGI::Clipmap lastClipmap = VCTGI.Clipmaps[VCTGI.ClipmapCount-1];
+	
 	[branch]
-	if (any(positionWS < Min) || any(positionWS > Min + Size.xxx)) {
+	if (any(positionWS < lastClipmap.Min) || any(positionWS > lastClipmap.Max)) {
 		DiffuseGI[id] = half4(0, 0, 0, 0);
 		SpecularGI[id] = half4(0, 0, 0, 0);
 		return;
@@ -149,7 +155,6 @@ void main(int2 id: SV_DispatchThreadID)
 	
 	// Diffuse
 	{      	
-#if (DIFFUSE_CONES) > 0
 		float4 indirectDiffuse = float4(0, 0, 0, 0);
 		float sum = 0.0f;
 		
@@ -167,7 +172,6 @@ void main(int2 id: SV_DispatchThreadID)
 		}
 		
 		DiffuseGI[id] = indirectDiffuse / sum;		
-#endif
 	}
 
 	// Specular

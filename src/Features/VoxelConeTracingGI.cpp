@@ -886,9 +886,18 @@ std::vector<float4> VoxelConeTracingGI::GenerateFibonacciCosineHemisphereSamples
 	return samples;
 }
 
-bool IntersectAABB(float3 boxAMin, float3 boxAMax, float3 boxBMin, float3 boxBMax)
+bool IntersectAABB(const float3& boxAMin, const float3& boxAMax, const float3& boxBMin, const float3& boxBMax)
 {
-	return (boxAMax.x >= boxBMin.x && boxAMax.y >= boxBMin.y && boxAMax.z >= boxBMin.z) && (boxBMax.x >= boxAMin.x && boxBMax.y >= boxAMin.y && boxBMax.z >= boxAMin.z);
+	return (boxAMax.x >= boxBMin.x && boxAMin.x <= boxBMax.x) &&
+	       (boxAMax.y >= boxBMin.y && boxAMin.y <= boxBMax.y) &&
+	       (boxAMax.z >= boxBMin.z && boxAMin.z <= boxBMax.z);
+}
+
+bool ContainedAABB(const float3& boxAMin, const float3& boxAMax, const float3& boxBMin, const float3& boxBMax)
+{
+	return (boxAMin.x >= boxBMin.x && boxAMax.x <= boxBMax.x) &&
+	       (boxAMin.y >= boxBMin.y && boxAMax.y <= boxBMax.y) &&
+	       (boxAMin.z >= boxBMin.z && boxAMax.z <= boxBMax.z);
 }
 
 void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
@@ -980,10 +989,9 @@ void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRender
 				const auto& aabbMin = modelCenter - r;
 				const auto& aabbMax = modelCenter + r;
 
-				const float& size = static_cast<float>(settings.Size) / Util::Units::GAME_UNIT_TO_M;
-				const auto& halfSize = float3(size * 0.5f, size * 0.5f, size * 0.5f);
+				const auto& lastClipmap = voxelConeTracingGICBData.Clipmaps[voxelConeTracingGICBData.ClipmapCount-1];
 
-				if (!IntersectAABB(aabbMin, aabbMax, center - halfSize, center + halfSize)) {
+				if (!IntersectAABB(aabbMin, aabbMax, lastClipmap.Min, lastClipmap.Max)) {
 					skipTriShape = true;
 				}
 
@@ -1178,6 +1186,46 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	/*float blendFactor[4] = { 0, 0, 0, 0 };
 	context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);*/
 
+	// Clipmap handling
+	struct ClipmapState {
+		bool Inside;
+		bool Intersects;
+	};
+
+	std::vector<uint> renderClipmap;
+	renderClipmap.reserve(settings.ClipmapCount);
+
+	const auto& transform = geometry->world;
+
+	const auto& modelData = triShape->GetModelData().modelBound;
+
+	const auto& modelCenterTransformed = transform * modelData.center;
+	const auto& modelCenter = float3(modelCenterTransformed.x, modelCenterTransformed.y, modelCenterTransformed.z);
+
+	const auto& r = float3(modelData.radius, modelData.radius, modelData.radius);
+
+	const auto& aabbMin = modelCenter - r;
+	const auto& aabbMax = modelCenter + r;
+
+	// Always render for clipmaps that intersect, unless it is contained inside a previous clipmap
+	for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++)
+	{
+		const auto& clipmap = voxelConeTracingGICBData.Clipmaps[i];
+
+		bool contains = ContainedAABB(aabbMin, aabbMax, clipmap.Min, clipmap.Max);
+		bool intersects = IntersectAABB(aabbMin, aabbMax, clipmap.Min, clipmap.Max);
+
+		if (contains || intersects) {
+			renderClipmap.push_back(i);
+
+			if (contains) {
+				break;
+			}
+		} else {
+			break;
+		}
+	}
+
 	// Render
 	context->DrawIndexed(triShapeRuntime.triangleCount * 3, 0, 0);
 
@@ -1295,12 +1343,24 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 
 		center = (min + max) * 0.5f;*/
 
-		voxelConeTracingGICBData.Min = center - (float3(size, size, size) * 0.5f);
-		voxelConeTracingGICBData.Size = size;
-		voxelConeTracingGICBData.SizeInv = 1.0f / size;
 		voxelConeTracingGICBData.Res = resolution;
-		voxelConeTracingGICBData.ResInv = 1.0f / resolutionFloat;
-		voxelConeTracingGICBData.VoxelSize = voxelSize;
+		voxelConeTracingGICBData.ResRcp = 10000.0f / resolutionFloat;
+
+		voxelConeTracingGICBData.ClipmapCount = static_cast<uint>(settings.ClipmapCount);
+		
+		for (int i = 0; i < settings.ClipmapCount; i++)
+		{
+			float clipSize = static_cast<float>(settings.Size * pow(settings.ScaleFactor, i)) / Util::Units::GAME_UNIT_TO_M;
+			float3 clipExents = float3(clipSize, clipSize, clipSize) * 0.5f;
+
+			voxelConeTracingGICBData.Clipmaps[i] = {
+				.Min = center - clipExents,
+				.Size = clipSize,
+				.Max = center + clipExents,
+				.SizeRcp = 10000.0f / clipSize
+			};
+		}
+
 		voxelConeTracingGICB->Update(voxelConeTracingGICBData);
 		auto vxGICB = voxelConeTracingGICB->CB();
 
@@ -1580,6 +1640,11 @@ void VoxelConeTracingGI::ScreenConeTrace()
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 
+	/*std::array<ID3D11SamplerState*, 1> samplers = {
+		volumeSampler.get()
+	};
+	context->CSSetSamplers(3, (uint)samplers.size(), samplers.data());*/
+
 	ID3D11SamplerState* sampler = volumeSampler.get();
 	context->CSSetSamplers(3, 1, &sampler);
 
@@ -1595,19 +1660,16 @@ void VoxelConeTracingGI::ScreenConeTrace()
 
 	context->CSSetShader((Util::IsInterior() ? vctGIInteriorCompute.get() : vctGIExteriorCompute.get()), nullptr, 0);
 
-	//context->CSSetShader(( Util::IsInterior() ? vctGIInteriorCompute.get() : vctGIExteriorCompute,get() ), nullptr, 0);
-
 	context->Dispatch(widthThreads, heightThreads, 1);
-
-	if (sampler)
-		sampler->Release();
 
 	srvs.fill(nullptr);
 	uavs.fill(nullptr);
 	cbs.fill(nullptr);
+	//samplers.fill(nullptr);
 
 	context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 	context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+	//context->CSSetSamplers(3, (uint)samplers.size(), samplers.data());
 
 	state->EndPerfEvent();
 }

@@ -431,23 +431,22 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(Voxel) % 16 == 0);
 
-	struct Light
-	{
-		float3 lvector;
-		float range;		
-		float3 color;
-		uint type;
-	};
-	static_assert(sizeof(Light) % 4 == 0);
-
-	struct alignas(16) VoxelConeTracingGICB
+    struct alignas(16)  Clipmap
 	{
 		float3 Min;
 		float Size;
-		float SizeInv;
+		float3 Max;
+		float SizeRcp;
+	};
+	static_assert(sizeof(Clipmap) % 16 == 0);
+
+	struct alignas(16) VoxelConeTracingGICB
+	{
 		uint Res;
-		float ResInv;
-		float VoxelSize;
+		float ResRcp;
+		uint ClipmapCount;
+		uint Pad0;
+		Clipmap Clipmaps[8];
 	} voxelConeTracingGICBData;
 	static_assert(sizeof(VoxelConeTracingGICB) % 16 == 0);
 
@@ -458,6 +457,15 @@ struct VoxelConeTracingGI : public Feature
 		float4 CameraPosAdjust;
 	} vsFrameBufferPSData;
 	static_assert(sizeof(VSFrameBufferPSCB) % 16 == 0);
+
+	struct Light
+	{
+		float3 lvector;
+		float range;
+		float3 color;
+		uint type;
+	};
+	static_assert(sizeof(Light) % 4 == 0);
 
 	struct alignas(16) InjectLightingCB
 	{

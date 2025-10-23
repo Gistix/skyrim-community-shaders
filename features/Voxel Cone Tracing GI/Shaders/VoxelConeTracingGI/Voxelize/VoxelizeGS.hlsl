@@ -22,14 +22,9 @@ struct GS_OUTPUT
 #endif // VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED    
 };
 
-cbuffer GeometryCB : register(b0)
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float SizeInv;
-	uint Res;
-	float ResInv; 
-	float VoxelSize;
+    VoxelConeTracingGI::ConstantBuffer VCTGI;
 };
 
 [maxvertexcount(3)]
@@ -43,9 +38,12 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 
+    uint clipIdx = 0;
+    VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
+
     // Early out if triangle is outside volume
     [branch]
-    if (!IntersectAABB(Min, Min + Size.xxx, aabbMin, aabbMax))
+    if (!IntersectAABB(clipmap.Min, clipmap.Max, aabbMin, aabbMax))
         return;
         
     GS_OUTPUT output[3];
@@ -54,13 +52,13 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     [unroll]
     for (i = 0; i < 3; ++i)
     {
-        float3 uvw = (input[i].PositionWS.xyz - Min) * SizeInv; // [0..1]
-        float3 coords = uvw * Res; // [0..Res]
+        float3 uvw = ((input[i].PositionWS.xyz - clipmap.Min) * clipmap.SizeRcp) * RCP_SCALE; // [0..1]
+        float3 coords = uvw * VCTGI.Res; // [0..Res]
         
         output[i].Cell = floor(coords); 
         
         // World space -> Voxel grid space:
-        output[i].Position.xyz = (coords * 2.0) - Res.xxx; // [-Res..Res]
+        output[i].Position.xyz = (coords * 2.0) - VCTGI.Res.xxx; // [-Res..Res]
 
 		// Project onto dominant axis:
 		[flatten]
@@ -88,7 +86,7 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     for (i = 0; i < 3; ++i)  
     {
         // Voxel grid space -> Clip space
-        output[i].Position.xy *= ResInv;
+        output[i].Position.xy = (output[i].Position.xy * VCTGI.ResRcp) * RCP_SCALE;
         output[i].Position.z = 1.0f;
 		output[i].Position.w = 1.0f;
         
