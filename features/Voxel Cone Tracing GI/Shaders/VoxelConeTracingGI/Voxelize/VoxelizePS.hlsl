@@ -103,7 +103,7 @@ void main(PS_INPUT input)
 	FillVoxelSample(voxelSample, input);
 	
 	
-	[flatten] 
+	[branch] 
 	switch(clipIdx)
 	{
 		case 0:

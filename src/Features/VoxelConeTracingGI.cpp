@@ -1017,9 +1017,6 @@ void VoxelConeTracingGI::BSShader_SetupGeometry(RE::BSShader* This, RE::BSRender
 		}
 	}
 
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] BSShader::SetupGeometry");
-
 	if (shaderType == RE::BSShader::Type::Lighting)
 		Hooks::BSShader_SetupGeometry<RE::BSShader::Type::Lighting>::func(This, Pass, RenderFlags);
 	else if (shaderType == RE::BSShader::Type::Effect)
@@ -1136,9 +1133,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	auto context = globals::d3d::context;
 
 	state->BeginPerfEvent(unCulledGeometry.find(geometry) == unCulledGeometry.end()  ? "[VCTGI] Voxelization" : "[VCTGI] Voxelization [UnCulled]");
-
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Voxelization");
 
 	ID3D11VertexShader* prevVertex = nullptr;
 	ID3D11ClassInstance* prevVertexClassInstances[256] = {};
@@ -1467,73 +1461,71 @@ void VoxelConeTracingGI::PostProcess()
 	auto state = globals::state;
 	state->BeginPerfEvent("[VCTGI] PostProcess");
 
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] PostProcess");
-
 	auto context = globals::d3d::context;
 
 	// Write samples to RTVs
 	{
 		state->BeginPerfEvent("Blend samples to RTV");
 
-		ZoneScoped;
-		TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Blend samples to RTV");
-
-		// Copy sample count to [7]
-		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, clipmapSamplesBuffer->UAV());
-
 		std::array<ID3D11RenderTargetView*, 3> rtvs = {
-			voxelAccumulator->RTV(0),
-			voxelAccumulator->RTV(1),
-			voxelAccumulator->RTV(2)
+			nullptr,
+			nullptr,
+			nullptr
 		};
 
-		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		context->ClearRenderTargetView(rtvs[0], clearColor);
-		context->ClearRenderTargetView(rtvs[1], clearColor);
-		context->ClearRenderTargetView(rtvs[2], clearColor);
-
-		context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
-
-		context->RSSetViewports(1, &accumulateViewport);
-
-		context->OMSetDepthStencilState(nullptr, 0);
-
-		float blendFactor[4] = { 0, 0, 0, 0 };
-		context->OMSetBlendState(accumulateBlendState.get(), blendFactor, 0xFFFFFFFF);
-
-		auto cb = voxelConeTracingGICB->CB();
-		context->VSSetConstantBuffers(0, 1, &cb);
-
-		context->VSSetShader(accumulateVertex.get(), nullptr, 0);
-		context->PSSetShader(accumulatePixel.get(), nullptr, 0);
-
-		context->IASetInputLayout(accumulateInputLayout.get());
-
-		UINT stride = sizeof(Voxel);
-		UINT offset = 0;
-
-		context->CopyResource(voxelDrawInstanceBuffer->resource.get(), clipmapSamplesBuffer->resource.get());
-
-		const auto& buffer = voxelDrawInstanceBuffer->resource.get();
-		context->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
 		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
 
-		context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 4);
+		for (const auto& samplesBuffer : clipmapSamplesBuffer) {
+			// Copy sample count to [7]
+			context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, samplesBuffer->UAV());
+
+			rtvs[0] = voxelAccumulator->RTV(0);
+			rtvs[1] = voxelAccumulator->RTV(1);
+			rtvs[2] = voxelAccumulator->RTV(2);
+
+			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			context->ClearRenderTargetView(rtvs[0], clearColor);
+			context->ClearRenderTargetView(rtvs[1], clearColor);
+			context->ClearRenderTargetView(rtvs[2], clearColor);
+
+			context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
+
+			context->RSSetViewports(1, &accumulateViewport);
+
+			context->OMSetDepthStencilState(nullptr, 0);
+
+			float blendFactor[4] = { 0, 0, 0, 0 };
+			context->OMSetBlendState(accumulateBlendState.get(), blendFactor, 0xFFFFFFFF);
+
+			auto cb = voxelConeTracingGICB->CB();
+			context->VSSetConstantBuffers(0, 1, &cb);
+
+			context->VSSetShader(accumulateVertex.get(), nullptr, 0);
+			context->PSSetShader(accumulatePixel.get(), nullptr, 0);
+
+			context->IASetInputLayout(accumulateInputLayout.get());
+
+			UINT stride = sizeof(Voxel);
+			UINT offset = 0;
+
+			// This is slow...
+			context->CopyResource(voxelDrawInstanceBuffer->resource.get(), samplesBuffer->resource.get());
+
+			const auto& buffer = voxelDrawInstanceBuffer->resource.get();
+			context->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
+
+			context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 4);
+		}
 
 		rtvs.fill(nullptr);
 		context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
 
 		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
 		state->EndPerfEvent();
 	}
 
 	// Clear buffers
 	{
-		ZoneScoped;
-		TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Clear buffers");
-
 		std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 
 		for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++) {
@@ -1551,9 +1543,6 @@ void VoxelConeTracingGI::PostProcess()
 	// Read and average from the accumulated RTVs into the final voxel buffer and the 3d texture
 	{
 		state->BeginPerfEvent("[VCTGI] Readback from RTV to buffer/3D texture");
-
-		ZoneScoped;
-		TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Readback from RTV to buffer/3D texture");
 
 		std::array<ID3D11ShaderResourceView*, 3> srvs = {
 			voxelAccumulator->SRV(0),
@@ -1597,9 +1586,6 @@ void VoxelConeTracingGI::ScreenConeTrace()
 {
 	auto state = globals::state;
 	state->BeginPerfEvent("[VCTGI] ScreenConeTrace");
-
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] ScreenConeTrace");
 
 	auto context = globals::d3d::context;
 
@@ -1690,9 +1676,6 @@ void VoxelConeTracingGI::DrawVCTGI()
 {
 	auto state = globals::state;
 	state->BeginPerfEvent("[VCTGI] DrawVCTGI");
-
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] DrawVCTGI");
 
 	PostProcess();
 	InjectLighting();
@@ -1820,9 +1803,6 @@ void VoxelConeTracingGI::InjectLighting()
 {
 	auto state = globals::state;
 	state->BeginPerfEvent("[VCTGI] Inject Lighting");
-
-	ZoneScoped;
-	TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Inject Lighting");
 
 	auto context = globals::d3d::context;
 	
