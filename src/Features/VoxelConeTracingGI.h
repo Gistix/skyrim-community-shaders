@@ -536,8 +536,8 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
 	D3D11_VIEWPORT voxelizeViewport = {};
 
-	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapSamplesBuffer;
-	eastl::unique_ptr<StructuredBuffer> voxelBuffer = nullptr;
+	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapsSamplesBuffer;
+	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapsVoxelBuffer;
 
 	// Multi purpose buffer for indirect arguments
 	eastl::unique_ptr<Buffer> voxelIndirectArgsBuffer = nullptr;
@@ -559,7 +559,7 @@ struct VoxelConeTracingGI : public Feature
 	eastl::unique_ptr<StructuredBuffer> lightBuffer = nullptr;
 
 	//eastl::unique_ptr<Texture3D> lod0Tex = nullptr;
-	eastl::vector<eastl::unique_ptr<Texture3D>> clipmapVolumes;
+	eastl::vector<eastl::unique_ptr<Texture3D>> clipmapsVolumeTexture;
 	winrt::com_ptr<ID3D11SamplerState> volumeSampler = nullptr;
 
 	eastl::unique_ptr<Texture2D> diffuseGI = nullptr;
