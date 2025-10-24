@@ -548,11 +548,11 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
 
     # Standalone target for preparing shaders for CI validation
     # This allows shader validation to run without waiting for the full build
-    add_custom_target(
-        prepare_shaders
-        DEPENDS copy_shaders.stamp
-        COMMENT "Preparing shaders for validation"
-    )
+    #add_custom_target(
+    #    prepare_shaders
+    #    DEPENDS copy_shaders.stamp
+    #    COMMENT "Preparing shaders for validation"
+    #)
 endif()
 
 # Automatic deployment to CommunityShaders output directory.

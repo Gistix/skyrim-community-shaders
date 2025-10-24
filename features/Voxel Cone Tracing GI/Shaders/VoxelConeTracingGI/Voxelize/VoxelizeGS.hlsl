@@ -5,16 +5,18 @@ struct GS_INPUT
 	float4 PositionWS   : POSITION;
 	float4 TexCoord0    : TEXCOORD0;
 	float3 NormalWS     : NORMAL;
-	half4 Color        : COLOR0;
+	half4 Color         : COLOR0;
+    uint ClipmapIdx      : INSTANCE_ID;
 };
 
 struct GS_OUTPUT
 {
-    float4 Position             : SV_POSITION;
-	centroid float4 TexCoord0   : TEXCOORD0;
-	centroid float3 NormalWS    : NORMAL;
-	centroid float4 Color       : COLOR0;
-    centroid float3 Cell        : TEXCOORD1;
+    float4 Position                 : SV_POSITION;
+	centroid float4 TexCoord0       : TEXCOORD0;
+	centroid float3 NormalWS        : NORMAL;
+	centroid float4 Color           : COLOR0;
+    centroid float3 Cell            : TEXCOORD1;
+    nointerpolation uint ClipmapIdx : INSTANCE_ID;
     
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 	nointerpolation float3 AABBMin : AABBMIN;
@@ -38,7 +40,7 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 
-    uint clipIdx = 0;
+    uint clipIdx = input[0].ClipmapIdx;
     VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
 
     // Early out if triangle is outside volume
@@ -94,6 +96,8 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
         
         output[i].NormalWS = input[i].NormalWS;
         output[i].Color = input[i].Color;
+         
+        output[i].ClipmapIdx = clipIdx;
          
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 	    output[i].AABBMin = aabbMin;

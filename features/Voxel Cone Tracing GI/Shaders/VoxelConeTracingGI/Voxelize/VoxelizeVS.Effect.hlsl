@@ -37,6 +37,7 @@ struct VS_OUTPUT
 	float4 TexCoord0	: TEXCOORD0;
 	float3 NormalWS		: NORMAL;
 	float4 Color		: COLOR0;
+	uint ClipmapIdx		: INSTANCE_ID;
 };
 
 cbuffer PerMaterial : register(b1)
@@ -143,7 +144,7 @@ float GetProjectedV(float3 worldPosition, uint a_eyeIndex = 0)
 }
 #	endif
 
-VS_OUTPUT main(VS_INPUT input)
+VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 {
 	uint eyeIndex = 0;
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
@@ -160,7 +161,8 @@ VS_OUTPUT main(VS_INPUT input)
 	// Copied from framebuffer, if we use the original here it will clash with VS_PerFrame (same constant buffer slot)
 	worldPosition.xyz += CameraPosAdjust[eyeIndex].xyz;
 
-	VS_OUTPUT vsout;
+	VS_OUTPUT vsout;	
+	vsout.ClipmapIdx = instanceID;	
 	vsout.PositionWS = worldPosition;
 	
 #if defined(NORMALS) || defined(MOTIONVECTORS_NORMALS)

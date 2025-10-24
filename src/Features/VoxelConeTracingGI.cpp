@@ -87,8 +87,8 @@ void VoxelConeTracingGI::DrawGeneralSettings()
 			ImGui::Text("World size of first volume\n");
 		}
 
-		// Clipmaps ammount
-		ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 2, 8);
+		// Clipmap ammount
+		ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 1, 8);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("Number of clipmaps to use\n");
 		}
@@ -454,7 +454,7 @@ void VoxelConeTracingGI::SetupVolumeTextures()
 				.WSize = ~0u }
 		};
 
-		volumeClipmaps.clear();
+		clipmapVolumes.clear();
 
 		for(int i=0; i < settings.ClipmapCount; i++) {
 			auto clipmap = eastl::make_unique<Texture3D>(volumeTexDesc);
@@ -462,7 +462,7 @@ void VoxelConeTracingGI::SetupVolumeTextures()
 			clipmap->CreateSRV(volumeSRVDesc);
 			clipmap->CreateUAV(volumeUAVDesc);
 
-			volumeClipmaps.push_back(eastl::move(clipmap));
+			clipmapVolumes.push_back(eastl::move(clipmap));
 		}
 	}
 
@@ -528,14 +528,20 @@ void VoxelConeTracingGI::SetupBuffers()
 {
 	uint resolution = settings.Resolution;
 	uint maxVoxelCount = resolution * resolution * resolution;
-
 	
-	// Voxel Append Buffer
+	// Voxel Samples Buffer
 	{
-		auto voxelSamplesBufferDesc = StructuredBufferDesc<Voxel>(maxVoxelCount, true, false);
-		voxelSamplesBuffer = eastl::make_unique<StructuredBuffer>(voxelSamplesBufferDesc, maxVoxelCount);
-		voxelSamplesBuffer->CreateUAV(true);
-		voxelSamplesBuffer->CreateSRV();
+		auto samplesBufferDesc = StructuredBufferDesc<Voxel>(maxVoxelCount, true, false);
+
+		clipmapSamplesBuffer.clear();
+
+		for (int i = 0; i < settings.ClipmapCount; i++) {
+			auto samplesBuffer = eastl::make_unique<StructuredBuffer>(samplesBufferDesc, maxVoxelCount);
+			samplesBuffer->CreateUAV(true);
+			samplesBuffer->CreateSRV();
+
+			clipmapSamplesBuffer.push_back(eastl::move(samplesBuffer));
+		}
 	}
 
 	// Voxel Buffer
@@ -1177,24 +1183,10 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 
 	context->RSSetViewports(1, &voxelizeViewport);
 
-	std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-		voxelSamplesBuffer->UAV()
-	};
-
-	context->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, (uint)uavs.size(), uavs.data(), nullptr);
-
 	/*float blendFactor[4] = { 0, 0, 0, 0 };
 	context->OMSetBlendState(nullptr, blendFactor, 0xFFFFFFFF);*/
 
 	// Clipmap handling
-	struct ClipmapState {
-		bool Inside;
-		bool Intersects;
-	};
-
-	std::vector<uint> renderClipmap;
-	renderClipmap.reserve(settings.ClipmapCount);
-
 	const auto& transform = geometry->world;
 
 	const auto& modelData = triShape->GetModelData().modelBound;
@@ -1207,7 +1199,12 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	const auto& aabbMin = modelCenter - r;
 	const auto& aabbMax = modelCenter + r;
 
-	// Always render for clipmaps that intersect, unless it is contained inside a previous clipmap
+	std::vector<uint> renderClipmap;
+	renderClipmap.reserve(settings.ClipmapCount);
+
+	// Samples UAV
+	std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+
 	for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++)
 	{
 		const auto& clipmap = voxelConeTracingGICBData.Clipmaps[i];
@@ -1217,17 +1214,27 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 
 		if (contains || intersects) {
 			renderClipmap.push_back(i);
+			uavs[i] = clipmapSamplesBuffer[i]->UAV();
 
+			// Model is contained completely inside and doesn't intersect any other clipmap 
 			if (contains) {
 				break;
 			}
-		} else {
-			break;
 		}
 	}
 
 	// Render
-	context->DrawIndexed(triShapeRuntime.triangleCount * 3, 0, 0);
+	uint indexCount = triShapeRuntime.triangleCount * 3;
+	//context->DrawIndexed(indexCount, 0, 0);
+
+	uint instanceCount = (uint)renderClipmap.size();
+	uint firstInstance = renderClipmap.front();
+
+	// Set samples UAV
+	context->OMSetRenderTargetsAndUnorderedAccessViews(0, nullptr, nullptr, 0, (uint)uavs.size(), uavs.data(), nullptr);
+
+	// Render
+	context->DrawIndexedInstanced(indexCount, instanceCount, 0, 0, firstInstance);
 
 	// Restore
 	context->VSSetShader(prevVertex, prevVertexClassInstances, prevNumVertexClassInstances);
@@ -1303,12 +1310,13 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 
 		rendered = 0;
 
-		if ((changedSettings & ChangedSetting::VolumeResolution) != ChangedSetting::None) {
+		if (((changedSettings & ChangedSetting::VolumeResolution) != ChangedSetting::None) || ((changedSettings & ChangedSetting::ClipmapCount) != ChangedSetting::None)) {
 			SetupVolumeTextures();
 			SetupBuffers();
 			SetupViewport();
 
 			changedSettings &= ~ChangedSetting::VolumeResolution;
+			changedSettings &= ~ChangedSetting::ClipmapCount;
 		}
 
 		if ((changedSettings & ChangedSetting::ScreenResolution) != ChangedSetting::None) {
@@ -1437,7 +1445,6 @@ void VoxelConeTracingGI::BSBatchRenderer_RenderPassImmediately(RE::BSRenderPass*
 	state->EndPerfEvent();
 }
 
-
 VoxelConeTracingGI::VoxelConeTracingGICB VoxelConeTracingGI::GetCommonBufferData() const
 {
 	return voxelConeTracingGICBData;
@@ -1473,7 +1480,7 @@ void VoxelConeTracingGI::PostProcess()
 		TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Blend samples to RTV");
 
 		// Copy sample count to [7]
-		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, voxelSamplesBuffer->UAV());
+		context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, clipmapSamplesBuffer->UAV());
 
 		std::array<ID3D11RenderTargetView*, 3> rtvs = {
 			voxelAccumulator->RTV(0),
@@ -1506,7 +1513,7 @@ void VoxelConeTracingGI::PostProcess()
 		UINT stride = sizeof(Voxel);
 		UINT offset = 0;
 
-		context->CopyResource(voxelDrawInstanceBuffer->resource.get(), voxelSamplesBuffer->resource.get());
+		context->CopyResource(voxelDrawInstanceBuffer->resource.get(), clipmapSamplesBuffer->resource.get());
 
 		const auto& buffer = voxelDrawInstanceBuffer->resource.get();
 		context->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
@@ -1527,9 +1534,14 @@ void VoxelConeTracingGI::PostProcess()
 		ZoneScoped;
 		TracyD3D11Zone(globals::state->tracyCtx, "[VCTGI] Clear buffers");
 
-		const auto& samplesUAV = voxelSamplesBuffer->UAV();
+		std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+
+		for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++) {
+			uavs[i] = clipmapSamplesBuffer[i]->UAV();
+		}
+
 		UINT initialCount = 0;
-		context->CSSetUnorderedAccessViews(0, 1, &samplesUAV, &initialCount);
+		context->CSSetUnorderedAccessViews(0, (UINT)uavs.size(), uavs.data(), &initialCount);
 
 		const auto& voxelUAV = voxelBuffer->UAV();
 		initialCount = 0;
@@ -1629,7 +1641,7 @@ void VoxelConeTracingGI::ScreenConeTrace()
 		depth.depthSRV,
 		normalRoughness.SRV,
 		reflectance.SRV,
-		volumeClipmaps[0]->srv.get()
+		clipmapVolumes[0]->srv.get()
 	};
 
 	std::array<ID3D11UnorderedAccessView*, 2> uavs = {
@@ -1719,7 +1731,7 @@ void VoxelConeTracingGI::DebugDrawVoxels()
 	context->PSSetShader(drawPixel.get(), nullptr, 0);
 
 	std::array<ID3D11ShaderResourceView*, 1> srvs = {
-		volumeClipmaps[0]->srv.get()
+		clipmapVolumes[0]->srv.get()
 	};
 
 	if (settings.DebugDrawMode == DebugDrawMode::Lighting || settings.DebugDrawMode == DebugDrawMode::Final)
@@ -1986,7 +1998,7 @@ void VoxelConeTracingGI::InjectLighting()
 		auto cb = injectLightingCB->CB();
 
 		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		context->ClearUnorderedAccessViewFloat(volumeClipmaps[0]->uav.get(), clearColor);
+		context->ClearUnorderedAccessViewFloat(clipmapVolumes[0]->uav.get(), clearColor);
 
 		std::array<ID3D11ShaderResourceView*, 2> srvs = {
 			lightBuffer->SRV(),
@@ -1994,7 +2006,7 @@ void VoxelConeTracingGI::InjectLighting()
 		};
 
 		std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-			volumeClipmaps[0]->uav.get()
+			clipmapVolumes[0]->uav.get()
 		};
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
@@ -2004,7 +2016,7 @@ void VoxelConeTracingGI::InjectLighting()
 		context->CSSetShader(injectLightCompute.get(), nullptr, 0);
 		context->DispatchIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 8); // Address of ceil(voxelCount / 64.0f)
 
-		context->GenerateMips(volumeClipmaps[0]->srv.get());
+		context->GenerateMips(clipmapVolumes[0]->srv.get());
 
 		srvs.fill(nullptr);
 		uavs.fill(nullptr);

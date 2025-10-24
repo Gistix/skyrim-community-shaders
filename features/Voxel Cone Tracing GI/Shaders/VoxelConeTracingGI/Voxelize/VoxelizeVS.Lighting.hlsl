@@ -29,6 +29,7 @@ struct VS_OUTPUT
 	float4 TexCoord0	: TEXCOORD0;
 	float3 NormalWS		: NORMAL;
 	float4 Color		: COLOR0;
+	uint ClipmapIdx		: INSTANCE_ID;
 };
 
 cbuffer PerMaterial : register(b1)
@@ -91,7 +92,7 @@ cbuffer VS_PerFramePS : register(b13)
 #endif  // !VR
 }
 
-VS_OUTPUT main(VS_INPUT input)
+VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 {
 	uint eyeIndex = 0;
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
@@ -109,6 +110,7 @@ VS_OUTPUT main(VS_INPUT input)
 	worldPosition.xyz += CameraPosAdjust[eyeIndex].xyz;
 
 	VS_OUTPUT vsout;
+	vsout.ClipmapIdx = instanceID;
 	vsout.PositionWS = worldPosition;
 
 	float4 uv = float4(input.TexCoord0 * TexcoordOffset.zw + TexcoordOffset.xy, 0, 0);
