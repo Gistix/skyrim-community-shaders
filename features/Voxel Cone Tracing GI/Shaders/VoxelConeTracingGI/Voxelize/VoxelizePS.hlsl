@@ -26,60 +26,63 @@ struct PS_INPUT
 #include "VoxelConeTracingGI/Voxelize/VoxelizePS.Effect.hlsli"
 #endif
 
-/*#ifndef CLIPMAP_COUNT
-#define CLIPMAP_COUNT 4
-#endif*/
+RasterizerOrderedStructuredBuffer<Voxel> ClipVoxels[8] : register(u0);
+RWByteAddressBuffer ClipVoxelMask[8] : register(u8);
+RWByteAddressBuffer ClipVoxelMap[8] : register(u16);
+RWByteAddressBuffer VoxelCount : register(u24);
 
-AppendStructuredBuffer<Voxel> Clip0Samples : register(u0);
-AppendStructuredBuffer<Voxel> Clip1Samples : register(u1);
-AppendStructuredBuffer<Voxel> Clip2Samples : register(u2);
-AppendStructuredBuffer<Voxel> Clip3Samples : register(u3);
-AppendStructuredBuffer<Voxel> Clip4Samples : register(u4);
-AppendStructuredBuffer<Voxel> Clip5Samples : register(u5);
-AppendStructuredBuffer<Voxel> Clip6Samples : register(u6);
-AppendStructuredBuffer<Voxel> Clip7Samples : register(u7);
+void VoxelizeClipmap(const uint clipIdx, const uint res, const uint3 coord, Voxel voxelSample) 
+{
+	uint clipOffset = clipIdx * 4; // 'Struct' size is 4 uints (vertice count, instance count, vertex start, instance start)
+	uint countIndex = clipOffset + 1; // Voxel Count (instance count) is the 2nd uint
+	
+	uint coord1D = coord.x + (coord.y * res) + (coord.z * res * res);
+	
+    uint wordIndex = coord1D >> 5;
+    uint bitIndex  = coord1D & 31;
+    uint bitMask = 1 << bitIndex;	
+	
+    uint originalWord;
+    ClipVoxelMask[clipIdx].InterlockedOr(wordIndex * 4, bitMask, originalWord);	
+	
+	[branch]
+	if ((originalWord & bitMask) == 0) { // Voxel at 'coord1D' not voxelized yet, create new instance
+		uint sparseIndex;
+		VoxelCount.InterlockedAdd(countIndex * 4, 1, sparseIndex);
+	
+		// Lets store the sparse voxel index for this coord
+		ClipVoxelMap[clipIdx].Store(coord1D * 4, sparseIndex);
+	
+		// Set voxel to sample
+		ClipVoxels[clipIdx][sparseIndex] = voxelSample;
+	} else { // Voxel at 'coord1D' already voxelized, so average with previous value
+		uint sparseIndex = ClipVoxelMap[clipIdx].Load(coord1D * 4);
 
-/*#if CLIPMAP_COUNT > 1
-AppendStructuredBuffer<Voxel> Clip1Samples : register(u1);
-#endif
+		// Rasterizer Ordered Views guarantees this will be ordered
+		Voxel prevVoxel = ClipVoxels[clipIdx][sparseIndex];
 
-#if CLIPMAP_COUNT > 2
-AppendStructuredBuffer<Voxel> Clip2Samples : register(u2);
-#endif
-
-#if CLIPMAP_COUNT > 3
-AppendStructuredBuffer<Voxel> Clip3Samples : register(u3);
-#endif
-
-#if CLIPMAP_COUNT > 4
-AppendStructuredBuffer<Voxel> Clip4Samples : register(u4);
-#endif
-
-#if CLIPMAP_COUNT > 5
-AppendStructuredBuffer<Voxel> Clip5Samples : register(u5);
-#endif
-
-#if CLIPMAP_COUNT > 6
-AppendStructuredBuffer<Voxel> Clip6Samples : register(u6);
-#endif
-
-#if CLIPMAP_COUNT > 7
-AppendStructuredBuffer<Voxel> Clip7Samples : register(u7);
-#endif*/
-
+		prevVoxel.Albedo = (prevVoxel.Albedo + voxelSample.Albedo) * 0.5f; 
+		prevVoxel.Normal = normalize((prevVoxel.Normal + voxelSample.Normal) * 0.5f);
+		prevVoxel.Emissive = max(prevVoxel.Emissive, voxelSample.Emissive);
+		
+		ClipVoxels[clipIdx][sparseIndex] = prevVoxel;	
+	}
+}
 
 void main(PS_INPUT input)
 {
 	const VoxelConeTracingGI::ConstantBuffer VCTGI = SharedData::voxelConeTracingGISettings;
 	
+	const uint res = VCTGI.Res;
+	
 	[branch]
-	if (any(input.Cell < 0.0f) || any(input.Cell > (float)VCTGI.Res - 1.0f)) {
+	if (any(input.Cell < 0.0f) || any(input.Cell > (float)res - 1.0f)) {
 		return;
 	}
 	
 	uint3 coord = floor(input.Cell);
 	
-	uint clipIdx = input.ClipmapIdx;
+	const uint clipIdx = input.ClipmapIdx;
 	
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
     VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
@@ -102,37 +105,23 @@ void main(PS_INPUT input)
 	
 	FillVoxelSample(voxelSample, input);
 	
-	
-	[branch] 
-	switch(clipIdx)
-	{
-		case 0:
-			Clip0Samples.Append(voxelSample);
-			break;
-		case 1:
-			Clip1Samples.Append(voxelSample);
-			break;
-		case 2:
-			Clip2Samples.Append(voxelSample);
-			break;
-		case 3:
-			Clip3Samples.Append(voxelSample);
-			break;
-		case 4:
-			Clip4Samples.Append(voxelSample);
-			break;
-		case 5:
-			Clip5Samples.Append(voxelSample);
-			break;
-		case 6:
-			Clip6Samples.Append(voxelSample);
-			break;
-		case 7:
-			Clip7Samples.Append(voxelSample);
-			break;
-		default:
-			break;
+	[branch]
+	if (clipIdx == 0) {
+		VoxelizeClipmap(0, res, coord, voxelSample);
+	} else if (clipIdx == 1) {
+		VoxelizeClipmap(1, res, coord, voxelSample);
+	} else if (clipIdx == 2) {
+		VoxelizeClipmap(2, res, coord, voxelSample);
+	} else if (clipIdx == 3) {
+		VoxelizeClipmap(3, res, coord, voxelSample);
+	} else if (clipIdx == 4) {
+		VoxelizeClipmap(4, res, coord, voxelSample);
+	} else if (clipIdx == 5) {
+		VoxelizeClipmap(5, res, coord, voxelSample);
+	} else if (clipIdx == 6) {
+		VoxelizeClipmap(6, res, coord, voxelSample);	
+	} else if (clipIdx == 7) {
+		VoxelizeClipmap(7, res, coord, voxelSample);
 	}
-
 #endif
 }

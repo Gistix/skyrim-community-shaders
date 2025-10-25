@@ -536,15 +536,15 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
         endif()
     endforeach()
 
-    add_custom_command(
-        OUTPUT copy_shaders.stamp
-        COMMAND
-            ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders"
-            ${_shader_copy_cmds}
-        COMMAND ${CMAKE_COMMAND} -E touch copy_shaders.stamp
-        DEPENDS ${HLSL_FILES}
-        COMMENT "Copying changed shaders into AIO/Shaders"
-    )
+    #add_custom_command(
+    #    OUTPUT copy_shaders.stamp
+    #    COMMAND
+    #        ${CMAKE_COMMAND} -E make_directory "${AIO_DIR}/Shaders"
+    #        ${_shader_copy_cmds}
+    #    COMMAND ${CMAKE_COMMAND} -E touch copy_shaders.stamp
+    #    DEPENDS ${HLSL_FILES}
+    #    COMMENT "Copying changed shaders into AIO/Shaders"
+    #)
 
     # Standalone target for preparing shaders for CI validation
     # This allows shader validation to run without waiting for the full build

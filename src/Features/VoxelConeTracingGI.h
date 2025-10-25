@@ -221,7 +221,6 @@ struct VoxelConeTracingGI : public Feature
 	void Main_RenderWorld(bool a1);
 	void BSBatchRenderer_RenderPassImmediately(RE::BSRenderPass * a_pass, uint32_t a_technique, bool a_alphaTest, uint32_t a_renderFlags);
 
-	void PostProcess();
 	void InjectLighting();
 	void ScreenConeTrace();
 	void DrawVCTGI();
@@ -242,6 +241,7 @@ struct VoxelConeTracingGI : public Feature
 	static constexpr uint16_t resolutions[6] = { 16, 32, 64, 128, 256, 512 };
 	static constexpr uint MAX_LIGHTS = 1024;
 	static constexpr eastl_size_t MAX_HISTORY = 60 * 60 * 60;
+	static constexpr uint MAX_CLIPMAPS = 8;
 
 	float3 center;
 	bool queuedReset;
@@ -536,18 +536,14 @@ struct VoxelConeTracingGI : public Feature
 	winrt::com_ptr<ID3D11RasterizerState2> voxelRasterState = nullptr;
 	D3D11_VIEWPORT voxelizeViewport = {};
 
-	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapsSamplesBuffer;
+	eastl::vector<eastl::unique_ptr<Buffer>> clipmapsVoxelMaskBuffer;
+	eastl::vector<eastl::unique_ptr<Buffer>> clipmapsVoxelMapBuffer;
+	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;  // We only need 4 bytes per clipmap, lets use one single buffer, we'll also reutilize it as the instance buffer
+	eastl::unique_ptr<Buffer> voxelCountBufferTemplate = nullptr;	
 	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapsVoxelBuffer;
 
 	// Multi purpose buffer for indirect arguments
 	eastl::unique_ptr<Buffer> voxelIndirectArgsBuffer = nullptr;
-
-	// Post-Processing voxelization
-	eastl::unique_ptr<Texture2DArray> voxelAccumulator = nullptr;
-	D3D11_VIEWPORT accumulateViewport = {};
-	winrt::com_ptr<ID3D11BlendState> accumulateBlendState = nullptr;
-	std::vector<D3D11_INPUT_ELEMENT_DESC> accumulateInputDesc;
-	winrt::com_ptr<ID3D11InputLayout> accumulateInputLayout = nullptr;
 
 	// Drawing voxels
 	eastl::unique_ptr<Buffer> voxelDrawVertexBuffer = nullptr;

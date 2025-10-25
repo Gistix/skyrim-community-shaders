@@ -88,7 +88,7 @@ void VoxelConeTracingGI::DrawGeneralSettings()
 		}
 
 		// Clipmap ammount
-		ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 1, 8);
+		ImGui::SliderInt("Clipmaps", &settings.ClipmapCount, 1, MAX_CLIPMAPS);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("Number of clipmaps to use\n");
 		}
@@ -465,84 +465,131 @@ void VoxelConeTracingGI::SetupVolumeTextures()
 			clipmapsVolumeTexture.push_back(eastl::move(clipmap));
 		}
 	}
-
-	logger::debug("Creating render targets...");
-	{
-		//int slicesPerRow = std::max(1.0f, 16384.0f / resolution);
-		//int rows = (resolution + slicesPerRow - 1) / slicesPerRow
-
-		//size.width = slicesPerRow * resolution;
-		//size.height = rows * resolution;
-
-		D3D11_TEXTURE2D_DESC texDesc = {
-			.Width = resolution * resolution, // This will break for 256 and up but...
-			.Height = resolution,
-			.MipLevels = 1,
-			.ArraySize = 3,  // Albedo, Emission and Normal
-			.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
-			.SampleDesc = {
-				.Count = 1,
-				.Quality = 0 },
-			.Usage = D3D11_USAGE_DEFAULT,
-			.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, // D3D11_BIND_UNORDERED_ACCESS
-			.CPUAccessFlags = 0,
-			.MiscFlags = 0
-		};
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-			.Format = texDesc.Format,
-			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
-			.Texture2DArray = {
-				.MostDetailedMip = 0,
-				.MipLevels = 1,
-				.FirstArraySlice = 0,
-				.ArraySize = 1 }
-		};
-
-		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {
-			.Format = texDesc.Format,
-			.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY,
-			.Texture2DArray = {
-				.MipSlice = 0,
-				.FirstArraySlice = 0,
-				.ArraySize = 1 }
-		};
-
-		voxelAccumulator = eastl::make_unique<Texture2DArray>(texDesc);
-		voxelAccumulator->CreateSRV(srvDesc);
-		voxelAccumulator->CreateRTV(rtvDesc);
-
-		srvDesc.Texture2DArray.FirstArraySlice = 1;
-		rtvDesc.Texture2DArray.FirstArraySlice = 1;
-		voxelAccumulator->CreateSRV(srvDesc);
-		voxelAccumulator->CreateRTV(rtvDesc);
-
-		srvDesc.Texture2DArray.FirstArraySlice = 2;
-		rtvDesc.Texture2DArray.FirstArraySlice = 2;
-		voxelAccumulator->CreateSRV(srvDesc);
-		voxelAccumulator->CreateRTV(rtvDesc);
-	}
 }
 
 void VoxelConeTracingGI::SetupBuffers()
 {
 	uint resolution = settings.Resolution;
 	uint maxVoxelCount = resolution * resolution * resolution;
-	
-	// Voxel Samples Buffer
-	{
-		auto samplesBufferDesc = StructuredBufferDesc<Voxel>(maxVoxelCount, true, false);
 
-		clipmapsSamplesBuffer.clear();
-		clipmapsSamplesBuffer.reserve(settings.ClipmapCount);
+	// Voxel Map Buffer - maps simulated append buffer to 1d voxel index
+	{
+		D3D11_BUFFER_DESC bufferDesc = {
+			.ByteWidth = 4 * maxVoxelCount,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = {
+				.FirstElement = 0,
+				.NumElements = maxVoxelCount,
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW 
+			}
+		};
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,  // DXGI_FORMAT_R32_UINT
+			.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX,
+			.BufferEx = {
+				.FirstElement = 0,
+				.NumElements = maxVoxelCount,
+				.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW 
+			}
+		};
+
+		clipmapsVoxelMapBuffer.clear();
+		clipmapsVoxelMapBuffer.reserve(settings.ClipmapCount);
 
 		for (int i = 0; i < settings.ClipmapCount; i++) {
-			auto samplesBuffer = eastl::make_unique<StructuredBuffer>(samplesBufferDesc, maxVoxelCount);
-			samplesBuffer->CreateUAV(true);
-			samplesBuffer->CreateSRV();
+			auto voxelMapBuffer = eastl::make_unique<Buffer>(bufferDesc);
+			voxelMapBuffer->CreateUAV(uavDesc);
+			voxelMapBuffer->CreateSRV(srvDesc);
 
-			clipmapsSamplesBuffer.push_back(eastl::move(samplesBuffer));
+			clipmapsVoxelMapBuffer.push_back(eastl::move(voxelMapBuffer));
 		}
+	}
+
+	// Voxel mask buffer
+	{
+		uint numBits = maxVoxelCount;
+		uint numBytes = (numBits + 7) / 8;
+		uint maskElements = (numBytes + 3) / 4;
+
+		D3D11_BUFFER_DESC bufferDesc = {
+			.ByteWidth = 4 * maskElements,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
+		};
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = {
+				.FirstElement = 0,
+				.NumElements = maskElements,
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW }
+		};
+
+		clipmapsVoxelMaskBuffer.clear();
+		clipmapsVoxelMaskBuffer.reserve(settings.ClipmapCount);
+
+		for (int i = 0; i < settings.ClipmapCount; i++) {
+			auto voxelMaskBuffer = eastl::make_unique<Buffer>(bufferDesc);
+			voxelMaskBuffer->CreateUAV(uavDesc);
+
+			clipmapsVoxelMaskBuffer.push_back(eastl::move(voxelMaskBuffer));
+		}
+	}
+
+	// Voxel Count Buffer (allows voxel structured buffer to mimic append)
+	{
+		// Multi purpose indirect arguments buffer
+		UINT countIndirectArgsInit[4 * MAX_CLIPMAPS];
+
+		for (int i = 0; i < settings.ClipmapCount; i++) {
+			const uint offset = i * 4;
+
+			countIndirectArgsInit[offset] = 36;          // VertexCountPerInstance (Cube vertices)
+			countIndirectArgsInit[offset + 4] = 0;        // InstanceCount (Voxel Count)
+			countIndirectArgsInit[offset + 8] = 0;       // StartVertexLocation
+			countIndirectArgsInit[offset + 12] = 0;       // tartInstanceLocation		
+		}
+
+		uint countIndirectArgsByteWidth = sizeof(countIndirectArgsInit);
+
+		D3D11_BUFFER_DESC countIndirectArgsBufferDesc = {
+			.ByteWidth = countIndirectArgsByteWidth,
+			.Usage = D3D11_USAGE_DEFAULT,
+			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
+			.CPUAccessFlags = 0,
+			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS
+		};
+
+		D3D11_SUBRESOURCE_DATA countIndirectArgsInitData = {};
+		countIndirectArgsInitData.pSysMem = countIndirectArgsInit;
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+			.Format = DXGI_FORMAT_R32_TYPELESS,
+			.ViewDimension = D3D11_UAV_DIMENSION_BUFFER,
+			.Buffer = {
+				.FirstElement = 0,
+				.NumElements = countIndirectArgsByteWidth / sizeof(countIndirectArgsInit[0]),
+				.Flags = D3D11_BUFFER_UAV_FLAG_RAW 
+			}
+		};
+
+		voxelCountBuffer = eastl::make_unique<Buffer>(countIndirectArgsBufferDesc);
+		voxelCountBuffer->CreateUAV(uavDesc);
+
+		voxelCountBufferTemplate = eastl::make_unique<Buffer>(countIndirectArgsBufferDesc, &countIndirectArgsInitData);
+		voxelCountBufferTemplate->CreateUAV(uavDesc);
 	}
 
 	// Voxel Buffer
@@ -554,7 +601,7 @@ void VoxelConeTracingGI::SetupBuffers()
 
 		for (int i = 0; i < settings.ClipmapCount; i++) {
 			auto voxelBuffer = eastl::make_unique<StructuredBuffer>(voxelBufferDesc, maxVoxelCount);
-			voxelBuffer->CreateUAV(true);
+			voxelBuffer->CreateUAV();
 			voxelBuffer->CreateSRV();
 
 			clipmapsVoxelBuffer.push_back(eastl::move(voxelBuffer));
@@ -589,21 +636,12 @@ void VoxelConeTracingGI::SetupViewport()
 {
 	float resolutionFloat = static_cast<float>(settings.Resolution);
 
-	//float viewportResolution = resolutionFloat * std::pow(settings.ScaleFactor, settings.ClipmapCount - 1);
-
 	voxelizeViewport.TopLeftX = 0.0f;
 	voxelizeViewport.TopLeftY = 0.0f;
 	voxelizeViewport.Width = resolutionFloat;
 	voxelizeViewport.Height = resolutionFloat;
 	voxelizeViewport.MinDepth = 0.0f;
 	voxelizeViewport.MaxDepth = 1.0f;
-
-	accumulateViewport.TopLeftX = 0.0f;
-	accumulateViewport.TopLeftY = 0.0f;
-	accumulateViewport.Width = resolutionFloat * resolutionFloat;  // Breaky breaky
-	accumulateViewport.Height = resolutionFloat;
-	accumulateViewport.MinDepth = 0.0f;
-	accumulateViewport.MaxDepth = 1.0f;
 }
 
 
@@ -771,13 +809,6 @@ void VoxelConeTracingGI::SetupResources()
 			{ "VOXELNORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Normal), D3D11_INPUT_PER_INSTANCE_DATA, 1 },
 			{ "VOXELEMISSION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, offsetof(Voxel, Voxel::Emissive), D3D11_INPUT_PER_INSTANCE_DATA, 1 }
 		};
-		
-		accumulateInputDesc = {
-			{ "VOXELCOORD", 0, DXGI_FORMAT_R32G32B32_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-			{ "VOXELALBEDO", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Albedo), D3D11_INPUT_PER_VERTEX_DATA, 0 },
-			{ "VOXELNORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Normal), D3D11_INPUT_PER_VERTEX_DATA, 0 }, 
-			{ "VOXELEMISSIVE", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Voxel, Voxel::Emissive), D3D11_INPUT_PER_VERTEX_DATA, 0 }
-		};
 	}
 
 	logger::debug("Creating samplers...");
@@ -797,7 +828,9 @@ void VoxelConeTracingGI::SetupResources()
 	{
 		D3D11_FEATURE_DATA_D3D11_OPTIONS2 options2 = {};
 		DX::ThrowIfFailed(device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &options2, sizeof(options2)));
+
 		logger::warn("CheckFeatureSupport: ConservativeRasterizationTier: {}", magic_enum::enum_name(options2.ConservativeRasterizationTier));
+		logger::warn("CheckFeatureSupport: ROVsSupported: {}", options2.ROVsSupported);
 
 		D3D11_RASTERIZER_DESC2 rasterDesc = {};
 		rasterDesc.FillMode = D3D11_FILL_SOLID;
@@ -819,41 +852,6 @@ void VoxelConeTracingGI::SetupResources()
 			logger::error("CreateRasterizerState2: Failed to create D3D11.3 ID3D11RasterizerState2, HRESULT: 0x{:08X}", static_cast<uint32_t>(hr));
 			DX::ThrowIfFailed(hr);
 		}
-	}
-
-	// Blend States
-	{
-		D3D11_BLEND_DESC blendDesc = {};
-		blendDesc.IndependentBlendEnable = TRUE;
-
-		blendDesc.RenderTarget[0].BlendEnable = TRUE;
-		blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-		
-		blendDesc.RenderTarget[1].BlendEnable = TRUE;
-		blendDesc.RenderTarget[1].SrcBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[1].DestBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[1].BlendOp = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[1].SrcBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[1].DestBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[1].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[1].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-		
-		blendDesc.RenderTarget[2].BlendEnable = TRUE;
-		blendDesc.RenderTarget[2].SrcBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[2].DestBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[2].BlendOp = D3D11_BLEND_OP_MAX;
-		blendDesc.RenderTarget[2].SrcBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[2].DestBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[2].BlendOpAlpha = D3D11_BLEND_OP_MAX;
-		blendDesc.RenderTarget[2].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-
-		device->CreateBlendState(&blendDesc, accumulateBlendState.put());
 	}
 
 	// Depth Stencil State
@@ -1157,12 +1155,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	ID3D11RasterizerState* prevState = nullptr;
 	context->RSGetState(&prevState);
 
-	/*UINT numViewports = 0;
-	context->RSGetViewports(&numViewports, nullptr);
-
-	std::vector<D3D11_VIEWPORT> viewports(numViewports);
-	context->RSGetViewports(&numViewports, viewports.data());*/
-
 	// Lets back everything up
 	uint numViewports = 1;
 	D3D11_VIEWPORT prevViewport = {};
@@ -1172,11 +1164,6 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	ID3D11RenderTargetView* prevRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
 	ID3D11DepthStencilView* prevDSV = nullptr;
 	context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, &prevDSV);
-
-	/*ID3D11BlendState* prevBlendState = nullptr;
-	float prevBlendFactor[4] = {};
-	UINT prevBlendMask = 0;
-	context->OMGetBlendState(&prevBlendState, prevBlendFactor, &prevBlendMask);*/
 
 	context->VSSetShader(vertexShader.get(), nullptr, 0);
 	context->GSSetShader(voxelizeGeometry.get(), nullptr, 0);
@@ -1206,7 +1193,10 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 	renderClipmap.reserve(settings.ClipmapCount);
 
 	// Samples UAV
-	std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+	std::array<ID3D11UnorderedAccessView*, (MAX_CLIPMAPS*3) + 1> uavs;
+	uavs.fill(nullptr);
+
+	//voxelCountBuffer
 
 	for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++)
 	{
@@ -1217,7 +1207,10 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 
 		if (contains || intersects) {
 			renderClipmap.push_back(i);
-			uavs[i] = clipmapsSamplesBuffer[i]->UAV();
+
+			uavs[i] = clipmapsVoxelBuffer[i]->UAV();
+			uavs[MAX_CLIPMAPS + i] = clipmapsVoxelMaskBuffer[i]->uav.get();
+			uavs[(MAX_CLIPMAPS * 2) + i] = clipmapsVoxelMapBuffer[i]->uav.get();
 
 			// Model is contained completely inside and doesn't intersect any other clipmap 
 			if (contains) {
@@ -1226,6 +1219,8 @@ void VoxelConeTracingGI::BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRend
 		}
 	}
 
+	uavs[uavs.size() - 1] = voxelCountBuffer->uav.get();
+	
 	// Render
 	uint indexCount = triShapeRuntime.triangleCount * 3;
 	//context->DrawIndexed(indexCount, 0, 0);
@@ -1380,6 +1375,18 @@ void VoxelConeTracingGI::Main_RenderWorld(bool a1)
 		context->VSSetConstantBuffers(13, 1, &vsFBPSCB);
 		context->GSSetConstantBuffers(0, 1, &vxGICB);
 
+		// Clear/reset buffers
+		{
+			for (int i = 0; i < settings.ClipmapCount; i++)
+			{
+				UINT clearValues[4] = { 0, 0, 0, 0 };
+				context->ClearUnorderedAccessViewUint(clipmapsVoxelMapBuffer[i]->uav.get(), clearValues);
+				context->ClearUnorderedAccessViewUint(clipmapsVoxelMaskBuffer[i]->uav.get(), clearValues);
+			}
+
+			context->CopyResource(voxelCountBuffer->resource.get(), voxelCountBufferTemplate->resource.get());
+		}
+
 		renderingWorld = true;
 	}
 
@@ -1460,147 +1467,6 @@ void VoxelConeTracingGI::Main_RenderWorldAfter()
 
 	if (settings.DebugDrawMode != DebugDrawMode::None && settings.DebugDrawMode != DebugDrawMode::Count) {
 		DebugDrawVoxels();
-	}
-
-	state->EndPerfEvent();
-}
-
-void VoxelConeTracingGI::PostProcess()
-{
-	auto state = globals::state;
-	state->BeginPerfEvent("[VCTGI] PostProcess");
-
-	auto context = globals::d3d::context;
-
-	std::array<ID3D11UnorderedAccessView*, 8> clipmapUAVs = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
-
-	// Clear voxels
-	{
-		for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++) {
-			clipmapUAVs[i] = clipmapsVoxelBuffer[i]->UAV();
-		}
-
-		UINT initialCount = 0;
-		context->CSSetUnorderedAccessViews(0, (UINT)clipmapUAVs.size(), clipmapUAVs.data(), &initialCount);		
-	}
-
-	std::array<ID3D11RenderTargetView*, 3> rtvs = {
-		voxelAccumulator->RTV(0),
-		voxelAccumulator->RTV(1),
-		voxelAccumulator->RTV(2)
-	};
-
-	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-
-	// Lazy solution for now
-	for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++) {
-		state->BeginPerfEvent(std::format("[VCTGI] PostProcess - Clipmap {}", i).c_str());
-
-		// Write samples to RTVs
-		{
-			state->BeginPerfEvent("[VCTGI] Blend samples to RTV");
-
-			const auto& samplesBuffer = clipmapsSamplesBuffer[i];
-
-			// Copy sample count to [7]
-			context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 4, samplesBuffer->UAV());
-
-			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			context->ClearRenderTargetView(rtvs[0], clearColor);
-			context->ClearRenderTargetView(rtvs[1], clearColor);
-			context->ClearRenderTargetView(rtvs[2], clearColor);
-
-			context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
-
-			context->RSSetViewports(1, &accumulateViewport);
-
-			context->OMSetDepthStencilState(nullptr, 0);
-
-			float blendFactor[4] = { 0, 0, 0, 0 };
-			context->OMSetBlendState(accumulateBlendState.get(), blendFactor, 0xFFFFFFFF);
-
-			auto cb = voxelConeTracingGICB->CB();
-			context->VSSetConstantBuffers(0, 1, &cb);
-
-			context->VSSetShader(accumulateVertex.get(), nullptr, 0);
-			context->PSSetShader(accumulatePixel.get(), nullptr, 0);
-
-			context->IASetInputLayout(accumulateInputLayout.get());
-
-			UINT stride = sizeof(Voxel);
-			UINT offset = 0;
-
-			// This is slow... maybe we can use a raw buffer instead since this way it can also has the vertex bind flag
-			context->CopyResource(voxelDrawInstanceBuffer->resource.get(), samplesBuffer->resource.get());
-
-			const auto& buffer = voxelDrawInstanceBuffer->resource.get();
-			context->IASetVertexBuffers(0, 1, &buffer, &stride, &offset);
-
-			context->DrawInstancedIndirect(voxelIndirectArgsBuffer->resource.get(), 4 * 4);
-		
-			state->EndPerfEvent();
-		}
-
-		// Read and average from the accumulated RTVs into the final voxel buffer and the 3d texture
-		{
-			state->BeginPerfEvent("[VCTGI] Readback from RTV to buffer/3D texture");
-
-			const auto& voxelBuffer = clipmapsVoxelBuffer[i];
-
-			std::array<ID3D11ShaderResourceView*, 3> srvs = {
-				voxelAccumulator->SRV(0),
-				voxelAccumulator->SRV(1),
-				voxelAccumulator->SRV(2)
-			};
-
-			std::array<ID3D11UnorderedAccessView*, 1> uavs = {
-				voxelBuffer->UAV()
-			};
-
-			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
-			auto cb = voxelConeTracingGICB->CB();
-			context->CSSetConstantBuffers(0, 1, &cb);
-
-			context->CSSetShader(postProcessCompute.get(), nullptr, 0);
-
-			float resolutionFloat = static_cast<float>(settings.Resolution);
-			uint threadGroups = static_cast<uint>(ceil(resolutionFloat / 8.0f));
-
-			context->Dispatch(threadGroups, threadGroups, threadGroups);
-
-			srvs.fill(nullptr);
-			uavs.fill(nullptr);
-
-			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-
-			// Copy voxel count to [1]
-			context->CopyStructureCount(voxelIndirectArgsBuffer->resource.get(), 4 * 1, voxelBuffer->UAV());
-
-			state->EndPerfEvent();
-		}
-
-		state->EndPerfEvent();
-	}
-
-	// Clear samples buffers
-	{
-		for (uint i = 0; i < voxelConeTracingGICBData.ClipmapCount; i++) {
-			clipmapUAVs[i] = clipmapsSamplesBuffer[i]->UAV();
-		}
-
-		UINT initialCount = 0;
-		context->CSSetUnorderedAccessViews(0, (UINT)clipmapUAVs.size(), clipmapUAVs.data(), &initialCount);
-	}
-
-	// Unbind RTVs and restore primitive topology
-	{
-		rtvs.fill(nullptr);
-		context->OMSetRenderTargets((UINT)rtvs.size(), rtvs.data(), nullptr);
-
-		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	}
 
 	state->EndPerfEvent();
@@ -1701,9 +1567,8 @@ void VoxelConeTracingGI::DrawVCTGI()
 	auto state = globals::state;
 	state->BeginPerfEvent("[VCTGI] DrawVCTGI");
 
-	PostProcess();
-	InjectLighting();
-	ScreenConeTrace();
+	//InjectLighting();
+	//ScreenConeTrace();
 
 	state->EndPerfEvent();
 }
@@ -2242,40 +2107,33 @@ void VoxelConeTracingGI::CompileStaticShaders()
 	auto folderPath = std::filesystem::path("Data\\Shaders\\VoxelConeTracingGI");
 
 	// Voxelization
-	auto voxelizationFolderPath = folderPath / "Voxelize";
+	{
+		auto voxelizationFolderPath = folderPath / "Voxelize";
 
-	// Lighting VS
-	logger::info("Lighting VS");
-	uint32_t lightingDescriptor = GetVertexDescriptor(RE::BSShader::Type::Lighting);
-	const auto lightingDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Lighting, lightingDescriptor);
-	voxelizeVertex.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Lighting.hlsl", lightingDefines));
+		// Lighting VS
+		logger::info("Lighting VS");
+		uint32_t lightingDescriptor = GetVertexDescriptor(RE::BSShader::Type::Lighting);
+		const auto lightingDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Lighting, lightingDescriptor);
+		voxelizeVertex.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Lighting.hlsl", lightingDefines));
 
-	// Effect VS
-	logger::info("Effect VS");
-	uint32_t effectVSDescriptor = GetVertexDescriptor(RE::BSShader::Type::Effect);
-	const auto effectVSDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Effect, effectVSDescriptor);
-	voxelizeVertex.emplace(RE::BSShader::Type::Effect, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Effect.hlsl", effectVSDefines));
+		// Effect VS
+		logger::info("Effect VS");
+		uint32_t effectVSDescriptor = GetVertexDescriptor(RE::BSShader::Type::Effect);
+		const auto effectVSDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Effect, effectVSDescriptor);
+		voxelizeVertex.emplace(RE::BSShader::Type::Effect, ShaderUtils::ShaderPermutations<ID3D11VertexShader>(voxelizationFolderPath / "VoxelizeVS.Effect.hlsl", effectVSDefines));
 
-	// Lighting PS
-	logger::info("Lighting PS");
-	voxelizePixel.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", {}, { { "LIGHTING", "" } }));
+		// Lighting PS
+		logger::info("Lighting PS");
+		voxelizePixel.emplace(RE::BSShader::Type::Lighting, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", {}, { { "LIGHTING", "" } }));
 
-	// Effect PS
-	logger::info("Effect PS");
-	uint32_t effectPSDescriptor = GetPixelDescriptor(RE::BSShader::Type::Effect);
-	const auto effectPSDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Effect, effectPSDescriptor);
-	voxelizePixel.emplace(RE::BSShader::Type::Effect, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", effectPSDefines, { { "EFFECT", "" } }));
+		// Effect PS
+		logger::info("Effect PS");
+		uint32_t effectPSDescriptor = GetPixelDescriptor(RE::BSShader::Type::Effect);
+		const auto effectPSDefines = GetShaderDefines<const char*>(RE::BSShader::Type::Effect, effectPSDescriptor);
+		voxelizePixel.emplace(RE::BSShader::Type::Effect, ShaderUtils::ShaderPermutations<ID3D11PixelShader>(voxelizationFolderPath / "VoxelizePS.hlsl", effectPSDefines, { { "EFFECT", "" } }));
 
-	CompileShader(&voxelizeGeometry, (voxelizationFolderPath / "VoxelizeGS.hlsl").c_str(), "gs_5_0");
-
-	// Accumulation
-	auto accumulateFolderPath = folderPath / "Accumulate";
-	CompileShader(&accumulateVertex, (accumulateFolderPath / "AccumulateVS.hlsl").c_str(), "vs_5_0", {}, accumulateInputDesc, &accumulateInputLayout);
-	CompileShader(&accumulatePixel, (accumulateFolderPath / "AccumulatePS.hlsl").c_str(), "ps_5_0");
-
-	// Post procesing
-	CompileShader(&postProcessIndirectArgsCompute, (folderPath / "PostProcessIndirectArgsCS.hlsl").c_str(), "cs_5_0");
-	CompileShader(&postProcessCompute, (folderPath / "PostProcessCS.hlsl").c_str(), "cs_5_0");
+		CompileShader(&voxelizeGeometry, (voxelizationFolderPath / "VoxelizeGS.hlsl").c_str(), "gs_5_0");
+	}
 
 	// Light injection
 	CompileShader(&injectLightCompute, (folderPath / "InjectLightingCS.hlsl").c_str(), "cs_5_0");
