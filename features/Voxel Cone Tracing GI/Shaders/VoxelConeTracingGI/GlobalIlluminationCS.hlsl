@@ -7,6 +7,8 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 
+#include "Common/Spherical Harmonics/SphericalHarmonics.hlsli"
+
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 
 #ifndef DIFFUSE_CONES
@@ -62,20 +64,122 @@ cbuffer TraceSettingsCB : register(b2)
 
 Texture2D<unorm float> Depth			: register(t0);
 Texture2D<unorm float3> NormalRoughness : register(t1);
-Texture2D<float4> Reflectance		: register(t2);
-Texture3D<half4> Voxels					: register(t3);
+Texture2D<float4> Reflectance			: register(t2);
 
-SamplerState samplerVoxels				: register(s3);
+#if VOXELMODE == MODE_ISOTROPIC
+typedef half4 precision4;
+#else
+typedef float4 precision4;
+#endif
+
+#if VOXELMODE == MODE_ISOTROPIC
+Texture3D<precision4> ClipVoxels[8]		: register(t3);
+#elif VOXELMODE == MODE_SH1
+Texture3D<precision4> ClipVoxelsSHR[8]	: register(t3);
+Texture3D<precision4> ClipVoxelsSHG[8]	: register(t11);
+Texture3D<precision4> ClipVoxelsSHB[8]	: register(t19);
+#elif VOXELMODE == MODE_SH2
+Texture3D<precision4> ClipVoxelsSH0[8]	: register(t3);
+Texture3D<precision4> ClipVoxelsSH1[8]	: register(t11);
+Texture3D<precision4> ClipVoxelsSH2[8]	: register(t19);
+Texture3D<precision4> ClipVoxelsSH3[8]	: register(t27);
+Texture3D<precision4> ClipVoxelsSH4[8]	: register(t35);
+Texture3D<precision4> ClipVoxelsSH5[8]	: register(t43);
+Texture3D<precision4> ClipVoxelsSH6[8]	: register(t51); 
+#endif
+
+SamplerState samplerVoxels				: register(s0);
 
 RWTexture2D<half4> DiffuseGI			: register(u0);
 RWTexture2D<half4> SpecularGI			: register(u1);
 
-half4 ConeTraceOctree(float3 origin, float3 normal, float3 direction, float aperture, ConeSettings cone)
+uint CalculateClipmap(float3 position)
 {
-	uint clipIdx = 0;
-	VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx]; // hardcoded for now
+	for (uint i=0; i < VCTGI.ClipmapCount; i++) {
+		const VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[i];
+		
+		if (all(position >= clipmap.Min) && any(position <= clipmap.Max))
+			return i;
+	}
 	
-	float voxelSize = (clipmap.Size * VCTGI.ResRcp) * RCP_SCALE;
+	return 0;
+}
+
+VoxelConeTracingGI::Clipmap GetClipmap(float3 position) 
+{
+	return VCTGI.Clipmaps[CalculateClipmap(position)];
+}
+
+VoxelConeTracingGI::Clipmap GetClipmap(float3 position, out uint clipmapIdx) 
+{
+	clipmapIdx = CalculateClipmap(position);
+	return VCTGI.Clipmaps[clipmapIdx];
+}
+
+// Maybe make this a variable? I don't want to handle padding again...
+float GetVoxelSize(VoxelConeTracingGI::Clipmap clipmap)
+{
+	return (clipmap.Size * VCTGI.ResRcp) * RCP_SCALE;
+}
+
+/*half4 SampleClipmapVolume(uint clipmapIdx, Texture3D<precision4> volume[8], SamplerState samplerState, float3 location, float lod) {
+	if (clipmapIdx == 0)
+		return volume[0].SampleLevel(samplerState, location, lod);
+	else if (clipmapIdx == 1)
+		return volume[1].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 2)
+		return volume[2].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 3)
+		return volume[3].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 4)
+		return volume[4].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 5)
+		return volume[5].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 6)
+		return volume[6].SampleLevel(samplerState, location, lod);		
+	else
+		return volume[7].SampleLevel(samplerState, location, lod);			
+}*/
+
+precision4 SampleClipmapVolume(uint clipmapIdx, Texture3D<precision4> volume[8], SamplerState samplerState, float3 location, float lod) {
+	if (clipmapIdx == 0)
+		return volume[0].SampleLevel(samplerState, location, lod);
+	else if (clipmapIdx == 1)
+		return volume[1].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 2)
+		return volume[2].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 3)
+		return volume[3].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 4)
+		return volume[4].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 5)
+		return volume[5].SampleLevel(samplerState, location, lod);	
+	else if (clipmapIdx == 6)
+		return volume[6].SampleLevel(samplerState, location, lod);		
+	else
+		return volume[7].SampleLevel(samplerState, location, lod);			
+}
+
+precision4 SampleVoxels(uint clipmapIdx, SamplerState samplerState, float3 location, float lod, float3 direction) 
+{
+#if VOXELMODE == MODE_ISOTROPIC
+	return SampleClipmapVolume(clipmapIdx, ClipVoxels, samplerState, location, lod);
+#elif VOXELMODE == MODE_SH1
+	sh2 shR = SampleClipmapVolume(clipmapIdx, ClipVoxelsSHR, samplerState, location, lod);
+	sh2 shG = SampleClipmapVolume(clipmapIdx, ClipVoxelsSHG, samplerState, location, lod);
+	sh2 shB = SampleClipmapVolume(clipmapIdx, ClipVoxelsSHB, samplerState, location, lod);
+	
+	float3 rgbColor = max(0.0f, SphericalHarmonics::Unproject(shR, shG, shB, direction));
+	
+	return precision4(rgbColor, 1.0f); // We need alpha for visibility, it needs to be mipmapped as well, so maybe a one channel 3D texture
+#endif
+}
+
+float4 ConeTraceOctree(float3 origin, float3 normal, float3 direction, float aperture, ConeSettings cone)
+{
+	VoxelConeTracingGI::Clipmap clipmap = GetClipmap(origin);
+	
+	float voxelSize = GetVoxelSize(clipmap);
 	
     float3 color = float3(0, 0, 0);
     float alpha = 0;
@@ -88,13 +192,18 @@ half4 ConeTraceOctree(float3 origin, float3 normal, float3 direction, float aper
 	
     while(dist < maxDistance && alpha < cone.Alpha) {	
         float diameter = max(voxelSize, aperture * dist * cone.Step.Radius);
-            
+          
         float3 samplePos = startPos + dist * direction;
+		
+		uint clipIdx;
+		clipmap = GetClipmap(samplePos, clipIdx);
+		voxelSize = GetVoxelSize(clipmap);
+		
         float mipLevel = clamp(log2(diameter / voxelSize), 0.0, MaxMipLevel * cone.Step.MipScale);     
             
         float3 volumeCoord = ((samplePos - clipmap.Min) * clipmap.SizeRcp) * RCP_SCALE;
             
-		half4 sampledColor = Voxels.SampleLevel(samplerVoxels, volumeCoord, mipLevel);
+		precision4 sampledColor = SampleVoxels(clipIdx, samplerVoxels, volumeCoord, mipLevel, direction);
 
         color += (1.0f - saturate(alpha * cone.Step.Alpha)) * sampledColor.rgb;
         occlusion += ((1.0f - alpha) * sampledColor.a) / (1.0f + 0.03f * diameter);
@@ -102,7 +211,7 @@ half4 ConeTraceOctree(float3 origin, float3 normal, float3 direction, float aper
 		dist += diameter * cone.Step.Length;
     }
         
-    return half4(color * cone.Strength, occlusion);
+    return float4(color * cone.Strength, occlusion);
 }  
 
 void OrthonormalBasis(float3 N, out float3 tangent, out float3 bitangent)

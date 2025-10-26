@@ -7,18 +7,22 @@
 
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
 
-cbuffer InjectLightingCB : register(b0)
+cbuffer VCTGICB : register(b0)
 {
-	float3 Min;
-	float Size;
-	float ResInv; 
-	float VoxelSize;
+	VoxelConeTracingGI::ConstantBuffer VCTGI;
+}
+
+cbuffer ClipmapCB : register(b1)
+{
+    VoxelConeTracingGI::ClipmapConstantBuffer Clipmap;
+};
+
+cbuffer InjectLightingCB : register(b2)
+{
 	uint LightCount;
 	float EmissiveMult;
 	float AmbientMult;
-	uint Pad0;
-	uint Pad1;
-	uint Pad2;	
+	uint Pad0;	
 }
 
 StructuredBuffer<Light> Lights : register(t0);
@@ -34,10 +38,14 @@ void main(uint id: SV_DispatchThreadID, uint groupId: SV_GroupThreadID)
 
 	uint3 coord = voxel.Coord;
 	
-	float3 position = Min + ((coord + 0.5.xxx) * Size * ResInv);
+	VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[Clipmap.Index];
+	
+	float3 position = clipmap.Min + (((coord + 0.5.xxx) * clipmap.Size * VCTGI.ResRcp) * RCP_SCALE);
 	float3 normal = voxel.Normal;
 	
-	float3 voxelSurface = position + (normal * VoxelSize * 0.5);
+	float voxelSize = (clipmap.Size * VCTGI.ResRcp) * RCP_SCALE;
+	
+	float3 voxelSurface = position + (normal * voxelSize * 0.5);
 
 	float3 diffuseLighting = 0;
 

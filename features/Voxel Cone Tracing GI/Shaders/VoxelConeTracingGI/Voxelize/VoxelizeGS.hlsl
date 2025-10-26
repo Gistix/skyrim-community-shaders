@@ -6,7 +6,7 @@ struct GS_INPUT
 	float4 TexCoord0    : TEXCOORD0;
 	float3 NormalWS     : NORMAL;
 	half4 Color         : COLOR0;
-    uint ClipmapIdx      : INSTANCE_ID;
+    uint ClipmapIdx     : INSTANCE_ID;
 };
 
 struct GS_OUTPUT
@@ -16,6 +16,7 @@ struct GS_OUTPUT
 	centroid float3 NormalWS        : NORMAL;
 	centroid float4 Color           : COLOR0;
     centroid float3 Cell            : TEXCOORD1;
+    centroid float3 PositionWS      : TEXCOORD2;
     nointerpolation uint ClipmapIdx : INSTANCE_ID;
     
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
@@ -29,6 +30,11 @@ cbuffer VCTGICB : register(b0)
     VoxelConeTracingGI::ConstantBuffer VCTGI;
 };
 
+cbuffer ClipmapCB : register(b1)
+{
+    VoxelConeTracingGI::ClipmapConstantBuffer ClipmapData;
+};
+
 [maxvertexcount(3)]
 void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStream)
 {
@@ -39,15 +45,15 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
     
  	float3 aabbMin = min(input[0].PositionWS.xyz, min(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
 	float3 aabbMax = max(input[0].PositionWS.xyz, max(input[1].PositionWS.xyz, input[2].PositionWS.xyz));
-
-    uint clipIdx = input[0].ClipmapIdx;
+    
+    uint clipIdx = ClipmapData.Start + input[0].ClipmapIdx; // Special thanks to Microsoft Corporation
     VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
 
     // Early out if triangle is outside volume
     [branch]
     if (!IntersectAABB(clipmap.Min, clipmap.Max, aabbMin, aabbMax))
         return;
-        
+      
     GS_OUTPUT output[3];
     
     uint i = 0;
@@ -57,7 +63,7 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
         float3 uvw = ((input[i].PositionWS.xyz - clipmap.Min) * clipmap.SizeRcp) * RCP_SCALE; // [0..1]
         float3 coords = uvw * VCTGI.Res; // [0..Res]
         
-        output[i].Cell = floor(coords); 
+        output[i].Cell = coords; 
         
         // World space -> Voxel grid space:
         output[i].Position.xyz = (coords * 2.0) - VCTGI.Res.xxx; // [-Res..Res]
@@ -96,7 +102,7 @@ void main(triangle GS_INPUT input[3], inout TriangleStream<GS_OUTPUT> outputStre
         
         output[i].NormalWS = input[i].NormalWS;
         output[i].Color = input[i].Color;
-         
+        output[i].PositionWS = input[i].PositionWS.xyz;
         output[i].ClipmapIdx = clipIdx;
          
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED

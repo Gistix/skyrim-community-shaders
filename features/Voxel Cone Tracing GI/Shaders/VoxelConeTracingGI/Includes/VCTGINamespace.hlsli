@@ -19,6 +19,14 @@ namespace VoxelConeTracingGI
 		uint Pad0;
 		Clipmap Clipmaps[8];		
 	};
+	
+	struct ClipmapConstantBuffer
+	{
+		uint Index;
+		uint Start;
+		uint Pad1;
+		uint Pad2;
+	};	
 }
 
 #endif

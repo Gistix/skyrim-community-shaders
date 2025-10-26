@@ -12,6 +12,7 @@ struct PS_INPUT
 	centroid float3 NormalWS		: NORMAL;
 	centroid float4 Color			: COLOR0;
 	centroid float3 Cell			: TEXCOORD1;
+    centroid float3 PositionWS      : TEXCOORD2;	
 	nointerpolation uint ClipmapIdx : INSTANCE_ID;
 		
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
@@ -26,16 +27,18 @@ struct PS_INPUT
 #include "VoxelConeTracingGI/Voxelize/VoxelizePS.Effect.hlsli"
 #endif
 
-RasterizerOrderedStructuredBuffer<Voxel> ClipVoxels[8] : register(u0);
-RWByteAddressBuffer ClipVoxelMask[8] : register(u8);
-RWByteAddressBuffer ClipVoxelMap[8] : register(u16);
-RWByteAddressBuffer VoxelCount : register(u24);
-
-void VoxelizeClipmap(const uint clipIdx, const uint res, const uint3 coord, Voxel voxelSample) 
+cbuffer ClipmapCB : register(b13)
 {
-	uint clipOffset = clipIdx * 4; // 'Struct' size is 4 uints (vertice count, instance count, vertex start, instance start)
-	uint countIndex = clipOffset + 1; // Voxel Count (instance count) is the 2nd uint
-	
+    VoxelConeTracingGI::ClipmapConstantBuffer ClipmapData;
+};
+
+RasterizerOrderedStructuredBuffer<Voxel> ClipVoxels[2] : register(u0);
+RWByteAddressBuffer ClipVoxelMask[2] : register(u2);
+RWByteAddressBuffer ClipVoxelMap[2] : register(u4);
+RWByteAddressBuffer VoxelCount : register(u6);
+
+void VoxelizeClipmap(in const uint clipArrayIdx, in const uint clipIdx, in const uint res, in const uint3 coord, in Voxel voxelSample) 
+{
 	uint coord1D = coord.x + (coord.y * res) + (coord.z * res * res);
 	
     uint wordIndex = coord1D >> 5;
@@ -43,29 +46,29 @@ void VoxelizeClipmap(const uint clipIdx, const uint res, const uint3 coord, Voxe
     uint bitMask = 1 << bitIndex;	
 	
     uint originalWord;
-    ClipVoxelMask[clipIdx].InterlockedOr(wordIndex * 4, bitMask, originalWord);	
+    ClipVoxelMask[clipArrayIdx].InterlockedOr(wordIndex * 4, bitMask, originalWord);	
 	
 	[branch]
 	if ((originalWord & bitMask) == 0) { // Voxel at 'coord1D' not voxelized yet, create new instance
 		uint sparseIndex;
-		VoxelCount.InterlockedAdd(countIndex * 4, 1, sparseIndex);
+		VoxelCount.InterlockedAdd(clipIdx * 4, 1, sparseIndex);
 	
 		// Lets store the sparse voxel index for this coord
-		ClipVoxelMap[clipIdx].Store(coord1D * 4, sparseIndex);
+		ClipVoxelMap[clipArrayIdx].Store(coord1D * 4, sparseIndex);
 	
 		// Set voxel to sample
-		ClipVoxels[clipIdx][sparseIndex] = voxelSample;
+		ClipVoxels[clipArrayIdx][sparseIndex] = voxelSample;
 	} else { // Voxel at 'coord1D' already voxelized, so average with previous value
-		uint sparseIndex = ClipVoxelMap[clipIdx].Load(coord1D * 4);
+		uint sparseIndex = ClipVoxelMap[clipArrayIdx].Load(coord1D * 4);
 
 		// Rasterizer Ordered Views guarantees this will be ordered
-		Voxel prevVoxel = ClipVoxels[clipIdx][sparseIndex];
+		Voxel prevVoxel = ClipVoxels[clipArrayIdx][sparseIndex];
 
 		prevVoxel.Albedo = (prevVoxel.Albedo + voxelSample.Albedo) * 0.5f; 
 		prevVoxel.Normal = normalize((prevVoxel.Normal + voxelSample.Normal) * 0.5f);
 		prevVoxel.Emissive = max(prevVoxel.Emissive, voxelSample.Emissive);
 		
-		ClipVoxels[clipIdx][sparseIndex] = prevVoxel;	
+		ClipVoxels[clipArrayIdx][sparseIndex] = prevVoxel;	
 	}
 }
 
@@ -80,9 +83,19 @@ void main(PS_INPUT input)
 		return;
 	}
 	
-	uint3 coord = floor(input.Cell);
-	
 	const uint clipIdx = input.ClipmapIdx;
+	
+	/*[branch]
+	if (clipIdx > 0) {
+		VoxelConeTracingGI::Clipmap prevClipmap = VCTGI.Clipmaps[clipIdx - 1];
+		
+		[branch]
+		if (all(input.PositionWS >= prevClipmap.Min) && all(input.PositionWS <= prevClipmap.Max)) {
+			return;
+		}
+	}*/
+
+	uint3 coord = floor(input.Cell);
 	
 #ifdef VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
     VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
@@ -106,22 +119,18 @@ void main(PS_INPUT input)
 	FillVoxelSample(voxelSample, input);
 	
 	[branch]
-	if (clipIdx == 0) {
-		VoxelizeClipmap(0, res, coord, voxelSample);
-	} else if (clipIdx == 1) {
-		VoxelizeClipmap(1, res, coord, voxelSample);
-	} else if (clipIdx == 2) {
-		VoxelizeClipmap(2, res, coord, voxelSample);
-	} else if (clipIdx == 3) {
-		VoxelizeClipmap(3, res, coord, voxelSample);
-	} else if (clipIdx == 4) {
-		VoxelizeClipmap(4, res, coord, voxelSample);
-	} else if (clipIdx == 5) {
-		VoxelizeClipmap(5, res, coord, voxelSample);
-	} else if (clipIdx == 6) {
-		VoxelizeClipmap(6, res, coord, voxelSample);	
-	} else if (clipIdx == 7) {
-		VoxelizeClipmap(7, res, coord, voxelSample);
+	if (all(voxelSample.Albedo == 0.0f) && all(voxelSample.Emissive == 0.0f)) {
+		return;
+	}
+	
+	uint clipmapArrayIdx = clipIdx - ClipmapData.Start;
+	
+	// This needs to be hardcoded else we cant access array resources
+	[branch]
+	if (clipmapArrayIdx == 0) {
+		VoxelizeClipmap(0, clipIdx, res, coord, voxelSample);
+	} else if (clipmapArrayIdx == 1) {
+		VoxelizeClipmap(1, clipIdx, res, coord, voxelSample);
 	}
 #endif
 }

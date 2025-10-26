@@ -242,8 +242,8 @@ struct VoxelConeTracingGI : public Feature
 	static constexpr uint MAX_LIGHTS = 1024;
 	static constexpr eastl_size_t MAX_HISTORY = 60 * 60 * 60;
 	static constexpr uint MAX_CLIPMAPS = 8;
+	static constexpr uint MAX_UAV_CLIPMAPS = 2;
 
-	float3 center;
 	bool queuedReset;
 	bool renderingWorld;
 	uint lastUpdateFrame = 0;
@@ -268,6 +268,14 @@ struct VoxelConeTracingGI : public Feature
 		Normal,
 		Lighting,
 		Final,
+		Count
+	};
+
+	enum class VoxelMode : uint8_t
+	{
+		Standard,
+		SphericalHarmicsL1,
+		//SphericalHarmicsL2,
 		Count
 	};
 
@@ -338,6 +346,7 @@ struct VoxelConeTracingGI : public Feature
 	struct Settings
 	{
 		uint8_t Enabled = true;
+		VoxelMode Mode = VoxelMode::Standard;
 		uint16_t Resolution = 64;
 		int	Size = 20;
 		int ClipmapCount = 4;
@@ -352,6 +361,9 @@ struct VoxelConeTracingGI : public Feature
 	void DrawGeneralSettings();
 	void DrawEnvironmentSettings(EnvironmentSettings& environmentSettings, const char* environmentName);
 	void DrawConeSettings(ConeSettings& coneSettings, bool diffuse);
+
+	size_t Statistics3DTextureMemory();
+	size_t StatisticsBufferMemory();
 
 	bool Enabled() const
 	{
@@ -414,15 +426,6 @@ struct VoxelConeTracingGI : public Feature
 	};
 	static_assert(sizeof(uint3) == 12);
 
-	struct alignas(4) uint4
-	{
-		uint x;
-		uint y;
-		uint z;
-		uint w;
-	};
-	static_assert(sizeof(uint4) == 16);
-
 	struct alignas(4) Voxel
 	{
 		uint3 Coord;
@@ -451,6 +454,15 @@ struct VoxelConeTracingGI : public Feature
 	} voxelConeTracingGICBData;
 	static_assert(sizeof(VoxelConeTracingGICB) % 16 == 0);
 
+	struct alignas(16) ClipmapCB
+	{
+		uint Index;
+		uint Start;
+		uint Pad1;
+		uint Pad2;
+	} clipmapCBData;
+	static_assert(sizeof(ClipmapCB) % 16 == 0);
+
 	VoxelConeTracingGI::VoxelConeTracingGICB GetCommonBufferData() const;
 
 	struct alignas(16) VSFrameBufferPSCB
@@ -470,20 +482,14 @@ struct VoxelConeTracingGI : public Feature
 
 	struct alignas(16) InjectLightingCB
 	{
-		float3 Min;
-		float Size;
-		float ResInv;
-		float VoxelSize;
 		uint LightCount;
 		float EmissiveMult;
 		float AmbientMult;
-		uint Pad0;
-		uint Pad1;
-		uint Pad2;
+		float Pad0;
 	} injectLightingCBData;
 	static_assert(sizeof(InjectLightingCB) % 16 == 0);
 
-	struct ScreenTraceCB
+	struct alignas(16) ScreenTraceCB
 	{
 		float4 NDCToView;
 		float2 RcpFrameDim;
@@ -493,34 +499,30 @@ struct VoxelConeTracingGI : public Feature
 	} screenTraceCBData;
 	static_assert(sizeof(ScreenTraceCB) % 16 == 0);
 
-	/*struct alignas(4) ConeTraceCB
-	{
-		ConeSettings Diffuse;
-		ConeSettings Specular;
-		uint ResolutionMode = 0;
-		uint AdditionalBounces = 0;
-	} coneTraceCBata;
-	static_assert(sizeof(ConeTraceCB) % 16 == 0);*/
-
 	eastl::vector<Light> lights = {};
 
 	eastl::unique_ptr<ConstantBuffer> voxelConeTracingGICB = nullptr;
-	eastl::unique_ptr<ConstantBuffer> vsFrameBufferPSCB = nullptr;
-	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
-	eastl::unique_ptr<ConstantBuffer> screenTraceCB = nullptr;
-	eastl::unique_ptr<ConstantBuffer> coneTraceCB = nullptr;
 
+	eastl::unique_ptr<ConstantBuffer> vsFrameBufferPSCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> clipmapCB = nullptr;
+
+	eastl::unique_ptr<ConstantBuffer> injectLightingCB = nullptr;
+
+	eastl::unique_ptr<ConstantBuffer> coneTraceCB = nullptr;
+	eastl::unique_ptr<ConstantBuffer> screenTraceCB = nullptr;
+	
 	std::unordered_map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11VertexShader>> voxelizeVertex;
 	winrt::com_ptr<ID3D11GeometryShader> voxelizeGeometry = nullptr;
 	std::unordered_map<RE::BSShader::Type, ShaderUtils::ShaderPermutations<ID3D11PixelShader>> voxelizePixel;
 
 	winrt::com_ptr<ID3D11VertexShader> drawVertex = nullptr;
+	winrt::com_ptr<ID3D11GeometryShader> drawGeometry = nullptr;
 	std::array<winrt::com_ptr<ID3D11PixelShader>, DebugDrawMode::Count> drawPixelVariants;
 
 	winrt::com_ptr<ID3D11VertexShader> accumulateVertex = nullptr;
 	winrt::com_ptr<ID3D11PixelShader> accumulatePixel = nullptr;
 
-	winrt::com_ptr<ID3D11ComputeShader> postProcessIndirectArgsCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> indirectArgsCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> postProcessCompute = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> voxelArgsCompute = nullptr;
@@ -538,32 +540,32 @@ struct VoxelConeTracingGI : public Feature
 
 	eastl::vector<eastl::unique_ptr<Buffer>> clipmapsVoxelMaskBuffer;
 	eastl::vector<eastl::unique_ptr<Buffer>> clipmapsVoxelMapBuffer;
-	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;  // We only need 4 bytes per clipmap, lets use one single buffer, we'll also reutilize it as the instance buffer
-	eastl::unique_ptr<Buffer> voxelCountBufferTemplate = nullptr;	
+	eastl::unique_ptr<Buffer> voxelCountBuffer = nullptr;
 	eastl::vector<eastl::unique_ptr<StructuredBuffer>> clipmapsVoxelBuffer;
 
-	// Multi purpose buffer for indirect arguments
 	eastl::unique_ptr<Buffer> voxelIndirectArgsBuffer = nullptr;
 
 	// Drawing voxels
+	eastl::unique_ptr<Buffer> voxelDrawIndirectArgsBuffer = nullptr;
 	eastl::unique_ptr<Buffer> voxelDrawVertexBuffer = nullptr;
-	eastl::unique_ptr<Buffer> voxelDrawInstanceBuffer = nullptr;
 	std::vector<D3D11_INPUT_ELEMENT_DESC> voxelInputDesc;
 	winrt::com_ptr<ID3D11InputLayout> voxelDrawInputLayout = nullptr;
 	winrt::com_ptr<ID3D11DepthStencilState> voxelDrawDSS = nullptr;
 
 	eastl::unique_ptr<StructuredBuffer> lightBuffer = nullptr;
 
-	//eastl::unique_ptr<Texture3D> lod0Tex = nullptr;
 	eastl::vector<eastl::unique_ptr<Texture3D>> clipmapsVolumeTexture;
 	winrt::com_ptr<ID3D11SamplerState> volumeSampler = nullptr;
 
-	eastl::unique_ptr<Texture2D> diffuseGI = nullptr;
-	eastl::unique_ptr<Texture2D> specularGI = nullptr;
+	eastl::unique_ptr<Texture2D> diffuseGITexture = nullptr;
+	eastl::unique_ptr<Texture2D> specularGITexture = nullptr;
+
+	eastl::unique_ptr<Texture2D> debugColorTexture = nullptr;
+	eastl::unique_ptr<Texture2D> debugDepthTexture = nullptr;
 
 	inline auto GetOutputTextures()
 	{
-		return (loaded && settings.Enabled) ? std::make_tuple(diffuseGI->srv.get(), specularGI->srv.get()) : std::make_tuple(nullptr, nullptr);
+		return (loaded && settings.Enabled) ? std::make_tuple(diffuseGITexture->srv.get(), specularGITexture->srv.get()) : std::make_tuple(nullptr, nullptr);
 	}
 
 	eastl::hash_set<RE::BSTriShape*> cachedTriShapes;

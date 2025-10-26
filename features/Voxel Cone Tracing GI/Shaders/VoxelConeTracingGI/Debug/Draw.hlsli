@@ -2,7 +2,7 @@
 #define __VOXELCONETRACINGGI_DRAW_DEPENDENCY_HLSL__
 
 #define DRAW_ALBEDO      0
-#define DRAW_EMISSION    1
+#define DRAW_EMISSIVE    1
 #define DRAW_NORMAL      2
 #define DRAW_LIGHTING    3
 #define DRAW_FINAL       4

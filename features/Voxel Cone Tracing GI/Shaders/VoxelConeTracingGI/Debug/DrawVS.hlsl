@@ -2,23 +2,21 @@
 #include "Common/FrameBuffer.hlsli"
 
 #include "VoxelConeTracingGI/VoxelConeTracingGI.hlsli"
+#include "VoxelConeTracingGI/Voxel.hlsli"
 
 struct VS_IN
 {
     float3 Position : POSITION;
-    uint3 Coord : VOXELCOORD;
-    float3 Albedo : VOXELALBEDO;
-    float3 Normal : VOXELNORMAL;
-    float3 Emission : VOXELEMISSION;
 };
 
 struct VS_OUT
 {
     float4 Position : SV_POSITION;
-    uint3 Coord : TEXCOORD0;   
-    float3 Albedo : COLOR0;
-    float3 Normal : NORMAL;
-    float3 Emission : COLOR1;
+    nointerpolation uint3 Coord     : TEXCOORD0;   
+    nointerpolation float3 Albedo   : COLOR0;
+    nointerpolation float3 Normal   : NORMAL;
+    nointerpolation float3 Emissive : COLOR1;
+    //nointerpolation float3 VoxelPosition : TEXCOORD1;       
 };
 
 cbuffer VCTGICB : register(b0)
@@ -26,24 +24,33 @@ cbuffer VCTGICB : register(b0)
 	VoxelConeTracingGI::ConstantBuffer VCTGI;
 }
 
-VS_OUT main(VS_IN input)
+cbuffer ClipmapCB : register(b1)
+{
+    VoxelConeTracingGI::ClipmapConstantBuffer Clipmap;
+};
+
+StructuredBuffer<Voxel> ClipmapVoxels : register(t0);
+
+VS_OUT main(VS_IN input, uint instanceID : SV_InstanceID)
 {
     VS_OUT output;
 
-    uint clipIdx = 0;
-    VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[clipIdx];
+    VoxelConeTracingGI::Clipmap clipmap = VCTGI.Clipmaps[Clipmap.Index];
     
-    float3 voxelPos = clipmap.Min + ((input.Coord * VCTGI.ResRcp * clipmap.Size) * RCP_SCALE);
+    Voxel voxel = ClipmapVoxels[instanceID];
+    
+    float3 voxelPos = clipmap.Min + ((voxel.Coord * VCTGI.ResRcp * clipmap.Size) * RCP_SCALE);
 
-    // Translate cube vertex by voxel position
+    // Scale and translate cube vertex
     float3 worldPos = ((input.Position * clipmap.Size * VCTGI.ResRcp) * RCP_SCALE) + voxelPos;
 
     output.Position = mul(FrameBuffer::CameraViewProj[0], float4(worldPos - FrameBuffer::CameraPosAdjust[0].xyz, 1.0f));
 
-    output.Coord = input.Coord;
-    output.Albedo = input.Albedo;
-    output.Normal = input.Normal;
-    output.Emission = input.Emission;
+    output.Coord = voxel.Coord;
+    output.Albedo = voxel.Albedo;
+    output.Normal = voxel.Normal;
+    output.Emissive = voxel.Emissive;
+    //output.VoxelPosition = voxelPos;
     
     return output;
 }

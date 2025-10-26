@@ -7,7 +7,7 @@
 #include "Common/SharedData.hlsli"
 #include "VoxelConeTracingGI/Includes/VCTGINamespace.hlsli"
 
-#define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
+//#define VOXELIZATION_CONSERVATIVE_RASTERIZATION_ENABLED
 
 #define M_TO_GAME_UNIT (1.0f / (GAME_UNIT_TO_M))
 #define M_TO_GAME_UNITS_SQ ((M_TO_GAME_UNIT) * (M_TO_GAME_UNIT))
@@ -24,7 +24,7 @@
 
 bool IntersectAABB(float3 boxAMin, float3 boxAMax, float3 boxBMin, float3 boxBMax)
 {
-    return all(boxAMax >= boxBMin) && all(boxBMax >= boxAMin);
+    return all(boxAMin <= boxBMax) && all(boxAMax >= boxBMin);
 }
 
 #define FP_Z (16.5)
