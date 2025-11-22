@@ -14,6 +14,11 @@ alignas(16)
     float4 Direction;
 	float4x4 Pad0;
 	float4x4 Pad1;    
+    
+    float2 Size()
+    {
+        return float2(Position.w, Direction.w);
+    }
 };
 #ifdef __cplusplus
 static_assert(sizeof(ShadowsFrameData) % 256 == 0);

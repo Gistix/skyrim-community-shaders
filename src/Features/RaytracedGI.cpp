@@ -2429,12 +2429,14 @@ void RaytracedGI::RenderShadows()
 
 			shadowsCBData.ViewInverse = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
 
+			float2 screenSize = globals::state->screenSize;
+
 			float4 cameraPosition = globals::game::frameBufferCached.GetCameraPosAdjust();
-			shadowsCBData.Position = float4(cameraPosition.x, cameraPosition.y, cameraPosition.z, 0.0f);
+			shadowsCBData.Position = float4(cameraPosition.x, cameraPosition.y, cameraPosition.z, screenSize.x);
 
 			auto direction = Float3(shadowLight->GetShadowDirectionalLightRuntimeData().lightDirection);
 			direction.Normalize();
-			shadowsCBData.Direction = float4(-direction.x, -direction.y, -direction.z, 0.0f);
+			shadowsCBData.Direction = float4(-direction.x, -direction.y, -direction.z, screenSize.y);
 
 			shadowsCB->Update(&shadowsCBData, sizeof(ShadowsFrameData));
 			shadowsCB->Upload(commandList.get());
@@ -2463,7 +2465,7 @@ void RaytracedGI::RenderShadows()
 			commandList->ResourceBarrier(1, &asBarrier);
 		}*/
 
-		commandList->SetPipelineState1(shadowPipeline.get());
+		commandList->SetPipelineState(shadowPipeline.get());
 		commandList->SetComputeRootSignature(shadowRS.get());
 
 		auto computeHeapPtr = shadowHeap->Heap();
@@ -2484,7 +2486,7 @@ void RaytracedGI::RenderShadows()
 		commandList->ResourceBarrier(_countof(ctuBarrier), ctuBarrier);
 
 		// Dispatch
-		auto shadowMaskDesc = shadowMaskTexture->resource->GetDesc();
+		/*auto shadowMaskDesc = shadowMaskTexture->resource->GetDesc();
 
 		D3D12_DISPATCH_RAYS_DESC dispatchDesc{};
 		dispatchDesc.Width = static_cast<uint>(shadowMaskDesc.Width);
@@ -2493,7 +2495,10 @@ void RaytracedGI::RenderShadows()
 
 		shadowSBT->FillDispatchShaderBindingTable(dispatchDesc, shadowSBTBuffer->resource->GetGPUVirtualAddress());
 
-		commandList->DispatchRays(&dispatchDesc);
+		commandList->DispatchRays(&dispatchDesc);*/
+
+		auto dispatchCount = Util::GetScreenDispatchCount();
+		commandList->Dispatch(dispatchCount.x, dispatchCount.y, 1);
 
 		CD3DX12_RESOURCE_BARRIER utcBarrier[1] = {
 			CD3DX12_RESOURCE_BARRIER::Transition(shadowMaskTexture->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON),
@@ -3069,84 +3074,15 @@ void RaytracedGI::CompileRTGIShaders()
 
 void RaytracedGI::CompileRTShadowsShaders()
 {
-	winrt::com_ptr<IDxcBlob> shadowsRTBlob;
-	ShaderUtils::CompileShader(shadowsRTBlob, L"Data/Shaders/RaytracedGI/ShadowsRT.hlsl");
-
-	DX12::RTPipelineBuilder pipelineBuilder;
-
-	// Init pipeline
-	{
-		// Libraries
-		pipelineBuilder.AddRayGenLib(shadowsRTBlob.get(), L"RayGeneration", L"RayGeneration");
-		pipelineBuilder.AddMissLib(shadowsRTBlob.get(), L"Miss", L"Miss");
-
-		// Hit groups
-		pipelineBuilder.AddHitGroup(L"HitGroup");
-
-		// Shader + pipeline config
-		pipelineBuilder.AddShaderConfig(4, 8);
-		pipelineBuilder.AddGlobalRootSignature(shadowRS.get());
-		pipelineBuilder.AddPipelineConfig(1);
-
-		auto desc = pipelineBuilder.MakeStateObjectDesc();
-		HRESULT hr = d3d12Device->CreateStateObject(desc, IID_PPV_ARGS(&shadowPipeline));
-
-		if (FAILED(hr)) {
-			logger::error("CreateStateObject failed: {}", hr);
-		}
-
-		DX::ThrowIfFailed(hr);
-
-		DX::ThrowIfFailed(shadowPipeline->SetName(L"Shadow Pipeline"));
-	}
-
-	// Init shader tables
-	{
-		winrt::com_ptr<ID3D12StateObjectProperties> props;
-		shadowPipeline->QueryInterface(props.put());
-
-		shadowSBT = eastl::make_unique<DX12::ShaderBindingTable>(pipelineBuilder.CreateShaderBindingTable(props.get()));
-
-		auto shaderBindingTableSize = shadowSBT->GetTotalSize();
-		logger::debug("[RT] RTShadows SBT size: {}", shaderBindingTableSize);
-
-		shadowSBTBuffer = eastl::make_unique<DX12::ResourceUpload>(d3d12Device.get(), shaderBindingTableSize);
-		shadowSBTBuffer->SetName(L"Shadows SBT");
-
-		std::vector<uint8_t> shaderBindingTableCPU(shaderBindingTableSize);
-		shadowSBT->Build(shaderBindingTableCPU.data());
-
-		shadowSBT->LogShaderBindingTable(shadowSBTBuffer->resource->GetGPUVirtualAddress());
-
-		shadowSBTBuffer->Update(shaderBindingTableCPU.data(), shaderBindingTableSize);
-		shadowSBTBuffer->Upload(commandList.get());
-		shadowSBTBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_GENERIC_READ);
-	}
-}
-
-void RaytracedGI::CompileDX12ComputeShaders()
-{
-	/*winrt::com_ptr<IDxcBlob> shaderBlob;
+	winrt::com_ptr<IDxcBlob> shaderBlob;
 	ShaderUtils::CompileShader(shaderBlob, L"Data/Shaders/RaytracedGI/RTShadowsCS.hlsl", {}, L"cs_6_5");
 
 	D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc = {};
-	computeDesc.pRootSignature = rootSignatureCSShadows.get();
+	computeDesc.pRootSignature = shadowRS.get();
 	computeDesc.CS = { shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize() };
 
-	DX::ThrowIfFailed(d3d12Device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(pipelineCSShadows.put())));
-	DX::ThrowIfFailed(pipelineCSShadows->SetName(L"Compute Pipeline - Shadows"));*/
-
-	/*{
-		winrt::com_ptr<IDxcBlob> shaderBlob;
-		ShaderUtils::CompileShader(shaderBlob, L"Data/Shaders/RaytracedGI/CompositeCS.hlsl", {}, L"cs_6_3");
-
-		D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc = {};
-		computeDesc.pRootSignature = rootSignatureCS.get();
-		computeDesc.CS = { shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize() };
-
-		DX::ThrowIfFailed(d3d12Device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(pipelineCS.put())));
-		DX::ThrowIfFailed(pipelineCS->SetName(L"Compute Pipeline"));
-	}*/
+	DX::ThrowIfFailed(d3d12Device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(shadowPipeline.put())));
+	DX::ThrowIfFailed(shadowPipeline->SetName(L"Compute Pipeline - Shadows"));
 }
 
 void RaytracedGI::CompileComputeShaders()

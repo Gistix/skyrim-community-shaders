@@ -480,7 +480,7 @@ struct RaytracedGI : public Feature
 
 	// Shadows
 	winrt::com_ptr<ID3D12RootSignature> shadowRS = nullptr;
-	winrt::com_ptr<ID3D12StateObject> shadowPipeline = nullptr;
+	winrt::com_ptr<ID3D12PipelineState> shadowPipeline = nullptr;
 	eastl::unique_ptr<DX12::ShaderBindingTable> shadowSBT = nullptr;
 	eastl::unique_ptr<DX12::ResourceUpload> shadowSBTBuffer = nullptr;
 	eastl::unique_ptr<DX12::DescriptorHeap<ShadowsHeap::Slot, ShadowsHeap::Table>> shadowHeap = nullptr;
