@@ -28,8 +28,6 @@
 #include "Raytracing/Includes/Types/GIFrameData.hlsli"
 #include "Raytracing/Includes/Types/ShadowsFrameData.hlsli"
 
-#define USE_PIX
-
 #define NTDDI_VERSION NTDDI_WINBLUE
 
 #include <DXProgrammableCapture.h>
@@ -191,9 +189,7 @@ struct Raytracing : public Feature
 	void SkyCubeToHemi();
 	void CheckResourcesSide(int side);
 
-	bool ValidTriShape(RE::NiNode* pNiNode);
 	void AddInstance(RE::NiNode* pNiNode, const char* path);
-	void AddUpdateAllInstances();
 
 	eastl::vector<size_t> GatherInstanceLights(RE::NiNode* pNiNode);
 
@@ -313,7 +309,7 @@ struct Raytracing : public Feature
 		DLSSRRQuality DLSSRRQualityMode = DLSSRRQuality::MaxQuality;
 #endif
 		DebugOutput DebugOutput = DebugOutput::None;
-		bool EnablePIXCapture = true;
+		bool EnablePIXCapture = false;
 		PIXCaptureLocation PIXCaptureLocation = PIXCaptureLocation::GlobalIllumination;
 		bool EnableDebugDevice = false;
 #ifdef SHARC
@@ -335,8 +331,6 @@ struct Raytracing : public Feature
 	bool releaseBufferHooked = false;
 	bool releaseHooked = false;
 	HANDLE fenceEvent;
-
-	bool addedAllInstances = false;
 
 	static inline uint PackUByte4(float4 unpacked)
 	{
@@ -449,8 +443,17 @@ struct Raytracing : public Feature
 		uint16_t registerIndex;
 	};
 
-	struct MeshData
+	struct Mesh
 	{
+		enum Flags : uint8_t
+		{
+			None = 0,
+			Alpha = 1 << 0,
+			Skinned = 1 << 1,
+			Dynamic = 1 << 2
+		};
+		//DEFINE_ENUM_FLAG_OPERATORS(Flags);
+
 		uint registerIndex; // The position of this meshes SRV in the register stack
 		uint vertexCount = 0;
 		uint triangleCount = 0;
@@ -458,17 +461,18 @@ struct Raytracing : public Feature
 		eastl::vector<float4> dynamic;
 		eastl::vector<Skinning> skinning;
 		eastl::vector<Triangle> triangles;
-		bool skinned;
 		eastl::unique_ptr<DX12::StructuredBufferUpload<Vertex>> vertexBuffer = nullptr;
 		eastl::unique_ptr<DX12::StructuredBufferUpload<Triangle>> triangleBuffer = nullptr;
 		winrt::com_ptr<ID3D12Resource> blasBuffer = nullptr;
 		Material material;
 		eastl::vector<RE::BSTriShape*> instances;
 
-		MeshData() = default;
+		Flags flags = Flags::None;
 
-		MeshData(uint registerIndex, eastl::vector<float4> dynamic) :
-			registerIndex(registerIndex), dynamic(dynamic)
+		Mesh() = default;
+
+		Mesh(uint registerIndex, eastl::vector<float4> dynamic, Flags flags = Flags::None) :
+			registerIndex(registerIndex), dynamic(dynamic), flags(flags)
 		{
 
 		}
@@ -476,7 +480,7 @@ struct Raytracing : public Feature
 
 	struct GeometryData
 	{
-		eastl::vector<MeshData> meshes;
+		eastl::vector<Mesh> meshes;
 		winrt::com_ptr<ID3D12Resource> blasBuffer = nullptr;
 		//RE::NiBound localBound;
 
@@ -499,16 +503,16 @@ struct Raytracing : public Feature
 		}
 	};
 
-	// Appends RE::BSGraphics::TriShape data into MeshData
-	void ReadRendererData(MeshData& meshData, RE::BSGraphics::TriShape* rendererData, const std::uint32_t& vertexCount, const std::uint16_t& triangleCount, const std::uint16_t& bonesPerVertex, const float4x4& transform);
+	// Appends RE::BSGraphics::TriShape data into Mesh
+	void BuildMesh(Mesh& meshData, RE::BSGraphics::TriShape* rendererData, const std::uint32_t& vertexCount, const std::uint16_t& triangleCount, const std::uint16_t& bonesPerVertex, const float4x4& transform);
 	
-	// Reads material data
-	void ReadMaterial(MeshData& meshData, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryRuntimeData, const char* name);
+	// Reads material data into Mesh
+	void BuildMaterial(Mesh& meshData, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryRuntimeData, const char* name);
 
-	// Creates Vertex and Triangle buffer
-	void CreateBuffers(MeshData& meshData, const std::wstring& name);
+	// Creates Vertex, Triangle buffer and appends material into material buffer
+	void CreateBuffers(Mesh& meshData, const std::wstring& name);
 
-	// Creates a single BLAS for a collection of MeshData
+	// Creates a single BLAS for a collection of Mesh
 	void CommitGeometry(GeometryData& geometryData);
 	
 	void RegisterInstance(RE::BSFadeNode* pOriginal, RE::NiObject* pInstance);
@@ -837,6 +841,8 @@ struct Raytracing : public Feature
 
 					descCopy.Format = GetCompatibleFormat(pDesc->Format, recompress);
 	
+					logger::trace("[RT] ID3D11Device::CreateTexture2D - Sharing Texture - Original Format: {}, Target Format: {}", magic_enum::enum_name(pDesc->Format), magic_enum::enum_name(descCopy.Format));
+
 					if (pDesc->Format != descCopy.Format) {
 						initialDataLocal.resize(pDesc->MipLevels);
 						outputMips.resize(pDesc->MipLevels);
@@ -875,9 +881,6 @@ struct Raytracing : public Feature
 				}
 
 				HRESULT hr = func(This, &descCopy, initialDataCopy, ppTexture2D);
-
-				if (pDesc)
-					logger::debug("[RT] ID3D11Device::CreateTexture2D - Texture: [0x{:8X}], [0x{:8X}], Format: {}", reinterpret_cast<uintptr_t>(*ppTexture2D), reinterpret_cast<uintptr_t>(ppTexture2D), magic_enum::enum_name(pDesc->Format));
 
 				if (shareTexture) {
 					if (SUCCEEDED(hr)) {
