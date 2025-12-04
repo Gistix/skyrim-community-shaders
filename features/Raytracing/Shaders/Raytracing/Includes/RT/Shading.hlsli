@@ -12,6 +12,10 @@
 
 #include "Raytracing/Includes/RT/microfacetBRDFUtils.hlsli"
 
+#ifdef DDGI_ENABLED
+#include "Raytracing/Includes/RT/DDGISampling.hlsli"
+#endif
+
 float InverseSquareAtten2(float dist, float range)
 {
     // Inverse square base
@@ -68,11 +72,84 @@ float3 LambertianIndirect(float3 position, float3 normal, float3 albedo, uint de
 {
     float3 tangentSample = TangentSample(randomSeed);
     float3 randomDirection = TangentToWorld(normal, tangentSample);
-            
+
     float3 bounceColor = TraceRayIndirect(Scene, position, randomDirection, depth, randomSeed).rgb;
-    
+
     return bounceColor * albedo * Frame.Diffuse;
 }
+
+#ifdef DDGI_ENABLED
+/**
+ * Sample diffuse indirect lighting from DDGI probes.
+ * This replaces path-traced diffuse with probe-based irradiance sampling.
+ */
+float3 DDGILambertianIndirect(float3 position, float3 normal, float3 view, float3 albedo)
+{
+    // Sample irradiance from DDGI probe grid
+    float3 irradiance = SampleDDGIIrradianceWithFallback(
+        position,
+        normal,
+        view,
+        float3(0.0f, 0.0f, 0.0f)  // Fallback to black outside volume
+    );
+
+    // Apply albedo and diffuse scale
+    // Note: DDGI irradiance is pre-multiplied by PI, so we don't divide here
+    return irradiance * albedo * Frame.Diffuse;
+}
+
+/**
+ * GGX indirect using DDGI for diffuse, ray tracing for specular.
+ * This is a hybrid approach: fast probe-based diffuse + accurate ray-traced specular.
+ */
+float4 DDGIGGXIndirect(in float3 position, in float3 GN, in float3 N, in float3 V, in float3 albedo, in float3 specular, in float roughness, in float metalness, in uint depth, inout uint randomSeed)
+{
+    float NdotV = dot(N, V);
+
+    if (NdotV <= 0.0f)
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    float diffuseProbability = DiffuseProbability(albedo, specular, metalness, roughness, NdotV);
+
+    // Always compute diffuse from DDGI (no stochastic selection needed for diffuse)
+    float3 ddgiDiffuse = SampleDDGIIrradianceWithFallback(position, N, V, float3(0.0f, 0.0f, 0.0f));
+    float3 diffuseContrib = ddgiDiffuse * albedo * diffuseProbability * Frame.Diffuse;
+
+    // Specular still uses ray tracing for accuracy
+    float specularProbability = 1.0f - diffuseProbability;
+    float4 specularContrib = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    if (specularProbability > 0.01f)
+    {
+        float2 alpha = float2(roughness * roughness, roughness * roughness);
+
+        float3 Ht = GGXSample(randomSeed, alpha);
+        float3 H = TangentToWorld(N, Ht);
+        float3 L = reflect(-V, H);
+
+        if (dot(GN, L) > 0.0f)
+        {
+            float NdotL = max(dot(N, L), EPSILON_DOT_CLAMP);
+            float NdotH = max(dot(N, H), EPSILON_DOT_CLAMP);
+            float LdotH = max(dot(L, H), EPSILON_DOT_CLAMP);
+            float VdotH = max(dot(V, H), EPSILON_DOT_CLAMP);
+
+            float4 bounceColor = TraceRayIndirect(Scene, position, L, depth, randomSeed);
+
+            float D = D_GGX(roughness, NdotH);
+            float G = Vis_Smith(roughness, NdotV, NdotL);
+            float3 F = F_Schlick3(specular, VdotH);
+
+            float3 ggxTerm = D * G * F / max(4 * NdotL * NdotV, EPSILON_DOT_CLAMP);
+            float ggxProb = D * NdotH / (4 * LdotH);
+
+            specularContrib = float4((NdotL * bounceColor.rgb * ggxTerm / (ggxProb * specularProbability)) * Frame.Specular, bounceColor.a);
+        }
+    }
+
+    return float4(diffuseContrib + specularContrib.rgb, specularContrib.a);
+}
+#endif // DDGI_ENABLED
 
 float3 GGXDirectP(in float3 position, in float3 normal, in float3 view, in float3 albedo, in float3 specular, in float roughness, in LightData lightData, inout uint randomSeed)
 {

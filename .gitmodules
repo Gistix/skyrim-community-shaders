@@ -7,3 +7,6 @@
 [submodule "extern/FidelityFX-SDK"]
 	path = extern/FidelityFX-SDK
 	url = https://github.com/MapleHinata/FidelityFX-SDK
+[submodule "extern/RTXGI-DDGI"]
+	path = extern/RTXGI-DDGI
+	url = https://github.com/NVIDIAGameWorks/RTXGI-DDGI.git

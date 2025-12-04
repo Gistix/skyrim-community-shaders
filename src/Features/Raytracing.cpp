@@ -99,6 +99,77 @@ void Raytracing::DrawSettings()
 
 	ImGui::Checkbox("Global Illumination", &settings.GlobalIllumination);
 
+	// GI Mode Selection
+	{
+		int giMode = static_cast<int32_t>(settings.GIMode);
+		ImGui::TextUnformatted("GI Algorithm");
+
+		ImGui::SameLine();
+		ImGui::Dummy(ImVec2(25, 0));
+
+		for (auto& [value, name] : magic_enum::enum_entries<GIMode>()) {
+			ImGui::SameLine();
+			ImGui::RadioButton(name.data(), &giMode, static_cast<int32_t>(value));
+		}
+
+		settings.GIMode = static_cast<GIMode>(giMode);
+	}
+
+	// DDGI Settings
+	if (settings.GIMode == GIMode::DDGI && ddgiManager) {
+		if (ImGui::CollapsingHeader("DDGI Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+			auto& ddgiSettings = ddgiManager->GetSettings();
+
+			ImGui::Checkbox("DDGI Enabled", &ddgiSettings.enabled);
+
+			if (ImGui::TreeNodeEx("Probe Grid", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderInt3("Probe Count", ddgiSettings.probeCounts, 4, 48);
+				ImGui::DragFloat3("Probe Spacing", ddgiSettings.probeSpacing, 1.0f, 10.0f, 500.0f);
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNodeEx("Ray Tracing", ImGuiTreeNodeFlags_DefaultOpen)) {
+				if (ImGui::SliderInt("Rays Per Probe", &ddgiSettings.raysPerProbe, 64, 512))
+					ddgiSettings.raysPerProbe = std::clamp(ddgiSettings.raysPerProbe, 64, 512);
+				ImGui::DragFloat("Max Ray Distance", &ddgiSettings.maxRayDistance, 100.0f, 100.0f, 50000.0f);
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNodeEx("Quality", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderFloat("Hysteresis", &ddgiSettings.hysteresis, 0.9f, 0.99f, "%.3f");
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Temporal stability. Higher = more stable but slower to update.");
+				}
+				ImGui::SliderFloat("View Bias", &ddgiSettings.viewBias, 0.0f, 1.0f);
+				ImGui::SliderFloat("Normal Bias", &ddgiSettings.normalBias, 0.0f, 1.0f);
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNodeEx("Features")) {
+				ImGui::Checkbox("Probe Relocation", &ddgiSettings.probeRelocationEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Automatically move probes away from geometry.");
+				}
+				ImGui::Checkbox("Probe Classification", &ddgiSettings.probeClassificationEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Mark probes inside geometry as inactive.");
+				}
+				ImGui::Checkbox("Scrolling Volume", &ddgiSettings.scrollingEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Volume follows camera for infinite worlds.");
+				}
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNodeEx("Debug")) {
+				ImGui::Checkbox("Show Probes", &ddgiSettings.showProbes);
+				int numProbes = ddgiManager->GetNumProbes();
+				ImGui::Text("Total Probes: %d", numProbes);
+				ImGui::TreePop();
+			}
+		}
+	}
+
 	// Denoiser
 	{
 		int denoiser = static_cast<int32_t>(settings.Denoiser);
@@ -692,6 +763,21 @@ void Raytracing::SetupResources()
 		DX::ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
 	}
 
+	// Initialize DDGI Manager
+	logger::debug("Initializing DDGI Manager...");
+	{
+		ddgiManager = eastl::make_unique<DX12::DDGIManager>();
+
+		// Initialize with device and descriptor heap
+		// Note: DDGI slots start at GIHeap::Slot::DDGIProbeRayData
+		if (!ddgiManager->Initialize(d3d12Device.get(), giHeap->Heap(), static_cast<UINT>(GIHeap::Slot::DDGIProbeRayData))) {
+			logger::error("[DDGI] Failed to initialize DDGIManager");
+			ddgiManager.reset();
+		} else {
+			logger::info("[DDGI] DDGIManager initialized successfully");
+		}
+	}
+
 #if defined(DLSS_RR)
 	InitRR();
 #endif
@@ -1104,10 +1190,16 @@ float3 Raytracing::GammaToLinear(float3 color)
 	}
 }
 
-void Raytracing::UpdateLights() 
+void Raytracing::UpdateLights()
 {
 	if (!renderingWorld || lightsUpdated)
 		return;
+
+	// Check if D3D12 resources are initialized
+	if (!lightBuffer) {
+		logger::debug("[RT] UpdateLights - lightBuffer not initialized yet");
+		return;
+	}
 
 	// Directional light
 	{
@@ -1793,15 +1885,12 @@ void Raytracing::CreateGeometry(const char* path, RE::NiNode* pRoot)
 			ReadMaterial(meshData, geometryRuntimeData, name);
 
 			meshes.push_back(eastl::move(meshData));
-		} else if (auto* skinInstance = (RE::BSDismemberSkinInstance*)geometryRuntimeData.skinInstance.get()) {  // Skinned
-			/*static REL::Relocation<const RE::NiRTTI*> bsDismemberedSkinInstanceRTTI{ RE::BSDismemberSkinInstance::Ni_RTTI };
-			bool isDismembered = skinInstance->GetRTTI()->IsKindOf(bsDismemberedSkinInstanceRTTI.get());
-
-			if (isDismembered)
-				logger::warn("\t\t[RT] CreateGeometry::TraverseScenegraphGeometries - Is dismembered");*/
-			
+		}
+		// DISABLED: Skinned meshes causing CTD - commented out for debugging
+		/*
+		else if (auto* skinInstance = (RE::BSDismemberSkinInstance*)geometryRuntimeData.skinInstance.get()) {  // Skinned
 			auto& skinPartition = skinInstance->skinPartition;
-	
+
 			if (!skinPartition) {
 				logger::warn("\t\t[RT] CreateGeometry::TraverseScenegraphGeometries - Invalid SkinPartition");
 				return RE::BSVisit::BSVisitControl::kContinue;
@@ -1818,14 +1907,8 @@ void Raytracing::CreateGeometry(const char* path, RE::NiNode* pRoot)
 
 				meshes.push_back(eastl::move(meshData));
 			}
-
-			/*auto* rootParent = skinInstance->rootParent;
-			auto* bones = skinInstance->bones;
-			auto* boneWorldTransforms = skinInstance->boneWorldTransforms;
-
-			auto& numMatrices = skinInstance->numMatrices;
-			auto* boneMatrices = skinInstance->boneMatrices;*/
 		}
+		*/
 
 		return RE::BSVisit::BSVisitControl::kContinue;
 	});
@@ -2528,6 +2611,24 @@ void Raytracing::DrawRTGI()
 
 	BuildTLAS();
 	RebuildTLAS(commandList.get(), blasInstances.size(), blasInstanceBuffer->resource->GetGPUVirtualAddress());
+
+	// Update DDGI volume position (camera-following)
+	if (ddgiManager && ddgiManager->IsEnabled()) {
+		DirectX::XMFLOAT3 cameraPos = {
+			frameBufferData->Position.x,
+			frameBufferData->Position.y,
+			frameBufferData->Position.z
+		};
+
+		// Get camera forward direction from view inverse matrix
+		DirectX::XMFLOAT3 cameraForward = {
+			-frameBufferData->ViewInverse(2, 0),
+			-frameBufferData->ViewInverse(2, 1),
+			-frameBufferData->ViewInverse(2, 2)
+		};
+
+		ddgiManager->Update(cameraPos, cameraForward);
+	}
 
 	{
 		// Raytracing

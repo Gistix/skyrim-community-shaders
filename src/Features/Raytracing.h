@@ -19,6 +19,7 @@
 #include "Features/Raytracing/RTPipelineBuilder.h"
 #include "Features/Raytracing/ShaderBindingTable.h"
 #include "Features/Raytracing/Types.h"
+#include "Features/Raytracing/DDGI.h"
 
 #include "Raytracing/Includes/Types/Vertex.hlsli"
 #include "Raytracing/Includes/Types/Triangle.hlsli"
@@ -33,7 +34,7 @@
 
 #include <DXProgrammableCapture.h>
 
-//#define DLSS_RR
+#define DLSS_RR
 
 #ifdef DLSS_RR
 #	define NV_WINDOWS
@@ -94,6 +95,13 @@ struct Raytracing : public Feature
 				Lights,
 				Materials,
 				Instances,
+				// DDGI Probe textures
+				DDGIProbeRayData,       // UAV: Probe ray hit data (radiance + distance)
+				DDGIProbeIrradiance,    // UAV/SRV: Probe irradiance (octahedral encoded)
+				DDGIProbeDistance,      // UAV/SRV: Probe distance data
+				DDGIProbeData,          // UAV/SRV: Probe relocation + classification
+				DDGIConstants,          // CBV: Volume constants
+				// Unbounded arrays start here
 				Vertices,
 				Triangles = Vertices + MAX_SUBMESHES,
 				Textures = Triangles + MAX_SUBMESHES,
@@ -272,11 +280,18 @@ struct Raytracing : public Feature
 		AO
 	};
 
+	enum struct GIMode : int32_t
+	{
+		PathTracing,    // Current per-pixel path tracing
+		DDGI,           // NVIDIA DDGI probe-based GI
+	};
+
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
 		bool Enabled = true;
 		bool GlobalIllumination = true;
+		GIMode GIMode = GIMode::PathTracing;  // NEW: Select GI algorithm
 		Denoiser Denoiser = Denoiser::Accumulation;
 		int Bounces = 2;
 		int SamplesPerPixel = 1;
@@ -566,6 +581,9 @@ struct Raytracing : public Feature
 	// GI
 	eastl::unique_ptr<DX12::StructuredBufferUpload<GIFrameData>> frameBuffer = nullptr;
 	eastl::unique_ptr<GIFrameData> frameBufferData = nullptr;
+
+	// DDGI (NVIDIA Dynamic Diffuse Global Illumination)
+	eastl::unique_ptr<DX12::DDGIManager> ddgiManager = nullptr;
 
 	// Shadows
 	eastl::unique_ptr<DX12::StructuredBufferUpload<D3D12_RAYTRACING_INSTANCE_DESC>> blasShadowInstanceBuffer = nullptr;

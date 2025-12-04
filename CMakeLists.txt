@@ -76,6 +76,7 @@ find_package(Tracy CONFIG REQUIRED)
 find_package(directx-headers CONFIG REQUIRED)
 find_package(directx-dxc CONFIG REQUIRED)
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
+add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/RTXGI)
 
 find_path(DETOURS_INCLUDE_DIRS "detours/detours.h")
 find_library(DETOURS_LIBRARY detours REQUIRED)
@@ -124,6 +125,7 @@ target_link_libraries(
         efsw::efsw
         Tracy::TracyClient
         Streamline
+        RTXGI
         d3d12.lib
         Microsoft::DirectX-Headers
         Microsoft::DirectXShaderCompiler
