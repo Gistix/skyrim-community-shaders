@@ -4,9 +4,9 @@
 #include <dxcapi.h>
 #include <shlwapi.h>
 
-namespace ShaderUtils 
+namespace ShaderUtils
 {
-	void CompileShader(winrt::com_ptr<IDxcBlob>& shader, const wchar_t* FilePath, eastl::vector<DxcDefine> defines, const wchar_t* Target, const wchar_t* EntryPoint)
+	void CompileShader(winrt::com_ptr<IDxcBlob>& shader, const wchar_t* FilePath, eastl::vector<DxcDefine> defines, const wchar_t* Target, const wchar_t* EntryPoint, eastl::vector<std::wstring> additionalIncludePaths)
 	{
 		if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
 			logger::error("Failed to initialize COM");
@@ -65,6 +65,12 @@ namespace ShaderUtils
 
 		compilerArgs->AddArguments(args, _countof(args));
 		compilerArgs->AddDefines(defines.data(), static_cast<uint>(defines.size()));
+
+		// Add additional include paths
+		for (const auto& includePath : additionalIncludePaths) {
+			LPCWSTR includeArgs[] = { L"-I", includePath.c_str() };
+			compilerArgs->AddArguments(includeArgs, _countof(includeArgs));
+		}
 
 		winrt::com_ptr<IDxcResult> result;
 		if (FAILED(compiler->Compile(&sourceBuffer, compilerArgs->GetArguments(), compilerArgs->GetCount(), baseHandler.get(), IID_PPV_ARGS(&result)))) {

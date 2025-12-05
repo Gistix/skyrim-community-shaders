@@ -764,17 +764,36 @@ void Raytracing::SetupResources()
 	}
 
 	// Initialize DDGI Manager
+	// Note: DDGI is currently disabled by default due to device compatibility issues.
+	// Set ddgiManager->GetSettings().enabled = true in settings to enable.
 	logger::debug("Initializing DDGI Manager...");
 	{
 		ddgiManager = eastl::make_unique<DX12::DDGIManager>();
 
-		// Initialize with device and descriptor heap
-		// Note: DDGI slots start at GIHeap::Slot::DDGIProbeRayData
-		if (!ddgiManager->Initialize(d3d12Device.get(), giHeap->Heap(), static_cast<UINT>(GIHeap::Slot::DDGIProbeRayData))) {
-			logger::error("[DDGI] Failed to initialize DDGIManager");
-			ddgiManager.reset();
+		// Enable DDGI for debugging
+		ddgiManager->GetSettings().enabled = true;
+
+		// Only attempt initialization if DDGI is enabled
+		if (ddgiManager->GetSettings().enabled) {
+			// Initialize with device and descriptor heap
+			// Note: DDGI slots start at GIHeap::Slot::DDGIProbeRayData
+			if (!ddgiManager->Initialize(d3d12Device.get(), giHeap->Heap(), static_cast<UINT>(GIHeap::Slot::DDGIProbeRayData))) {
+				logger::error("[DDGI] Failed to initialize DDGIManager");
+				ddgiManager.reset();
+
+				// Check if device is still valid after DDGI failure
+				HRESULT deviceStatus = d3d12Device->GetDeviceRemovedReason();
+				if (FAILED(deviceStatus)) {
+					logger::critical("[DDGI] Device was removed during DDGI initialization! Error: 0x{:08X}", static_cast<unsigned int>(deviceStatus));
+					logger::critical("[DDGI] This is a fatal error - ray tracing will not function.");
+					// Device is gone, we can't continue
+					return;
+				}
+			} else {
+				logger::info("[DDGI] DDGIManager initialized successfully");
+			}
 		} else {
-			logger::info("[DDGI] DDGIManager initialized successfully");
+			logger::info("[DDGI] DDGI is disabled, skipping initialization");
 		}
 	}
 
@@ -2070,6 +2089,10 @@ void Raytracing::UpdateInstances()
 	auto eye = Util::GetAverageEyePosition();*/
 
 	for (auto& [pNiNode, data] : instances) {
+		// Check if we've hit the instance limit
+		if (blasInstances.size() >= MAX_INSTANCES)
+			break;
+
 		//pFadeNode->SetMotionType
 
 		auto it = geometry.find(data.filename);
@@ -2331,6 +2354,10 @@ void Raytracing::UpdateShadowInstances()
 	}
 
 	for (auto& [pFadeNode, data] : instances) {
+		// Check if we've hit the instance limit
+		if (blasShadowInstances.size() >= MAX_INSTANCES)
+			break;
+
 		auto it = geometry.find(data.filename);
 
 		if (it == geometry.end())
@@ -2591,8 +2618,60 @@ void Raytracing::DrawRTGI()
 	}
 
 	{
-		// Raytracing
-		{
+		// Raytracing - choose between Path Tracing and DDGI based on GIMode setting
+		if (settings.GIMode == GIMode::DDGI && ddgiManager && ddgiManager->IsEnabled()) {
+			// DDGI Mode - trace probes instead of per-pixel rays
+			commandList->SetPipelineState1(pipelineRT.get());
+			commandList->SetComputeRootSignature(rootSignature.get());
+
+			auto commonHeapPtr = giHeap->Heap();
+			commandList->SetDescriptorHeaps(1, &commonHeapPtr);
+
+			// Set descriptor tables (same as path tracing)
+			commandList->SetComputeRootDescriptorTable(0, giHeap->TableGPUHandle(GIHeap::Table::UAV));
+			commandList->SetComputeRootDescriptorTable(1, giHeap->TableGPUHandle(GIHeap::Table::SRV));
+			commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::VertexBuffer));
+			commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
+			commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
+			commandList->SetComputeRootConstantBufferView(5, frameBuffer->resource->GetGPUVirtualAddress());
+
+			// Transition for probe tracing
+			ddgiManager->TransitionForProbeTrace(commandList.get());
+
+			// Dispatch probe ray tracing
+			// Dimensions match RayData texture layout:
+			// - Width = rays per probe
+			// - Height = probes per slice (probeCountX * probeCountZ in Y-up coords)
+			// - Depth = number of slices (probeCountY in Y-up coords)
+			uint32_t dispatchWidth, dispatchHeight, dispatchDepth;
+			ddgiManager->GetRayDispatchDimensions(dispatchWidth, dispatchHeight, dispatchDepth);
+
+			D3D12_DISPATCH_RAYS_DESC dispatchDesc{};
+			dispatchDesc.Width = dispatchWidth;
+			dispatchDesc.Height = dispatchHeight;
+			dispatchDesc.Depth = dispatchDepth;
+
+			shaderBindingTable->FillDispatchShaderBindingTable(dispatchDesc, shaderBindingTableBuffer->resource->GetGPUVirtualAddress());
+
+			commandList->DispatchRays(&dispatchDesc);
+
+			// Transition for probe blending
+			ddgiManager->TransitionForProbeBlend(commandList.get());
+
+			// Update probes (blend irradiance/distance, relocate, classify)
+			ddgiManager->UpdateProbes(commandList.get());
+
+			// Transition for irradiance sampling
+			ddgiManager->TransitionForIrradianceSample(commandList.get());
+
+			CD3DX12_RESOURCE_BARRIER rtUAVBarrier[3] = {
+				CD3DX12_RESOURCE_BARRIER::UAV(outputTexture->resource.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(reflectanceTexture->resource.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(specularHitDistanceTexture->resource.get())
+			};
+			commandList->ResourceBarrier(_countof(rtUAVBarrier), rtUAVBarrier);
+		} else {
+			// Path Tracing Mode (default) - per-pixel ray tracing
 			commandList->SetPipelineState1(pipelineRT.get());
 			commandList->SetComputeRootSignature(rootSignature.get());
 
@@ -2618,7 +2697,7 @@ void Raytracing::DrawRTGI()
 			commandList->SetComputeRootConstantBufferView(5, frameBuffer->resource->GetGPUVirtualAddress());
 
 			auto finalTexDesc = mainTexture->resource->GetDesc();
-			
+
 			D3D12_DISPATCH_RAYS_DESC dispatchDesc{};
 			dispatchDesc.Width = static_cast<uint>(finalTexDesc.Width);
 			dispatchDesc.Height = finalTexDesc.Height;
@@ -3279,11 +3358,11 @@ void Raytracing::CompileShaders()
 void Raytracing::CompileRTGIShaders()
 {
 	winrt::com_ptr<IDxcBlob> rayGenBlob;
-	ShaderUtils::CompileShader(rayGenBlob, L"Data/Shaders/Raytracing/PT/RayGeneration.hlsl");
+	ShaderUtils::CompileShader(rayGenBlob, L"Data/Shaders/Raytracing/GI/RayGeneration.hlsl");
 
 	winrt::com_ptr<IDxcBlob> missBlob, closestHitBlob, anyHitBlob;
 	ShaderUtils::CompileShader(missBlob, L"Data/Shaders/Raytracing/GI/Miss.hlsl");
-	ShaderUtils::CompileShader(closestHitBlob, L"Data/Shaders/Raytracing/PT/ClosestHit.hlsl");
+	ShaderUtils::CompileShader(closestHitBlob, L"Data/Shaders/Raytracing/GI/ClosestHit.hlsl");
 	ShaderUtils::CompileShader(anyHitBlob, L"Data/Shaders/Raytracing/GI/AnyHit.hlsl");
 
 	winrt::com_ptr<IDxcBlob> shadowMissBlob;

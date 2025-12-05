@@ -610,9 +610,15 @@ struct Raytracing : public Feature
 	// GI
 	winrt::com_ptr<ID3D12RootSignature> rootSignature = nullptr;
 	winrt::com_ptr<ID3D12StateObject> pipelineRT = nullptr;
-	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;	
+	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;
 	eastl::unique_ptr<DX12::ResourceUpload> shaderBindingTableBuffer = nullptr;
-	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap::Slot::Values, GIHeap::Table::Values>> giHeap = nullptr;	
+	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap::Slot::Values, GIHeap::Table::Values>> giHeap = nullptr;
+
+	// DDGI Probe Tracing
+	winrt::com_ptr<ID3D12StateObject> ddgiProbePipeline = nullptr;
+	eastl::unique_ptr<DX12::ShaderBindingTable> ddgiProbeSBT = nullptr;
+	eastl::unique_ptr<DX12::ResourceUpload> ddgiProbeSBTBuffer = nullptr;
+	eastl::unique_ptr<DX12::StructuredBufferUpload<rtxgi::DDGIVolumeDescGPUPacked>> ddgiConstantsBuffer = nullptr;	
 
 	// Shadows
 	winrt::com_ptr<ID3D12RootSignature> shadowRS = nullptr;

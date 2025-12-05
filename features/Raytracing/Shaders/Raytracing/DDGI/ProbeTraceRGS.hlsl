@@ -9,6 +9,7 @@
 #include "Raytracing/Includes/Registers.hlsli"
 #include "Raytracing/Includes/Common.hlsli"
 #include "Raytracing/Includes/RT/CommonRT.hlsli"
+#include "Raytracing/Includes/RT/IndirectPayload.hlsli"
 #include "Raytracing/Includes/RT/Rays.hlsli"
 #include "Raytracing/Includes/RT/Shading.hlsli"
 
@@ -30,7 +31,11 @@
 ConstantBuffer<DDGIVolumeDescGPUPacked> DDGIVolume : register(b2);
 
 // Output: Probe ray data (radiance RGB, hit distance A)
-RWTexture2D<float4> ProbeRayData : register(u3);
+// This is a Texture2DArray where:
+// - X = ray index (0 to raysPerProbe-1)
+// - Y = probe index within a slice (0 to probesPerPlane-1)
+// - Z = slice index (Y-planes in Y-up coordinate system)
+RWTexture2DArray<float4> ProbeRayData : register(u3);
 
 // Get a ray direction for a probe ray using spherical Fibonacci
 float3 GetProbeRayDirection(int rayIndex, int numRays, float4 rayRotation)
@@ -47,12 +52,20 @@ float3 GetProbeRayDirection(int rayIndex, int numRays, float4 rayRotation)
 [shader("raygeneration")]
 void main()
 {
-    // Dispatch dimensions: X = rayIndex, Y = probeIndex
+    // Dispatch dimensions match RayData texture layout:
+    // X = rayIndex (0 to raysPerProbe-1)
+    // Y = probeIndexInSlice (0 to probesPerPlane-1)
+    // Z = sliceIndex (0 to numSlices-1)
     uint rayIndex = DispatchRaysIndex().x;
-    uint probeIndex = DispatchRaysIndex().y;
+    uint probeIndexInSlice = DispatchRaysIndex().y;
+    uint sliceIndex = DispatchRaysIndex().z;
 
     // Unpack volume descriptor
     DDGIVolumeDescGPU volume = UnpackDDGIVolumeDescGPU(DDGIVolume);
+
+    // Calculate linear probe index from slice coordinates
+    int probesPerPlane = DDGIGetProbesPerPlane(volume.probeCounts);
+    uint probeIndex = sliceIndex * probesPerPlane + probeIndexInSlice;
 
     // Get probe grid coordinates from linear index
     int3 probeCoords = DDGIGetProbeCoords(probeIndex, volume);
@@ -72,9 +85,8 @@ void main()
 
     // Trace the ray
     IndirectPayload payload;
-    payload.radiance = float3(0, 0, 0);
-    payload.distance = -1.0f;  // Negative = miss
-    payload.seed = InitRandomSeed(uint2(rayIndex, probeIndex), DispatchRaysDimensions().xy, Frame.FrameCount);
+    payload.color = float4(0, 0, 0, -1.0f);  // RGB = radiance, A = hit distance (-1 = miss)
+    payload.data = PayloadData::Create(false, 0, InitRandomSeed(uint2(rayIndex, probeIndex), DispatchRaysDimensions().xy, Frame.FrameCount));
 
     TraceRay(
         Scene,
@@ -88,8 +100,8 @@ void main()
     );
 
     // Prepare output
-    float3 radiance = payload.radiance;
-    float hitDistance = payload.distance;
+    float3 radiance = payload.color.rgb;
+    float hitDistance = payload.color.a;
 
     // If we hit the sky, use sky color but mark as max distance
     if (hitDistance < 0.0f)
@@ -100,8 +112,9 @@ void main()
         hitDistance = volume.probeMaxRayDistance;
     }
 
-    // Store probe ray data
-    // Format: RGB = radiance, A = hit distance (normalized)
-    uint2 outputCoord = uint2(rayIndex, probeIndex);
+    // Store probe ray data directly using dispatch indices
+    // RayData texture layout: [rayIndex, probeIndexInSlice, sliceIndex]
+    // This matches DispatchRaysIndex() directly since we dispatch with matching dimensions
+    uint3 outputCoord = uint3(rayIndex, probeIndexInSlice, sliceIndex);
     ProbeRayData[outputCoord] = float4(radiance, hitDistance);
 }

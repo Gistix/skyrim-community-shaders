@@ -8,7 +8,8 @@
 * license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "../../../include/rtxgi/ddgi/DDGIRootConstants.h"
+// Modified path for Skyrim Community Shaders folder structure
+#include "../rtxgi/ddgi/DDGIRootConstants.h"
 
 #ifndef __spirv__ // D3D12
 

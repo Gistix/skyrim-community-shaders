@@ -12,8 +12,6 @@
 #include <rtxgi/ddgi/gfx/DDGIVolume_D3D12.h>
 #pragma warning(pop)
 
-#include "Buffer.h"
-
 namespace DX12
 {
 	/**
@@ -72,13 +70,17 @@ namespace DX12
 		// Per-frame updates
 		void Update(const DirectX::XMFLOAT3& cameraPosition, const DirectX::XMFLOAT3& cameraForward);
 
-		// Probe ray tracing (called after main scene ray tracing populates RayData texture)
+		// Probe ray tracing - dispatches rays from probe positions to populate RayData texture
+		void TraceProbeRays(ID3D12GraphicsCommandList4* cmdList, ID3D12Resource* tlas, ID3D12RootSignature* rootSig);
+
+		// Probe update (blends ray data into irradiance/distance textures)
 		void UpdateProbes(ID3D12GraphicsCommandList4* cmdList);
 
 		// Resource transitions
 		void TransitionForProbeTrace(ID3D12GraphicsCommandList4* cmdList);
 		void TransitionForProbeBlend(ID3D12GraphicsCommandList4* cmdList);
 		void TransitionForIrradianceSample(ID3D12GraphicsCommandList4* cmdList);
+		void TransitionToUAVForNextFrame(ID3D12GraphicsCommandList4* cmdList);
 
 		// Getters for shader binding
 		ID3D12Resource* GetProbeIrradiance() const { return m_probeIrradiance.get(); }
@@ -100,12 +102,16 @@ namespace DX12
 		// Get volume info
 		int GetNumProbes() const;
 		void GetProbeGridDimensions(int& x, int& y, int& z) const;
+		void GetRayDispatchDimensions(uint32_t& width, uint32_t& height, uint32_t& depth) const;
 
 	private:
 		// Create D3D12 resources
 		bool CreateProbeTextures();
+		bool CreateConstantsBuffer();
 		bool CreatePipelineStates();
 		bool CreateRootSignature();
+		bool CreateRTVDescriptorHeap();
+		bool CreateDDGIDescriptorHeap();  // Creates shader-visible heap for DDGI resources
 
 		// Helper to create texture
 		bool CreateTexture2DArray(
@@ -113,7 +119,8 @@ namespace DX12
 			DXGI_FORMAT format,
 			D3D12_RESOURCE_STATES initialState,
 			winrt::com_ptr<ID3D12Resource>& outResource,
-			const wchar_t* debugName);
+			const wchar_t* debugName,
+			bool allowRenderTarget = false);
 
 		// Snap position to probe grid to avoid temporal swimming
 		DirectX::XMFLOAT3 SnapToProbeGrid(const DirectX::XMFLOAT3& position) const;
@@ -135,6 +142,13 @@ namespace DX12
 		winrt::com_ptr<ID3D12Resource> m_probeDistance;      // Mean distance & distance^2
 		winrt::com_ptr<ID3D12Resource> m_probeData;          // XYZ: relocation offset, W: classification
 		winrt::com_ptr<ID3D12Resource> m_probeVariability;   // Variability tracking
+		winrt::com_ptr<ID3D12Resource> m_probeVariabilityAverage;  // Variability average for reduction
+		winrt::com_ptr<ID3D12Resource> m_probeVariabilityReadback; // CPU readback for variability
+
+		// Constants buffer for DDGI volume (required by SDK)
+		winrt::com_ptr<ID3D12Resource> m_constantsBuffer;       // GPU buffer for DDGIVolumeDescGPUPacked
+		winrt::com_ptr<ID3D12Resource> m_constantsBufferUpload; // Upload buffer for staging
+		UINT64 m_constantsBufferSize = 0;
 
 		// Pipeline states for probe update compute shaders
 		winrt::com_ptr<ID3D12PipelineState> m_blendIrradiancePSO;
@@ -143,11 +157,27 @@ namespace DX12
 		winrt::com_ptr<ID3D12PipelineState> m_relocationResetPSO;
 		winrt::com_ptr<ID3D12PipelineState> m_classificationPSO;
 		winrt::com_ptr<ID3D12PipelineState> m_classificationResetPSO;
+		winrt::com_ptr<ID3D12PipelineState> m_variabilityReductionPSO;
+		winrt::com_ptr<ID3D12PipelineState> m_variabilityExtraReductionPSO;
+
+		// Ray tracing state object for probe tracing
+		winrt::com_ptr<ID3D12StateObject> m_probeTraceStateObject;
 
 		// Root signature for DDGI compute shaders
 		winrt::com_ptr<ID3D12RootSignature> m_rootSignature;
 
-		// Descriptor heap info
+		// RTV descriptor heap for irradiance/distance textures
+		winrt::com_ptr<ID3D12DescriptorHeap> m_rtvDescriptorHeap;
+		D3D12_CPU_DESCRIPTOR_HANDLE m_probeIrradianceRTV = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE m_probeDistanceRTV = {};
+
+		// DDGI resource descriptor heap (shader visible, for compute shaders)
+		// Contains: [0]=Constants SRV, [1]=RayData UAV, [2]=Irradiance UAV,
+		//           [3]=Distance UAV, [4]=ProbeData UAV, [5]=Variability UAV, [6]=VariabilityAvg UAV
+		winrt::com_ptr<ID3D12DescriptorHeap> m_ddgiDescriptorHeap;
+		static constexpr UINT DDGI_DESCRIPTOR_COUNT = 7;
+
+		// Descriptor heap info (external heap passed at init, kept for compatibility)
 		ID3D12DescriptorHeap* m_descriptorHeap = nullptr;
 		UINT m_descriptorHeapStartIndex = 0;
 		UINT m_descriptorSize = 0;
