@@ -6,22 +6,25 @@
 #include <dxgi1_6.h>
 #include "Features/Upscaling/DX12SwapChain.h"
 #include <dxcapi.h>
-#include "Features/Raytracing/Buffer.h"
 #include "LightLimitFix.h"
 #include <DirectXTex.h>
 #include <shared_mutex>
 #include <EASTL/deque.h>
-//#include <half.hpp>
 
-#include "Features/Raytracing/IrradianceCache.h"
+#include "Features/Raytracing/Utils.h"
+#include "Features/Raytracing/Heap.h"
+#include "Features/Raytracing/Buffer.h"
 #include "Features/Raytracing/Allocator.h"
 #include "Features/Raytracing/HeapManager.h"
 #include "Features/Raytracing/RTPipelineBuilder.h"
 #include "Features/Raytracing/ShaderBindingTable.h"
 #include "Features/Raytracing/Types.h"
-#include "Features/Raytracing/DDGI.h"
+#include "Features/Raytracing/Shape.h"
+#include "Features/Raytracing/Model.h"
 
+#include "Raytracing/Includes/Types/VertexUpdate.hlsli"
 #include "Raytracing/Includes/Types/Vertex.hlsli"
+#include "Raytracing/Includes/Types/Skinning.hlsli"
 #include "Raytracing/Includes/Types/Triangle.hlsli"
 #include "Raytracing/Includes/Types/Material.hlsli"
 #include "Raytracing/Includes/Types/Light.hlsli"
@@ -32,7 +35,7 @@
 
 #include <DXProgrammableCapture.h>
 
-#define DLSS_RR
+//#define DLSS_RR
 
 #ifdef DLSS_RR
 #	define NV_WINDOWS
@@ -48,8 +51,6 @@
 #pragma warning(pop)
 #endif
 
-//using half_float::half;
-
 struct Raytracing : public Feature
 {
 	static constexpr uint MAX_TEXTURES = 512;
@@ -62,61 +63,76 @@ struct Raytracing : public Feature
 
 	static constexpr uint SKY_CUBEMAP_SIZE = 256;
 
-	struct GIHeap
+	struct GIHeapDef
 	{
-		struct Table
+		enum class Table
 		{
-			enum Values : uint32_t
-			{
-				UAV,
-				SRV,
-				VertexBuffer,
-				TriangleBuffer,
-				Textures
-			};
+			UAV,
+			SRV,
+			VertexBuffer,
+			TriangleBuffer,
+			Textures
 		};
 
-		struct Slot
+		enum class Slot
 		{
-			enum Values : uint32_t
-			{
-				Output,
-				Reflectance,
-				SpecularHitDist,
-				Main,
-				Depth,
-				Albedo,
-				NormalRoughness,
-				GNMD,
-				TLAS,
-				SkyHemisphere,
-				Lights,
-				Materials,
-				Instances,
-				// DDGI Probe textures
-				DDGIProbeRayData,       // UAV: Probe ray hit data (radiance + distance)
-				DDGIProbeIrradiance,    // UAV/SRV: Probe irradiance (octahedral encoded)
-				DDGIProbeDistance,      // UAV/SRV: Probe distance data
-				DDGIProbeData,          // UAV/SRV: Probe relocation + classification
-				DDGIConstants,          // CBV: Volume constants
-				// Unbounded arrays start here
-				Vertices,
-				Triangles = Vertices + MAX_SUBMESHES,
-				Textures = Triangles + MAX_SUBMESHES,
-				NumDescriptors = Textures + MAX_TEXTURES,
-				None
-			};
+			Output,
+			Reflectance,
+			SpecularHitDist,
+			Main,
+			Depth,
+			Albedo,
+			NormalRoughness,
+			GNMD,
+			TLAS,
+			SkyHemisphere,
+			Lights,
+			Materials,
+			Instances,
+			Vertices,
+			Triangles = Vertices + Raytracing::MAX_SUBMESHES,
+			Textures = Triangles + Raytracing::MAX_SUBMESHES,
+			NumDescriptors = Textures + Raytracing::MAX_TEXTURES,
+			None
 		};
 	};
-	struct ShadowsHeap
+	using GIHeap = Heap<GIHeapDef::Table, GIHeapDef::Slot>;
+
+	struct SkinningHeapDef
 	{
-		enum Table : uint32_t
+		enum class Table
+		{
+			UAV,
+			SRV,
+			SkinningBuffer,
+			VertexBuffer,
+			DynamicBuffer
+		};
+
+		enum class Slot
+		{
+			Output,
+			LocalToRoot,
+			UpdateData,
+			BoneMatrices,
+			Skinning,
+			Vertices = Skinning + Raytracing::MAX_SUBMESHES,
+			DynamicVertices = Vertices + Raytracing::MAX_SUBMESHES,
+			NumDescriptors = DynamicVertices + Raytracing::MAX_SUBMESHES,
+			None
+		};
+	};
+	using SkinningHeap = Heap<SkinningHeapDef::Table, SkinningHeapDef::Slot>;
+
+	struct ShadowsHeapDef
+	{
+		enum class Table
 		{
 			UAV,
 			SRV
 		};
 
-		enum Slot : uint32_t
+		enum class Slot
 		{
 			ShadowMask,
 			Depth,
@@ -125,6 +141,7 @@ struct Raytracing : public Feature
 			None
 		};
 	};
+	using ShadowsHeap = Heap<ShadowsHeapDef::Table, ShadowsHeapDef::Slot>;
 
 	////////////////////////////////////////////////// Boilerplate
 	// Metadata
@@ -161,20 +178,21 @@ struct Raytracing : public Feature
 	virtual void SetupResources() override;
 	virtual void ClearShaderCache() override;
 
-	void ShareRT(ID3D11Texture2D* pTexture2D, const GIHeap::Slot::Values& target, const ShadowsHeap::Slot& cTarget, ID3D12Resource** ppResource);
+	void ShareRT(ID3D11Texture2D* pTexture2D, const GIHeap::Slot& target, const ShadowsHeap::Slot& cTarget, ID3D12Resource** ppResource) const;
 	void SetupSharedRT();
 	void CompileShaders();
 	void CompileComputeShaders();
 
+	void CompileSkinningShaders();
 	void CompileRTGIShaders();
 	void CompileRTShadowsShaders();
-
-	void CompileDX12ComputeShaders();
 
 	void Initialize();
 	void InitD3D12(ID3D11Device* ppDevice, ID3D11DeviceContext* pImmediateContext, IDXGIAdapter* a_adapter);
 	void CreateRootSignature();
 	void CreateShadowsRootSignature();
+	void CreateSkinningRootSignature();
+	void UpdateDynamicSkinning(ID3D12GraphicsCommandList4* pCommandList);
 	void DrawRTGI();
 	void UpdateShadowsFrameBuffer();
 	void RenderShadows();
@@ -189,7 +207,7 @@ struct Raytracing : public Feature
 	void SkyCubeToHemi();
 	void CheckResourcesSide(int side);
 
-	void AddInstance(RE::NiNode* pNiNode, const char* path);
+	void AddInstance(RE::NiNode* pNiNode, eastl::string path);
 
 	eastl::vector<size_t> GatherInstanceLights(RE::NiNode* pNiNode);
 
@@ -224,10 +242,6 @@ struct Raytracing : public Feature
 	{
 		return loaded && settings.Enabled;
 	};
-
-	//void BSShader_RestoreGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
-
-	void BSTriShape_UpdateWorldData(RE::BSTriShape* This, RE::NiUpdateData* a_data);
 
 	static constexpr DXGI_SAMPLE_DESC NO_AA = { .Count = 1, .Quality = 0 };
 	static constexpr D3D12_HEAP_PROPERTIES UPLOAD_HEAP = { .Type = D3D12_HEAP_TYPE_UPLOAD };
@@ -276,18 +290,11 @@ struct Raytracing : public Feature
 		AO
 	};
 
-	enum struct GIMode : int32_t
-	{
-		PathTracing,    // Current per-pixel path tracing
-		DDGI,           // NVIDIA DDGI probe-based GI
-	};
-
 	////////////////////////////////////////////////// Feature Specific Data
 	struct Settings
 	{
 		bool Enabled = true;
 		bool GlobalIllumination = true;
-		GIMode GIMode = GIMode::PathTracing;  // NEW: Select GI algorithm
 		Denoiser Denoiser = Denoiser::Accumulation;
 		int Bounces = 2;
 		int SamplesPerPixel = 1;
@@ -331,61 +338,6 @@ struct Raytracing : public Feature
 	bool releaseBufferHooked = false;
 	bool releaseHooked = false;
 	HANDLE fenceEvent;
-
-	static inline uint PackUByte4(float4 unpacked)
-	{
-		auto x = (uint)(unpacked.x * 255.0f) & 0xFF;
-		auto y = (uint)(unpacked.y * 255.0f) & 0xFF;
-		auto z = (uint)(unpacked.z * 255.0f) & 0xFF;
-		auto w = (uint)(unpacked.w * 255.0f) & 0xFF;
-
-		return (w << 24) | (z << 16) | (y << 8) | x;
-	}
-
-	static inline float4 UnpackUByte4(uint packed)
-	{
-		float4 result;
-		result.x = (packed & 0xFF) / 255.0f;
-		result.y = ((packed >> 8) & 0xFF) / 255.0f;
-		result.z = ((packed >> 16) & 0xFF) / 255.0f;
-		result.w = (packed >> 24) / 255.0f;
-		return result;
-	}
-
-	static inline uint PackByte4(float4 unpacked)
-	{
-		return PackUByte4(unpacked * 0.5f + float4(0.5f, 0.5f, 0.5f, 0.5f));
-	}
-
-	static inline float4 UnpackByte4(uint packed)
-	{
-		return UnpackUByte4(packed) * 2.0f - float4(1.0f, 1.0f, 1.0f, 1.0f);
-	}
-
-	static inline float3 Normalize(float3 vector)
-	{
-		vector.Normalize();
-		return vector;
-	}
-
-	struct Skinning
-	{
-		half weight[4];
-		uint8_t bone[4];
-
-		Skinning() = default;
-
-		Skinning(eastl::vector<half> weights, eastl::vector<uint8_t> boneIds)
-		{
-			auto weightCount = weights.size();
-			auto boneIdsCount = boneIds.size();
-
-			for (size_t i = 0; i < 4; i++) {
-				weight[i] = i < weightCount ? weights[i] : half(0.0f);
-				bone[i] = i < boneIdsCount ? boneIds[i] : 0;
-			}
-		}
-	};
 
 	struct LightData
 	{
@@ -443,82 +395,11 @@ struct Raytracing : public Feature
 		uint16_t registerIndex;
 	};
 
-	struct Mesh
-	{
-		enum Flags : uint8_t
-		{
-			None = 0,
-			Alpha = 1 << 0,
-			Skinned = 1 << 1,
-			Dynamic = 1 << 2
-		};
-		//DEFINE_ENUM_FLAG_OPERATORS(Flags);
-
-		uint registerIndex; // The position of this meshes SRV in the register stack
-		uint vertexCount = 0;
-		uint triangleCount = 0;
-		eastl::vector<Vertex> vertices;
-		eastl::vector<float4> dynamic;
-		eastl::vector<Skinning> skinning;
-		eastl::vector<Triangle> triangles;
-		eastl::unique_ptr<DX12::StructuredBufferUpload<Vertex>> vertexBuffer = nullptr;
-		eastl::unique_ptr<DX12::StructuredBufferUpload<Triangle>> triangleBuffer = nullptr;
-		winrt::com_ptr<ID3D12Resource> blasBuffer = nullptr;
-		Material material;
-		eastl::vector<RE::BSTriShape*> instances;
-
-		Flags flags = Flags::None;
-
-		Mesh() = default;
-
-		Mesh(uint registerIndex, eastl::vector<float4> dynamic, Flags flags = Flags::None) :
-			registerIndex(registerIndex), dynamic(dynamic), flags(flags)
-		{
-
-		}
-	};
-
-	struct GeometryData
-	{
-		eastl::vector<Mesh> meshes;
-		winrt::com_ptr<ID3D12Resource> blasBuffer = nullptr;
-		//RE::NiBound localBound;
-
-		/*bool HasFeature(RE::BSShaderMaterial::Feature feature)
-		{
-			for (auto& mesh : meshes)
-				if (mesh.material.feature == feature)
-					return true;
-
-			return false;
-		}*/
-
-		bool HasShaderType(RE::BSShader::Type shaderType)
-		{
-			for (auto& mesh : meshes)
-				if (mesh.material.ShaderType == shaderType)
-					return true;
-
-			return false;
-		}
-	};
-
-	// Appends RE::BSGraphics::TriShape data into Mesh
-	void BuildMesh(Mesh& meshData, RE::BSGraphics::TriShape* rendererData, const std::uint32_t& vertexCount, const std::uint16_t& triangleCount, const std::uint16_t& bonesPerVertex, const float4x4& transform);
-	
-	// Reads material data into Mesh
-	void BuildMaterial(Mesh& meshData, const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryRuntimeData, const char* name);
-
-	// Creates Vertex, Triangle buffer and appends material into material buffer
-	void CreateBuffers(Mesh& meshData, const std::wstring& name);
-
-	// Creates a single BLAS for a collection of Mesh
-	void CommitGeometry(GeometryData& geometryData);
-	
-	void RegisterInstance(RE::BSFadeNode* pOriginal, RE::NiObject* pInstance);
+	// Creates a single BLAS for a collection of Shapes
+	void CommitGeometry(Model& geometryData);
 
 	// Creates mesh buffers for all graph TriShapes, handles materials and builds a single BLAS for the node
-	void CreateGeometry(const char* path, RE::NiNode* pRoot);
+	void CreateModel(const char* path, RE::NiNode* pRoot);
 
 	uint16_t GetTextureRegister(ID3D11Texture2D* texture, bool whiteDefault = true);
 
@@ -526,33 +407,73 @@ struct Raytracing : public Feature
 	Allocator textureRegisters = Allocator(MAX_TEXTURES);
 
 	// We'll group trishapes by their parent nodes, hopefully trishapes don't move on their own
-	eastl::unordered_map<eastl::string, GeometryData> geometry;
+	eastl::unordered_map<eastl::string, Model> geometry;
 	eastl::unordered_map<RE::NiNode*, eastl::string> inputPaths;
 
 	// Instance
-	struct InstanceData
+	struct Instance
 	{
-		uint lastUpdate;
 		eastl::string filename;
-		DirectX::XMFLOAT3X4 transform;
+		float3x4 transform;
+		Util::FrameChecker frameChecker;
+
+		void Update(RE::NiNode* pNiNode, Model& model)
+		{
+			if (frameChecker.IsNewFrame()) {
+				XMStoreFloat3x4(&transform, GetXMFromNiTransform(pNiNode->world));
+
+				if ((model.GetFlags() & Flags::Dynamic) || (model.GetFlags() & Flags::Skinned)) {
+					for (auto& shape : model.shapes) {
+						Flags updateFlags = Flags::None;
+
+						// Updates Dynamic Vertex position (and Bitangent.x) buffer
+						// TODO: Test performance and stability of using a upload heap buffer and keeping it mapped to dynamicData
+						if ((shape.flags & Flags::Dynamic) && shape.geometry) {
+							auto* pDynamicTriShape = netimmerse_cast<RE::BSDynamicTriShape*>(shape.geometry);
+							const auto& dynTriShapeRuntime = pDynamicTriShape->GetDynamicTrishapeRuntimeData();
+
+							// We'll test if dynamic data has changed before updating and uploading
+							// It does mean we have to memcpy twice, but I suppose the GPU bandwith we save makes up for it
+							if (std::memcmp(shape.dynamicPosition.data(), dynTriShapeRuntime.dynamicData, dynTriShapeRuntime.dataSize) != 0) {
+								std::memcpy(shape.dynamicPosition.data(), dynTriShapeRuntime.dynamicData, dynTriShapeRuntime.dataSize);
+
+								shape.dynamicPositionBuffer->Update(dynTriShapeRuntime.dynamicData, dynTriShapeRuntime.dataSize);
+
+								// We'll barrier and upload ourselfs in batch
+								//shape.dynamicPositionBuffer->Upload(commandList);
+								updateFlags |= Flags::Dynamic;
+							}
+						}
+
+						// TODO: Handle skinned meshes
+						if ((shape.flags & Flags::Skinned) && shape.geometry) {
+							// Restore pre-skinning vertices
+							//shape.vertexBuffer->Upload(commandList);
+
+							updateFlags |= Flags::Skinned;
+						}
+
+						if (updateFlags & Flags::Dynamic || updateFlags & Flags::Skinned)
+							globals::features::raytracing.vertexUpdate.emplace_back(shape.registerIndex, updateFlags & Flags::Dynamic ? shape.dynamicPositionBuffer.get() : nullptr, shape.vertexBuffer.get(), shape.vertexCount, updateFlags);
+					}
+				}
+			}
+		}
 	};
 
-	eastl::unordered_map<RE::NiNode*, InstanceData> instances;
+	eastl::unordered_map<RE::NiNode*, Instance> instances;
 
-	void UpdateInstanceTransform(RE::NiNode* pFadeNode, InstanceData& instanceData);
-
-	// This seems wasteful
 	eastl::unique_ptr<DX12::StructuredBufferUpload<Material>> materialBuffer = nullptr;
 
 	// Instance buffer
-	struct Instance
+	struct InstanceData
 	{
 		uint MeshID;
 		LightData LightData;
 	};
 
-	eastl::vector<Instance> instanceData;
-	eastl::unique_ptr<DX12::StructuredBufferUpload<Instance>> instanceBuffer = nullptr;
+	eastl::vector<InstanceData> instanceBufferData;
+	eastl::unique_ptr<DX12::StructuredBufferUpload<InstanceData>> instanceBuffer = nullptr;
 
 	Util::FrameChecker shadowFrameChecker;
 
@@ -565,12 +486,9 @@ struct Raytracing : public Feature
 	// Textures we have actually placed in a heap as SRV
 	eastl::unordered_map<ID3D11Texture2D*, TextureReference> textures;
 
-	eastl::unique_ptr<DX12::StructuredAppendBuffer<IrradianceCache::Entry<IrradianceCache::SH1Data>>> irradianceCacheBuffer = nullptr;	
-
 	winrt::com_ptr<ID3D11SamplerState> samplerState = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> copyDepthCS = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> convertNormalGlossCS = nullptr;
-	//eastl::unique_ptr<ConstantBuffer> frameBufferDX11CB = nullptr;
 
 	eastl::unique_ptr<DX12::StructuredBufferUpload<D3D12_RAYTRACING_INSTANCE_DESC>> blasInstanceBuffer = nullptr;	
 	eastl::vector<D3D12_RAYTRACING_INSTANCE_DESC> blasInstances;
@@ -585,9 +503,6 @@ struct Raytracing : public Feature
 	// GI
 	eastl::unique_ptr<DX12::StructuredBufferUpload<GIFrameData>> frameBuffer = nullptr;
 	eastl::unique_ptr<GIFrameData> frameBufferData = nullptr;
-
-	// DDGI (NVIDIA Dynamic Diffuse Global Illumination)
-	eastl::unique_ptr<DX12::DDGIManager> ddgiManager = nullptr;
 
 	// Shadows
 	eastl::unique_ptr<DX12::StructuredBufferUpload<D3D12_RAYTRACING_INSTANCE_DESC>> blasShadowInstanceBuffer = nullptr;
@@ -607,30 +522,40 @@ struct Raytracing : public Feature
 	winrt::com_ptr<ID3D11Fence> d3d11Fence = nullptr;
 	winrt::com_ptr<ID3D12Fence> d3d12Fence = nullptr;
 
+	// Skinning
+	winrt::com_ptr<ID3D12RootSignature> skinningRS = nullptr;
+	winrt::com_ptr<ID3D12PipelineState> skinningPipeline = nullptr;
+	eastl::unique_ptr<DX12::DescriptorHeap<SkinningHeap>> skinningHeap = nullptr;
+
+	struct VertexUpdate
+	{
+		uint16_t registerIndex;
+		DX12::StructuredBufferUpload<float4>* dynamicPositionBuffer = nullptr;
+		DX12::StructuredBufferUpload<Vertex>* vertexBuffer = nullptr;
+		uint16_t vertexCount;
+		Flags flags;
+	};
+
+	eastl::vector<VertexUpdate> vertexUpdate;
+	eastl::unique_ptr<DX12::StructuredBufferUpload<VertexUpdateData>> vertexUpdateBuffer = nullptr;
+
 	// GI
 	winrt::com_ptr<ID3D12RootSignature> rootSignature = nullptr;
 	winrt::com_ptr<ID3D12StateObject> pipelineRT = nullptr;
-	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;
+	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;	
 	eastl::unique_ptr<DX12::ResourceUpload> shaderBindingTableBuffer = nullptr;
-	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap::Slot::Values, GIHeap::Table::Values>> giHeap = nullptr;
-
-	// DDGI Probe Tracing
-	winrt::com_ptr<ID3D12StateObject> ddgiProbePipeline = nullptr;
-	eastl::unique_ptr<DX12::ShaderBindingTable> ddgiProbeSBT = nullptr;
-	eastl::unique_ptr<DX12::ResourceUpload> ddgiProbeSBTBuffer = nullptr;
-	eastl::unique_ptr<DX12::StructuredBufferUpload<rtxgi::DDGIVolumeDescGPUPacked>> ddgiConstantsBuffer = nullptr;	
+	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap>> giHeap = nullptr;	
 
 	// Shadows
 	winrt::com_ptr<ID3D12RootSignature> shadowRS = nullptr;
 	winrt::com_ptr<ID3D12StateObject> shadowPipeline = nullptr;
 	eastl::unique_ptr<DX12::ResourceUpload> shadowSBTBuffer = nullptr;
-	eastl::unique_ptr<DX12::DescriptorHeap<ShadowsHeap::Slot, ShadowsHeap::Table>> shadowHeap = nullptr;
+	eastl::unique_ptr<DX12::DescriptorHeap<ShadowsHeap>> shadowHeap = nullptr;
 
 	uint64_t fenceValue = 0;
 
 	struct TempGPUData
 	{
-		//std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
 		winrt::com_ptr<ID3D12Resource> scratchBuffers;
 		uint64_t fenceValue;
 	};
@@ -695,124 +620,6 @@ struct Raytracing : public Feature
 
 	float2 jitter = { 0, 0 };
 #endif
-
-	static inline float3 Float3(const RE::NiPoint3& point3)
-	{
-		return float3(point3.x, point3.y, point3.z);
-	}
-
-	static inline bool IsShareableFormat(DXGI_FORMAT format)
-	{
-		switch (format) {
-		case DXGI_FORMAT_BC4_UNORM:
-			return false;
-			break;
-		case DXGI_FORMAT_BC4_SNORM:
-			return false;
-			break;
-		case DXGI_FORMAT_BC7_UNORM:
-			return false;
-			break;
-		case DXGI_FORMAT_BC7_UNORM_SRGB:
-			return false;
-			break;
-		default:
-			return true;
-			break;
-		}
-	}
-
-	static inline DXGI_FORMAT GetCompatibleFormat(DXGI_FORMAT format, bool recompress)
-	{
-		/*switch (format) {
-		case DXGI_FORMAT_BC4_UNORM:
-			return DXGI_FORMAT_R8_UNORM;
-			break;
-		case DXGI_FORMAT_BC4_SNORM:
-			return DXGI_FORMAT_R8_SNORM;
-			break;
-		case DXGI_FORMAT_BC7_UNORM:
-			return DXGI_FORMAT_R8G8B8A8_UNORM;
-			break;
-		case DXGI_FORMAT_BC7_UNORM_SRGB:
-			return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-			break;
-		default:
-			return format;
-			break;
-		}*/
-
-		switch (format) {
-		case DXGI_FORMAT_BC4_UNORM:
-			return recompress ? DXGI_FORMAT_BC1_UNORM : DXGI_FORMAT_R8_UNORM;
-			break;
-		case DXGI_FORMAT_BC7_UNORM:
-			return recompress ? DXGI_FORMAT_BC3_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
-			break;
-		case DXGI_FORMAT_BC7_UNORM_SRGB:
-			return recompress ? DXGI_FORMAT_BC3_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-			break;
-		default:
-			return format;
-			break;
-		}
-	}
-
-	template <typename T>
-	static inline std::string GetFlags(auto value)
-	{
-		using N = decltype(value);
-
-		const auto& entries = magic_enum::enum_entries<T>();
-
-		std::string flags;
-
-		for (const auto& [flag, name] : entries) {
-			if (static_cast<N>(value) & static_cast<N>(flag)) {
-				flags += fmt::format("{} ", name);
-			}
-		}
-
-		return flags;
-	};
-
-	static inline std::string ToLower(std::string s)
-	{
-		std::transform(s.begin(), s.end(), s.begin(),
-			[](unsigned char c) { return std::tolower(c); });
-		return s;
-	}
-
-	static inline bool ShareableTexture(const char* path)
-	{
-		if (!path)
-			return false;
-
-		auto pathLower = ToLower(path);
-
-		//if (pathLower.ends_with("_d.dds"))
-		//	return true;
-		
-		if (pathLower.ends_with("_n.dds"))
-			return false;
-
-		if (pathLower.ends_with("_p.dds"))
-			return false;
-
-		if (pathLower.ends_with("_s.dds"))
-			return false;
-
-		if (pathLower.ends_with("_sk.dds"))
-			return false;
-
-		if (pathLower.ends_with("_msn.dds"))
-			return false;
-
-		if (pathLower.ends_with("_rmaos.dds"))
-			return false;
-
-		return true;
-	}
 
 	template <class T>
 	void detour_thunk(size_t offset)
@@ -1015,15 +822,6 @@ struct Raytracing : public Feature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		struct BSTriShape_UpdateWorldData
-		{
-			static void thunk(RE::BSTriShape* This, RE::NiUpdateData* data)
-			{
-				globals::features::raytracing.BSTriShape_UpdateWorldData(This, data);
-			}
-			static inline REL::Relocation<decltype(thunk)> func;
-		};
-
 		struct BSTriShape_OnVisible
 		{
 			static void thunk(RE::BSTriShape* This, RE::NiCullingProcess& a_process)
@@ -1142,7 +940,7 @@ struct Raytracing : public Feature
 
 				if (auto& rt = globals::features::raytracing; rt.Active()) {
 					if (auto model = oThis->As<RE::TESModel>()) {
-						rt.CreateGeometry(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
+						rt.CreateModel(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
 					}
 				}
 
@@ -1160,7 +958,7 @@ struct Raytracing : public Feature
 
 				if (auto& rt = globals::features::raytracing; rt.Active()) {
 					if (auto model = oThis->GetBaseObject()->As<RE::TESModel>()) {
-						rt.CreateGeometry(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
+						rt.CreateModel(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
 					}
 				}
 
@@ -1181,7 +979,7 @@ struct Raytracing : public Feature
 					auto clss = typeid(T).name();
 
 					if (auto model = oThis->As<RE::TESModel>()) {
-						rt.CreateGeometry(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
+						rt.CreateModel(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
 						logger::warn("[RT] {}::Clone3DBase Valid TESModel for {} - {}", clss, result->name, model->GetModel());
 					} else {
 						logger::warn("[RT] {}::Clone3DBase Invalid TESModel for {}", clss, result ? result->name : "nullptr");
@@ -1207,7 +1005,7 @@ struct Raytracing : public Feature
 					auto baseObject = oThis->GetBaseObject();
 
 					if (auto model = baseObject->As<RE::TESModel>()) {
-						rt.CreateGeometry(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
+						rt.CreateModel(model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
 						logger::warn("[RT] {}::Clone3D Valid TESModel for {} - {}", clss, result->name, model->GetModel());
 					} else {
 						logger::warn("[RT] {}::Clone3D Invalid TESModel for {}", clss, result ? result->name : "nullptr");
@@ -1258,12 +1056,6 @@ struct Raytracing : public Feature
 			//stl::write_vfunc<0x6, BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 
 			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
-
-			if (REL::Module::IsAE()) {
-				stl::write_vfunc<0x31, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
-			} else {
-				stl::write_vfunc<0x30, BSTriShape_UpdateWorldData>(RE::VTABLE_BSTriShape[0]);
-			}
 
 			if (REL::Module::IsAE()) {
 				stl::write_vfunc<0x35, BSTriShape_OnVisible>(RE::VTABLE_BSTriShape[0]);
