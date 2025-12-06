@@ -58,24 +58,13 @@ void main()
 
     // GI computation - select method based on compile-time define
     #if defined(DDGI_ENABLED)
-        // DDGI: Use probe-based diffuse + ray-traced specular hybrid
-        #if defined(LAMBERT)
-            OutputTexture[idx] = float4(DDGILambertianIndirect(positionWS, normalWS, viewWS, albedo), 0.0f);
-        #else
-            float4 result = DDGIGGXIndirect(positionWS, geometryNormalWS, normalWS, viewWS, albedo, specular, roughness, metalness, 0, seed);
+        // DDGI: Sample probe diffuse and ADD to existing scene (which has direct + point lights)
+        float3 ddgiDiffuse = DDGILambertianIndirect(positionWS, normalWS, viewWS, albedo);
+        OutputTexture[idx] = MainTexture[idx] + float4(ddgiDiffuse, 0.0f);
 
-            OutputTexture[idx] = MainTexture[idx] + float4(result.rgb, 0.0f);
-
-            float2 alpha = float2(roughness * roughness, roughness * roughness);
-
-            float3 Ht = GGXSample(seed, alpha);
-            float3 H = TangentToWorld(normalWS, Ht);
-            float VdotH = max(dot(viewWS, H), EPSILON_DOT_CLAMP);
-
-            ReflectanceTexture[idx] = float4(saturate(F_Schlick(specular, VdotH)), 0.0f);
-
-            SpecularHitDist[idx] = result.a;
-        #endif
+        // No specular from DDGI - just diffuse probe lighting
+        ReflectanceTexture[idx] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        SpecularHitDist[idx] = 0.0f;
     #else
         // Path tracing: Traditional ray-traced GI
         #if defined(LAMBERT)

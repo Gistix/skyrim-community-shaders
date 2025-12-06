@@ -398,10 +398,6 @@ void Deferred::DeferredPasses()
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
 	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
 
-	auto& rt = globals::features::raytracing;
-	if (rt.Active() && rt.settings.GlobalIllumination)
-		rt.DrawRTGI();
-
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 
 	auto& sss = globals::features::subsurfaceScattering;
@@ -466,6 +462,11 @@ void Deferred::DeferredPasses()
 
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
+
+	// Ray-traced GI runs AFTER Deferred Composite so MainTexture contains point lights
+	auto& rt = globals::features::raytracing;
+	if (rt.Active() && (rt.settings.GlobalIllumination || rt.settings.DDGI))
+		rt.DrawRTGI();
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();

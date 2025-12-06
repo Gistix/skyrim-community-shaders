@@ -95,7 +95,7 @@ float3 DDGILambertianIndirect(float3 position, float3 normal, float3 view, float
 
     // Apply albedo and diffuse scale
     // Note: DDGI irradiance is pre-multiplied by PI, so we don't divide here
-    return irradiance * albedo * Frame.Diffuse;
+    return irradiance * albedo * Frame.Diffuse * Frame.DDGIIntensity;
 }
 
 /**

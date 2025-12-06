@@ -24,69 +24,66 @@
 // DDGI SDK includes
 #include "Common.hlsl"
 #include "include/Common.hlsl"
-#include "include/ProbeIndexing.hlsl"
-#include "include/ProbeRayCommon.hlsl"
+#include "include/ProbeCommon.hlsl"  // Includes ProbeIndexing, ProbeRayCommon, ProbeOctahedral, ProbeDataCommon
 
 // DDGI-specific resources
-ConstantBuffer<DDGIVolumeDescGPUPacked> DDGIVolume : register(b2);
+// Must match root signature: b1, space4 for DDGI Volume constants
+ConstantBuffer<DDGIVolumeDescGPUPacked> DDGIVolume : register(b1, space4);
 
 // Output: Probe ray data (radiance RGB, hit distance A)
-// This is a Texture2DArray where:
-// - X = ray index (0 to raysPerProbe-1)
-// - Y = probe index within a slice (0 to probesPerPlane-1)
-// - Z = slice index (Y-planes in Y-up coordinate system)
 RWTexture2DArray<float4> ProbeRayData : register(u3);
 
-// Get a ray direction for a probe ray using spherical Fibonacci
-float3 GetProbeRayDirection(int rayIndex, int numRays, float4 rayRotation)
-{
-    // Use RTXGI's spherical fibonacci for uniform sphere distribution
-    float3 direction = RTXGISphericalFibonacci((float)rayIndex, (float)numRays);
-
-    // Apply rotation for temporal variation
-    direction = RTXGIQuaternionRotate(direction, rayRotation);
-
-    return normalize(direction);
-}
+// Probe Data texture for relocation offsets (same binding as DDGISampling.hlsli)
+Texture2DArray<float4> ProbeData : register(t2, space4);
 
 [shader("raygeneration")]
 void main()
 {
-    // Dispatch dimensions match RayData texture layout:
-    // X = rayIndex (0 to raysPerProbe-1)
-    // Y = probeIndexInSlice (0 to probesPerPlane-1)
-    // Z = sliceIndex (0 to numSlices-1)
-    uint rayIndex = DispatchRaysIndex().x;
-    uint probeIndexInSlice = DispatchRaysIndex().y;
-    uint sliceIndex = DispatchRaysIndex().z;
+    // Dispatch dimensions match RayData texture layout
+    int rayIndex = DispatchRaysIndex().x;
+    int probePlaneIndex = DispatchRaysIndex().y;
+    int planeIndex = DispatchRaysIndex().z;
 
     // Unpack volume descriptor
     DDGIVolumeDescGPU volume = UnpackDDGIVolumeDescGPU(DDGIVolume);
 
-    // Calculate linear probe index from slice coordinates
+    // Calculate linear probe index
     int probesPerPlane = DDGIGetProbesPerPlane(volume.probeCounts);
-    uint probeIndex = sliceIndex * probesPerPlane + probeIndexInSlice;
+    int probeIndex = (planeIndex * probesPerPlane) + probePlaneIndex;
 
     // Get probe grid coordinates from linear index
     int3 probeCoords = DDGIGetProbeCoords(probeIndex, volume);
 
-    // Get probe world position (without relocation offset for ray origin)
-    float3 probeOrigin = DDGIGetProbeWorldPosition(probeCoords, volume);
+    // Adjust probe index for scrolling (if enabled)
+    probeIndex = DDGIGetScrollingProbeIndex(probeCoords, volume);
 
-    // Get ray direction using spherical Fibonacci distribution
-    float3 rayDirection = GetProbeRayDirection(rayIndex, volume.probeNumRays, volume.probeRayRotation);
+    // Early out: skip tracing for inactive probes (except for fixed rays needed for classification)
+    // This optimization avoids wasting GPU time on probes inside geometry or far from surfaces
+    float probeState = DDGILoadProbeState(probeIndex, ProbeData, volume);
+    if (probeState == RTXGI_DDGI_PROBE_STATE_INACTIVE && rayIndex >= RTXGI_DDGI_NUM_FIXED_RAYS)
+        return;
+
+    // Get output coordinates using SDK function
+    uint3 outputCoords = DDGIGetRayDataTexelCoords(rayIndex, probeIndex, volume);
+
+    // Get probe world position (with relocation offsets if enabled)
+    float3 probeWorldPosition = DDGIGetProbeWorldPosition(probeCoords, volume, ProbeData);
+
+    // Get ray direction using SDK function (handles fixed rays correctly)
+    float3 probeRayDirection = DDGIGetProbeRayDirection(rayIndex, volume);
 
     // Initialize ray
     RayDesc ray;
-    ray.Origin = probeOrigin;
-    ray.Direction = rayDirection;
-    ray.TMin = 0.0f;
+    ray.Origin = probeWorldPosition;
+    ray.Direction = probeRayDirection;
+    ray.TMin = 0.01f;  // Prevent self-intersection at probe position
     ray.TMax = volume.probeMaxRayDistance;
 
     // Trace the ray
     IndirectPayload payload;
     payload.color = float4(0, 0, 0, -1.0f);  // RGB = radiance, A = hit distance (-1 = miss)
     payload.data = PayloadData::Create(false, 0, InitRandomSeed(uint2(rayIndex, probeIndex), DispatchRaysDimensions().xy, Frame.FrameCount));
+    payload.hitKind = HIT_KIND_TRIANGLE_FRONT_FACE;  // Default, will be set by ClosestHit shader
 
     TraceRay(
         Scene,
@@ -99,22 +96,41 @@ void main()
         payload
     );
 
-    // Prepare output
-    float3 radiance = payload.color.rgb;
     float hitDistance = payload.color.a;
 
-    // If we hit the sky, use sky color but mark as max distance
+    // Ray missed - store sky radiance with large hit distance
     if (hitDistance < 0.0f)
     {
-        // Sample sky hemisphere for sky color
-        float2 skyUV = DirectionToHemisphereUV(rayDirection);
-        radiance = SkyHemisphere.SampleLevel(BaseSampler, skyUV, 0).rgb;
-        hitDistance = volume.probeMaxRayDistance;
+        // Convert ray direction to hemisphere UV for sky sampling
+        float3 dir = normalize(probeRayDirection);
+        float2 skyUV = float2(
+            atan2(dir.x, dir.z) / (2.0f * Math::PI) + 0.5f,
+            acos(saturate(dir.y)) / Math::PI
+        );
+        float3 skyRadiance = SkyHemisphere.SampleLevel(BaseSampler, skyUV, 0).rgb;
+
+        // Use SDK function to store ray miss (uses 1e27f for hit distance)
+        DDGIStoreProbeRayMiss(ProbeRayData, outputCoords, volume, skyRadiance);
+        return;
     }
 
-    // Store probe ray data directly using dispatch indices
-    // RayData texture layout: [rayIndex, probeIndexInSlice, sliceIndex]
-    // This matches DispatchRaysIndex() directly since we dispatch with matching dimensions
-    uint3 outputCoord = uint3(rayIndex, probeIndexInSlice, sliceIndex);
-    ProbeRayData[outputCoord] = float4(radiance, hitDistance);
+    // Backface hit detection - probe is inside geometry
+    // This is critical for probe relocation and classification to work correctly
+    if (payload.hitKind == HIT_KIND_TRIANGLE_BACK_FACE)
+    {
+        // Store with negative hit distance (SDK uses -hitT * 0.2f to reduce influence)
+        DDGIStoreProbeRayBackfaceHit(ProbeRayData, outputCoords, volume, hitDistance);
+        return;
+    }
+
+    // Fixed rays (first 32) - only store hit distance for relocation/classification
+    if ((volume.probeRelocationEnabled || volume.probeClassificationEnabled) && rayIndex < RTXGI_DDGI_NUM_FIXED_RAYS)
+    {
+        DDGIStoreProbeRayFrontfaceHit(ProbeRayData, outputCoords, volume, hitDistance);
+        return;
+    }
+
+    // Store frontface hit with radiance using SDK function
+    float3 radiance = payload.color.rgb;
+    DDGIStoreProbeRayFrontfaceHit(ProbeRayData, outputCoords, volume, saturate(radiance), hitDistance);
 }

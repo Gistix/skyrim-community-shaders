@@ -20,7 +20,10 @@ void main(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttribute
 
 void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
-    float3 worldPosition = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();  
+    // Capture hit kind early for DDGI backface detection
+    payload.hitKind = HitKind();
+
+    float3 worldPosition = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
 
     Instance instance = GetInstance();
     uint meshID = GetMeshID();
@@ -52,10 +55,7 @@ void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttrib
     
     float3 base = baseTexture.SampleLevel(BaseSampler, texCoord, 0).rgb;
     float3 effect = effectTexture.SampleLevel(BaseSampler, texCoord, 0).rgb;
-    
-    payload.color += float4(base, 1.0f);
-    return;   
-    
+
     // Lighting Shader
     float3 lightingAlbedo = Color::GammaToLinear(base) * vertexColor.rgb;
     float3 lightingEmissive = Color::GammaToLinear(effect) * material.EffectColor.rgb * material.EffectColor.a;
@@ -90,22 +90,23 @@ void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttrib
     payload.color += float4(GGXDirectD(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, Frame.Directional), 0.0f);
     
     #if defined(LAMBERT)
-    payload.color += LambertianDirect(worldPosition, worldNormal, albedo, instance.LightData, randomSeed);
+    payload.color += float4(LambertianDirect(worldPosition, worldNormal, albedo, instance.LightData, randomSeed), 0.0f);
     #else
     payload.color += float4(GGXDirectP(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, instance.LightData, randomSeed), 0.0f);
     #endif
-    
+
     uint currentDepth = payload.data.GetDepth();
-    
+
     if (currentDepth < MAX_DEPTH)
     {
         #if defined(LAMBERT)
-        payload.color += LambertianIndirect(worldPosition, worldNormal, albedo, currentDepth, randomSeed);
+        payload.color += float4(LambertianIndirect(worldPosition, worldNormal, albedo, currentDepth, randomSeed), 0.0f);
         #else
         float4 indirect = GGXIndirect(worldPosition, worldNormal, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, metalness, currentDepth, randomSeed);
-        indirect.a = RayTCurrent();// * (1.0f - saturate(abs(currentDepth - 1.0f))); // 0,1,2,... to -1,0,1,... to 1,0,1 to 0, 1, 0
-        
         payload.color += indirect;
-        #endif        
-    }    
+        #endif
+    }
+
+    // Always store hit distance in alpha for DDGI probe tracing
+    payload.color.a = RayTCurrent();
 }

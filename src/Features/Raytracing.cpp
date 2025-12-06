@@ -17,6 +17,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Raytracing::Settings,
 	Enabled,
 	GlobalIllumination,
+	DDGI,
 	Denoiser,
 	Bounces,
 	SamplesPerPixel,
@@ -42,6 +43,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Raytracing::Settings,
 	Enabled,
 	GlobalIllumination,
+	DDGI,
 	Denoiser,
 	Bounces,
 	SamplesPerPixel,
@@ -97,7 +99,171 @@ void Raytracing::DrawSettings()
 		ImGui::Text("Enable Ray-Traced Global Illumination.");
 	}
 
-	ImGui::Checkbox("Global Illumination", &settings.GlobalIllumination);
+	ImGui::Checkbox("Path-Traced GI", &settings.GlobalIllumination);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("Path-traced global illumination (indirect lighting + reflections).");
+	}
+
+	ImGui::Checkbox("DDGI", &settings.DDGI);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("Probe-based diffuse global illumination (NVIDIA RTXGI-DDGI).");
+		ImGui::Text("Alternative to path tracing - faster but diffuse only.");
+	}
+
+	// ════════════════════════════════════════════════════════════════════════
+	// PATH TRACING SETTINGS
+	// ════════════════════════════════════════════════════════════════════════
+	if (ImGui::CollapsingHeader("Path Tracing Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Indent();
+
+		if (ImGui::SliderInt("Bounces", &settings.Bounces, 1, 32))
+			settings.Bounces = std::clamp(settings.Bounces, 1, 32);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("Number of light bounces for indirect lighting.");
+		}
+
+		if (ImGui::SliderInt("Samples Per Pixel", &settings.SamplesPerPixel, 1, 32))
+			settings.SamplesPerPixel = std::clamp(settings.SamplesPerPixel, 1, 32);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("Rays per pixel. Higher = less noise, lower performance.");
+		}
+
+		ImGui::Unindent();
+	}
+
+	// ════════════════════════════════════════════════════════════════════════
+	// DDGI SETTINGS
+	// ════════════════════════════════════════════════════════════════════════
+	if (ddgiManager && ddgiManager->IsInitialized()) {
+		auto& ddgiSettings = ddgiManager->GetSettings();
+
+		if (ImGui::CollapsingHeader("DDGI Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent();
+
+			// Intensity control at top level for easy access
+			ImGui::SliderFloat("DDGI Intensity", &ddgiSettings.intensity, 0.0f, 2.0f);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("DDGI contribution scale.");
+				ImGui::Text("0.0 = disabled, 1.0 = full strength, 2.0 = double.");
+			}
+
+			// Probe Grid
+			if (ImGui::TreeNodeEx("Probe Grid", ImGuiTreeNodeFlags_DefaultOpen)) {
+				ImGui::SliderInt3("Probe Counts", ddgiSettings.probeCounts, 4, 64);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Number of probes in X, Y, Z directions.");
+					ImGui::Text("Total probes: %d",
+						ddgiSettings.probeCounts[0] * ddgiSettings.probeCounts[1] * ddgiSettings.probeCounts[2]);
+				}
+
+				ImGui::SliderFloat3("Probe Spacing", ddgiSettings.probeSpacing, 10.0f, 500.0f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Spacing between probes in game units.");
+				}
+				ImGui::TreePop();
+			}
+
+			// Ray Tracing
+			if (ImGui::TreeNodeEx("Ray Tracing")) {
+				if (ImGui::SliderInt("Rays Per Probe", &ddgiSettings.raysPerProbe, 64, 512))
+					ddgiSettings.raysPerProbe = std::clamp(ddgiSettings.raysPerProbe, 64, 512);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Number of rays traced from each probe per frame.");
+					ImGui::Text("Higher = better quality, lower performance.");
+				}
+
+				ImGui::SliderFloat("Max Ray Distance", &ddgiSettings.maxRayDistance, 1000.0f, 50000.0f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Maximum ray travel distance in game units.");
+				}
+				ImGui::TreePop();
+			}
+
+			// Quality
+			if (ImGui::TreeNodeEx("Quality")) {
+				ImGui::SliderFloat("Hysteresis", &ddgiSettings.hysteresis, 0.8f, 0.99f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Temporal stability (0.97 recommended).");
+					ImGui::Text("Higher = more stable, slower to update.");
+				}
+
+				ImGui::SliderFloat("View Bias", &ddgiSettings.viewBias, 1.0f, 50.0f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Offset along view direction to prevent light leaking.");
+					ImGui::Text("Higher values = less leaking but may cause darkening near walls.");
+					ImGui::Text("20 = ~7%% of probe spacing (recommended).");
+				}
+
+				ImGui::SliderFloat("Normal Bias", &ddgiSettings.normalBias, 1.0f, 30.0f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Offset along surface normal to prevent light leaking.");
+					ImGui::Text("10 = ~4%% of probe spacing (recommended).");
+				}
+				ImGui::TreePop();
+			}
+
+			// Features
+			if (ImGui::TreeNodeEx("Features")) {
+				ImGui::Checkbox("Probe Relocation", &ddgiSettings.probeRelocationEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Automatically move probes away from geometry.");
+				}
+
+				ImGui::Checkbox("Probe Classification", &ddgiSettings.probeClassificationEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Mark inactive probes to skip processing.");
+				}
+
+				ImGui::Checkbox("Scrolling Volume", &ddgiSettings.scrollingEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Volume follows camera position.");
+				}
+
+				if (ddgiSettings.scrollingEnabled) {
+					ImGui::SliderFloat("Scroll Forward Bias", &ddgiSettings.scrollForwardBias, 0.0f, 500.0f);
+					if (auto _tt = Util::HoverTooltipWrapper()) {
+						ImGui::Text("Forward bias when scrolling in game units.");
+					}
+				}
+				ImGui::TreePop();
+			}
+
+			// Debug
+			if (ImGui::TreeNodeEx("Debug")) {
+				ImGui::Checkbox("Show Probes", &ddgiSettings.showProbes);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Visualize probe positions.");
+					ImGui::Text("Green outline = active probe");
+					ImGui::Text("Red = inactive probe (inside geometry)");
+				}
+
+				ImGui::SliderFloat("Backface Threshold", &ddgiSettings.probeFixedRayBackfaceThreshold, 0.1f, 0.9f);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Fraction of rays hitting backfaces to mark probe inactive.");
+					ImGui::Text("Lower = more aggressive (more red probes in walls)");
+					ImGui::Text("Higher = more lenient (fewer false positives)");
+					ImGui::Text("Default: 0.25 (25%% of 32 rays = 8+ backface hits)");
+					ImGui::Text("Click 'Reinitialize DDGI' to apply changes.");
+				}
+
+				if (ImGui::Button("Reinitialize DDGI")) {
+					ddgiManager->Reinitialize();
+				}
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Reset DDGI volume and clear all probe data.");
+					ImGui::Text("Use after changing grid settings.");
+				}
+
+				ImGui::TreePop();
+			}
+
+			ImGui::Unindent();
+		}
+	}
+
+	// ════════════════════════════════════════════════════════════════════════
+	// COMMON SETTINGS
+	// ════════════════════════════════════════════════════════════════════════
 
 	// Denoiser
 	{
@@ -114,15 +280,6 @@ void Raytracing::DrawSettings()
 
 		settings.Denoiser = static_cast<Denoiser>(denoiser);
 	}
-
-	if (ImGui::SliderInt("Bounces", &settings.Bounces, 1, 32))
-		settings.Bounces = std::clamp(settings.Bounces, 1, 32);
-
-	if (ImGui::SliderInt("Samples Per Pixel", &settings.SamplesPerPixel, 1, 32))
-		settings.SamplesPerPixel = std::clamp(settings.SamplesPerPixel, 1, 32);
-
-	/*if (ImGui::SliderInt("Bounces", &settings.Bounces, 1, 32))
-		settings.Bounces = std::clamp(settings.Bounces, 1, 32);*/
 
 	DrawFloat2("Roughness", settings.Roughness);
 	DrawFloat2("Metalness", settings.Metalness);
@@ -372,11 +529,15 @@ void Raytracing::SetupResources()
 			mainTexture = eastl::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
 			DX::ThrowIfFailed(mainTexture->resource->SetName(L"Main Texture"));
 
-			D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-			uavDesc.Format = texDesc.Format;
+			// Main texture is used as SRV (t0) in shaders - it's read from, not written to
+			// OutputTexture (u0) is where results are written, then copied to Main
+			D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+			srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Format = texDesc.Format;
+			srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srvDesc.Texture2D.MipLevels = 1;
 
-			d3d12Device->CreateUnorderedAccessView(mainTexture->resource.get(), nullptr, &uavDesc, giHeap->CPUHandle(GIHeap::Slot::Main));
+			d3d12Device->CreateShaderResourceView(mainTexture->resource.get(), &srvDesc, giHeap->CPUHandle(GIHeap::Slot::Main));
 		}
 
 		// Motion vector
@@ -2004,6 +2165,7 @@ void Raytracing::DrawRTGI()
 		frameBufferData->Emissive = settings.Emissive;
 		frameBufferData->Effect = settings.Effect;
 		frameBufferData->Sky = settings.Sky;
+		frameBufferData->DDGIIntensity = ddgiManager ? ddgiManager->GetSettings().intensity : 0.5f;
 
 #ifdef SHARC
 		frameBufferData->SHARCScale = settings.SHARCScale / Util::Units::GAME_UNIT_TO_M;
@@ -2017,13 +2179,151 @@ void Raytracing::DrawRTGI()
 	BuildTLAS();
 	RebuildTLAS(commandList.get(), blasInstances.size(), blasInstanceBuffer->resource->GetGPUVirtualAddress());
 
+	// MainTexture is a shared D3D11/D3D12 resource. After D3D11 usage and sync, it's in COMMON state.
+	// Explicitly transition to NON_PIXEL_SHADER_RESOURCE for use as SRV (t0) in raytracing shaders.
 	{
-		// Raytracing
-		{
+		CD3DX12_RESOURCE_BARRIER mainToSRV = CD3DX12_RESOURCE_BARRIER::Transition(
+			mainTexture->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		commandList->ResourceBarrier(1, &mainToSRV);
+	}
+
+	{
+		auto commonHeapPtr = giHeap->Heap();
+
+		// DDGI Mode: Probe-based diffuse GI
+		if (settings.DDGI && ddgiManager && ddgiManager->IsInitialized()) {
+			// Update DDGI volume position based on camera
+			DirectX::XMFLOAT3 cameraPos = { frameBufferData->Position.x, frameBufferData->Position.y, frameBufferData->Position.z };
+			auto viewInv = globals::game::frameBufferCached.GetCameraViewInverse();
+			DirectX::XMFLOAT3 cameraFwd = { -viewInv(2, 0), -viewInv(2, 1), -viewInv(2, 2) };
+			ddgiManager->Update(cameraPos, cameraFwd);
+
+			// Upload DDGI constants (needed by both probe tracing and screen sampling)
+			auto ddgiConstants = ddgiManager->GetVolumeConstants();
+			ddgiConstantsBuffer->Update(&ddgiConstants, sizeof(ddgiConstants));
+			ddgiConstantsBuffer->Upload(commandList.get());
+			ddgiConstantsBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+
+			// Ensure probe textures are in SRV state for safe descriptor table binding
+			ddgiManager->BeginFrame(commandList.get());
+
+			// ════════════════════════════════════════════════════════════════
+			// PHASE 1: Probe Ray Tracing
+			// ════════════════════════════════════════════════════════════════
+
+			ddgiManager->BeginProbeTracing(commandList.get());
+
+			{
+				commandList->SetPipelineState1(ddgiProbePipeline.get());
+				commandList->SetComputeRootSignature(rootSignature.get());
+				commandList->SetDescriptorHeaps(1, &commonHeapPtr);
+
+				commandList->SetComputeRootDescriptorTable(0, giHeap->TableGPUHandle(GIHeap::Table::UAV));
+				commandList->SetComputeRootDescriptorTable(1, giHeap->TableGPUHandle(GIHeap::Table::SRV));
+				commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::VertexBuffer));
+				commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
+				commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
+				commandList->SetComputeRootDescriptorTable(5, giHeap->TableGPUHandle(GIHeap::Table::DDGI));
+				commandList->SetComputeRootConstantBufferView(6, frameBuffer->resource->GetGPUVirtualAddress());
+				commandList->SetComputeRootConstantBufferView(7, ddgiConstantsBuffer->resource->GetGPUVirtualAddress());
+
+				// Dispatch probe rays
+				uint32_t dispatchWidth, dispatchHeight, dispatchDepth;
+				ddgiManager->GetRayDispatchDimensions(dispatchWidth, dispatchHeight, dispatchDepth);
+
+				logger::debug("[DDGI] Dispatch dimensions: {}x{}x{}", dispatchWidth, dispatchHeight, dispatchDepth);
+
+				D3D12_DISPATCH_RAYS_DESC probeDispatchDesc{};
+				probeDispatchDesc.Width = dispatchWidth;
+				probeDispatchDesc.Height = dispatchHeight;
+				probeDispatchDesc.Depth = dispatchDepth;
+
+				auto sbtBaseAddr = ddgiProbeSBTBuffer->resource->GetGPUVirtualAddress();
+				ddgiProbeSBT->FillDispatchShaderBindingTable(probeDispatchDesc, sbtBaseAddr);
+				ddgiProbeSBT->LogShaderBindingTable(sbtBaseAddr);
+
+				logger::debug("[DDGI] About to DispatchRays for probe tracing");
+				commandList->DispatchRays(&probeDispatchDesc);
+				logger::debug("[DDGI] DispatchRays completed (if you see this, dispatch didn't hang)");
+			}
+
+			// ════════════════════════════════════════════════════════════════
+			// PHASE 2: Probe Blending
+			// ════════════════════════════════════════════════════════════════
+
+			ddgiManager->BeginProbeBlending(commandList.get());
+			ddgiManager->UpdateProbes(commandList.get());
+
+			// ════════════════════════════════════════════════════════════════
+			// PHASE 3: Screen-Space Sampling
+			// ════════════════════════════════════════════════════════════════
+
+			ddgiManager->BeginScreenSampling(commandList.get());
+
+			{
+				commandList->SetPipelineState1(ddgiScreenPipeline.get());
+				commandList->SetComputeRootSignature(rootSignature.get());
+				commandList->SetDescriptorHeaps(1, &commonHeapPtr);
+
+				commandList->SetComputeRootDescriptorTable(0, giHeap->TableGPUHandle(GIHeap::Table::UAV));
+				commandList->SetComputeRootDescriptorTable(1, giHeap->TableGPUHandle(GIHeap::Table::SRV));
+				commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::VertexBuffer));
+				commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
+				commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
+				commandList->SetComputeRootDescriptorTable(5, giHeap->TableGPUHandle(GIHeap::Table::DDGI));
+				commandList->SetComputeRootConstantBufferView(6, frameBuffer->resource->GetGPUVirtualAddress());
+				commandList->SetComputeRootConstantBufferView(7, ddgiConstantsBuffer->resource->GetGPUVirtualAddress());
+
+				auto finalTexDesc = mainTexture->resource->GetDesc();
+
+				D3D12_DISPATCH_RAYS_DESC screenDispatchDesc{};
+				screenDispatchDesc.Width = static_cast<uint>(finalTexDesc.Width);
+				screenDispatchDesc.Height = finalTexDesc.Height;
+				screenDispatchDesc.Depth = 1;
+
+				ddgiScreenSBT->FillDispatchShaderBindingTable(screenDispatchDesc, ddgiScreenSBTBuffer->resource->GetGPUVirtualAddress());
+				commandList->DispatchRays(&screenDispatchDesc);
+			}
+
+			// Dispatch probe visualization if enabled
+			if (ddgiManager->GetSettings().showProbes && ddgiVisPipeline) {
+				// UAV barrier on output texture before visualization writes
+				CD3DX12_RESOURCE_BARRIER visBarrier = CD3DX12_RESOURCE_BARRIER::UAV(outputTexture->resource.get());
+				commandList->ResourceBarrier(1, &visBarrier);
+
+				commandList->SetPipelineState(ddgiVisPipeline.get());
+				commandList->SetComputeRootSignature(rootSignature.get());
+				commandList->SetDescriptorHeaps(1, &commonHeapPtr);
+
+				// Same bindings as screen sampling
+				commandList->SetComputeRootDescriptorTable(0, giHeap->TableGPUHandle(GIHeap::Table::UAV));
+				commandList->SetComputeRootDescriptorTable(1, giHeap->TableGPUHandle(GIHeap::Table::SRV));
+				commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::VertexBuffer));
+				commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
+				commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
+				commandList->SetComputeRootDescriptorTable(5, giHeap->TableGPUHandle(GIHeap::Table::DDGI));
+				commandList->SetComputeRootConstantBufferView(6, frameBuffer->resource->GetGPUVirtualAddress());
+				commandList->SetComputeRootConstantBufferView(7, ddgiConstantsBuffer->resource->GetGPUVirtualAddress());
+
+				auto finalTexDesc = mainTexture->resource->GetDesc();
+				uint32_t dispatchX = (static_cast<uint32_t>(finalTexDesc.Width) + 7) / 8;
+				uint32_t dispatchY = (finalTexDesc.Height + 7) / 8;
+				commandList->Dispatch(dispatchX, dispatchY, 1);
+			}
+
+			ddgiManager->EndFrame(commandList.get());
+
+			CD3DX12_RESOURCE_BARRIER rtUAVBarrier[3] = {
+				CD3DX12_RESOURCE_BARRIER::UAV(outputTexture->resource.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(reflectanceTexture->resource.get()),
+				CD3DX12_RESOURCE_BARRIER::UAV(specularHitDistanceTexture->resource.get())
+			};
+			commandList->ResourceBarrier(_countof(rtUAVBarrier), rtUAVBarrier);
+		}
+		// Path Tracing Mode: Traditional per-pixel ray tracing
+		else if (settings.GlobalIllumination) {
 			commandList->SetPipelineState1(pipelineRT.get());
 			commandList->SetComputeRootSignature(rootSignature.get());
-
-			auto commonHeapPtr = giHeap->Heap();
 			commandList->SetDescriptorHeaps(1, &commonHeapPtr);
 
 			// Parameter 0: UAV table
@@ -2041,11 +2341,22 @@ void Raytracing::DrawRTGI()
 			// Parameter 4: Textures
 			commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
 
-			// Parameter 5: Constant buffer
-			commandList->SetComputeRootConstantBufferView(5, frameBuffer->resource->GetGPUVirtualAddress());
+			// Parameter 5: DDGI table - must be bound even if not used
+			commandList->SetComputeRootDescriptorTable(5, giHeap->TableGPUHandle(GIHeap::Table::DDGI));
+
+			// Parameter 6: Frame Constant buffer
+			commandList->SetComputeRootConstantBufferView(6, frameBuffer->resource->GetGPUVirtualAddress());
+
+			// Parameter 7: DDGI constants - must be bound even if not used
+			if (ddgiConstantsBuffer) {
+				commandList->SetComputeRootConstantBufferView(7, ddgiConstantsBuffer->resource->GetGPUVirtualAddress());
+			} else {
+				// Use frame buffer as dummy CBV - same structure size won't be read
+				commandList->SetComputeRootConstantBufferView(7, frameBuffer->resource->GetGPUVirtualAddress());
+			}
 
 			auto finalTexDesc = mainTexture->resource->GetDesc();
-			
+
 			D3D12_DISPATCH_RAYS_DESC dispatchDesc{};
 			dispatchDesc.Width = static_cast<uint>(finalTexDesc.Width);
 			dispatchDesc.Height = finalTexDesc.Height;
@@ -2106,11 +2417,42 @@ void Raytracing::DrawRTGI()
 				}
 			} else {
 				outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_COPY_SOURCE);
+				// MainTexture was used as SRV (t0) during ray tracing, so it's in NON_PIXEL_SHADER_RESOURCE
+				// Transition to COPY_DEST for receiving output
+				CD3DX12_RESOURCE_BARRIER mainToCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+					mainTexture->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+				commandList->ResourceBarrier(1, &mainToCopyDest);
 				commandList->CopyResource(mainTexture->resource.get(), outputTexture->resource.get());
-				outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);		
+				// Transition back to COMMON for D3D11 to read later
+				CD3DX12_RESOURCE_BARRIER mainToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+					mainTexture->resource.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+				commandList->ResourceBarrier(1, &mainToCommon);
+				outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			}
+#else
+			// Fallback when DLSS_RR is not defined - copy output to main texture
+			outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_COPY_SOURCE);
+			// MainTexture was used as SRV (t0) during ray tracing, so it's in NON_PIXEL_SHADER_RESOURCE
+			{
+				CD3DX12_RESOURCE_BARRIER mainToCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+					mainTexture->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+				commandList->ResourceBarrier(1, &mainToCopyDest);
+			}
+			commandList->CopyResource(mainTexture->resource.get(), outputTexture->resource.get());
+			// Transition back to COMMON for D3D11 to read later
+			{
+				CD3DX12_RESOURCE_BARRIER mainToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+					mainTexture->resource.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+				commandList->ResourceBarrier(1, &mainToCommon);
+			}
+			outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 #endif
 		} else {
+			// Debug outputs - MainTexture was used as SRV during ray tracing
+			CD3DX12_RESOURCE_BARRIER mainToCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+				mainTexture->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+			commandList->ResourceBarrier(1, &mainToCopyDest);
+
 			if (settings.DebugOutput == DebugOutput::Output) {
 				outputTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_COPY_SOURCE);
 				commandList->CopyResource(mainTexture->resource.get(), outputTexture->resource.get());
@@ -2126,6 +2468,10 @@ void Raytracing::DrawRTGI()
 				specularHitDistanceTexture->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 			}
 
+			// Transition MainTexture back to COMMON for D3D11
+			CD3DX12_RESOURCE_BARRIER mainToCommon = CD3DX12_RESOURCE_BARRIER::Transition(
+				mainTexture->resource.get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+			commandList->ResourceBarrier(1, &mainToCommon);
 		}
 
 		DX::ThrowIfFailed(commandList->Close());
@@ -2536,14 +2882,17 @@ void Raytracing::InitD3D12(ID3D11Device* ppDevice, ID3D11DeviceContext* pImmedia
 
 void Raytracing::CreateRootSignature()
 {
-	// UAV range
+	// UAV range - 4 contiguous UAVs (u0-u3)
+	// Slots must be contiguous in heap for descriptor table binding:
+	// Output=0, Reflectance=1, SpecularHitDist=2, DDGIProbeRayData=3
 	giHeap->CreateTable(
-		GIHeap::Table::UAV, 
-		D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 
-		{  
-			{ GIHeap::Slot::Output, 1 }, 
-			{ GIHeap::Slot::Reflectance, 1 }, 
-			{ GIHeap::Slot::SpecularHitDist, 1 }
+		GIHeap::Table::UAV,
+		D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+		{
+			{ GIHeap::Slot::Output, 1 },             // u0
+			{ GIHeap::Slot::Reflectance, 1 },        // u1
+			{ GIHeap::Slot::SpecularHitDist, 1 },    // u2
+			{ GIHeap::Slot::DDGIProbeRayData, 1 }    // u3 - DDGI probe ray data output
 		});
 
 	// Fixed SRV ranges (NormalRoughness + GNMD + Scene + Lights + Index map)
@@ -2585,26 +2934,47 @@ void Raytracing::CreateRootSignature()
 	giHeap->CreateTable(
 		GIHeap::Table::Textures,
 		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-		{ 
-			{ GIHeap::Slot::Textures, UINT_MAX, 3, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE } 
+		{
+			{ GIHeap::Slot::Textures, UINT_MAX, 3, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE }
 		});
 
+	// DDGI probe textures in space4 (for irradiance sampling)
+	giHeap->CreateTable(
+		GIHeap::Table::DDGI,
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+		{
+			{ GIHeap::Slot::DDGIProbeIrradiance, 1, 4 },  // t0, space4
+			{ GIHeap::Slot::DDGIProbeDistance, 1, 4 },    // t1, space4
+			{ GIHeap::Slot::DDGIProbeData, 1, 4 }         // t2, space4
+		});
 
 	auto rootParameters = giHeap->GetRootParameters();
 
+	// Frame constants CBV (b0, space0)
 	CD3DX12_ROOT_PARAMETER1 constantRootParam;
-	constantRootParam.InitAsConstantBufferView(0, 0); 
+	constantRootParam.InitAsConstantBufferView(0, 0);
 	rootParameters.push_back(constantRootParam);
 
-	CD3DX12_STATIC_SAMPLER_DESC staticSampler(0);  // register s0
+	// DDGI Volume constants CBV (b1, space4)
+	CD3DX12_ROOT_PARAMETER1 ddgiConstantsParam;
+	ddgiConstantsParam.InitAsConstantBufferView(1, 4);
+	rootParameters.push_back(ddgiConstantsParam);
+
+	// Static samplers: s0 (base sampler), s1 space4 (DDGI bilinear sampler)
+	CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
+	staticSamplers[0].Init(0);  // s0, space0 - base sampler
+	staticSamplers[1].Init(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		0.0f, 16, D3D12_COMPARISON_FUNC_NEVER, D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK,
+		0.0f, D3D12_FLOAT32_MAX, D3D12_SHADER_VISIBILITY_ALL, 4);  // s1, space4
 
 	// Create root signature
 	CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
 	rootSigDesc.Init_1_1(
 		static_cast<uint>(rootParameters.size()),
 		rootParameters.data(),
-		1,
-		&staticSampler,
+		2,
+		staticSamplers,
 		D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
 	winrt::com_ptr<ID3DBlob> signature;
@@ -2755,6 +3125,7 @@ void Raytracing::CompileShaders()
 	if (!rootSignature) {
 		CreateRootSignature();
 		CompileRTGIShaders();
+		InitializeDDGI();
 	}
 
 	if (!shadowRS) {
@@ -2811,7 +3182,7 @@ void Raytracing::CompileRTGIShaders()
 		pipelineBuilder.AddHitGroup(L"ShadowHitGroup");
 
 		// Shader + pipeline config
-		pipelineBuilder.AddShaderConfig(20, 8);
+		pipelineBuilder.AddShaderConfig(24, 8);  // 24 bytes: float4 color (16) + PayloadData (4) + hitKind (4)
 		pipelineBuilder.AddGlobalRootSignature(rootSignature.get());
 		pipelineBuilder.AddPipelineConfig(4);
 
@@ -2849,6 +3220,185 @@ void Raytracing::CompileRTGIShaders()
 		shaderBindingTableBuffer->Upload(commandList.get());
 		shaderBindingTableBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
+}
+
+void Raytracing::InitializeDDGI()
+{
+	logger::info("[DDGI] Initializing DDGI system...");
+
+	// Create DDGI manager
+	ddgiManager = eastl::make_unique<DX12::DDGIManager>();
+
+	// Initialize with device and descriptor heap
+	// Pass DDGIProbeIrradiance-1 as start index so +1,+2,+3 lands on Irradiance/Distance/Data slots
+	if (!ddgiManager->Initialize(d3d12Device.get(), giHeap->Heap(), static_cast<UINT>(GIHeap::Slot::DDGIProbeIrradiance) - 1)) {
+		logger::error("[DDGI] Failed to initialize DDGIManager");
+		ddgiManager.reset();
+		return;
+	}
+
+	// Create DDGI constants buffer
+	ddgiConstantsBuffer = eastl::make_unique<DX12::StructuredBufferUpload<rtxgi::DDGIVolumeDescGPUPacked>>(d3d12Device.get(), 1);
+	DX::ThrowIfFailed(ddgiConstantsBuffer->resource->SetName(L"DDGI Constants Buffer"));
+
+	// Compile DDGI probe tracing pipeline (uses Lambertian shading for diffuse-only)
+	{
+		winrt::com_ptr<IDxcBlob> probeRayGenBlob;
+		ShaderUtils::CompileShader(probeRayGenBlob, L"Data/Shaders/Raytracing/DDGI/ProbeTraceRGS.hlsl", { { L"LAMBERT", L"1" } });
+
+		winrt::com_ptr<IDxcBlob> missBlob, closestHitBlob, anyHitBlob;
+		ShaderUtils::CompileShader(missBlob, L"Data/Shaders/Raytracing/GI/Miss.hlsl", { { L"LAMBERT", L"1" } });
+		ShaderUtils::CompileShader(closestHitBlob, L"Data/Shaders/Raytracing/GI/ClosestHit.hlsl", { { L"LAMBERT", L"1" }, { L"DDGI_PROBE", L"1" } });
+		ShaderUtils::CompileShader(anyHitBlob, L"Data/Shaders/Raytracing/GI/AnyHit.hlsl");
+
+		winrt::com_ptr<IDxcBlob> shadowMissBlob;
+		ShaderUtils::CompileShader(shadowMissBlob, L"Data/Shaders/Raytracing/GI/ShadowMiss.hlsl");
+
+		DX12::RTPipelineBuilder pipelineBuilder;
+
+		pipelineBuilder.AddRayGenLib(probeRayGenBlob.get(), L"ProbeRayGeneration");
+		pipelineBuilder.AddMissLib(missBlob.get(), L"IndirectMiss");
+		pipelineBuilder.AddMissLib(shadowMissBlob.get(), L"ShadowMiss");
+		pipelineBuilder.AddHitLib(closestHitBlob.get(), L"IndirectClosestHit");
+		pipelineBuilder.AddAnyHitLib(anyHitBlob.get(), L"IndirectAnyHit");
+
+		pipelineBuilder.AddHitGroup(L"IndirectHitGroup", L"IndirectClosestHit", L"IndirectAnyHit");
+		pipelineBuilder.AddHitGroup(L"ShadowHitGroup");
+
+		pipelineBuilder.AddShaderConfig(24, 8);  // 24 bytes: float4 color (16) + PayloadData (4) + hitKind (4)
+		pipelineBuilder.AddGlobalRootSignature(rootSignature.get());
+		pipelineBuilder.AddPipelineConfig(2);  // Lower depth for probe tracing
+
+		auto desc = pipelineBuilder.MakeStateObjectDesc();
+		HRESULT hr = d3d12Device->CreateStateObject(desc, IID_PPV_ARGS(&ddgiProbePipeline));
+		if (FAILED(hr)) {
+			logger::error("[DDGI] Failed to create probe pipeline: {}", hr);
+			return;
+		}
+		DX::ThrowIfFailed(ddgiProbePipeline->SetName(L"DDGI Probe Pipeline"));
+
+		// Create SBT for probe tracing
+		winrt::com_ptr<ID3D12StateObjectProperties> props;
+		ddgiProbePipeline->QueryInterface(props.put());
+
+		ddgiProbeSBT = eastl::make_unique<DX12::ShaderBindingTable>(pipelineBuilder.CreateShaderBindingTable(props.get()));
+		auto sbtSize = ddgiProbeSBT->GetTotalSize();
+
+		ddgiProbeSBTBuffer = eastl::make_unique<DX12::ResourceUpload>(d3d12Device.get(), sbtSize);
+		ddgiProbeSBTBuffer->SetName(L"DDGI Probe SBT");
+
+		std::vector<uint8_t> sbtData(sbtSize);
+		ddgiProbeSBT->Build(sbtData.data());
+		ddgiProbeSBTBuffer->Update(sbtData.data(), sbtSize);
+		ddgiProbeSBTBuffer->Upload(commandList.get());
+		ddgiProbeSBTBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+		logger::info("[DDGI] Probe tracing pipeline created successfully");
+	}
+
+	// Compile DDGI screen-space sampling pipeline
+	{
+		winrt::com_ptr<IDxcBlob> screenRayGenBlob;
+		ShaderUtils::CompileShader(screenRayGenBlob, L"Data/Shaders/Raytracing/GI/RayGeneration.hlsl", { { L"DDGI_ENABLED", L"1" }, { L"LAMBERT", L"1" } });
+
+		winrt::com_ptr<IDxcBlob> missBlob, closestHitBlob, anyHitBlob;
+		ShaderUtils::CompileShader(missBlob, L"Data/Shaders/Raytracing/GI/Miss.hlsl");
+		ShaderUtils::CompileShader(closestHitBlob, L"Data/Shaders/Raytracing/GI/ClosestHit.hlsl");
+		ShaderUtils::CompileShader(anyHitBlob, L"Data/Shaders/Raytracing/GI/AnyHit.hlsl");
+
+		winrt::com_ptr<IDxcBlob> shadowMissBlob;
+		ShaderUtils::CompileShader(shadowMissBlob, L"Data/Shaders/Raytracing/GI/ShadowMiss.hlsl");
+
+		DX12::RTPipelineBuilder pipelineBuilder;
+
+		pipelineBuilder.AddRayGenLib(screenRayGenBlob.get(), L"RayGeneration");
+		pipelineBuilder.AddMissLib(missBlob.get(), L"IndirectMiss");
+		pipelineBuilder.AddMissLib(shadowMissBlob.get(), L"ShadowMiss");
+		pipelineBuilder.AddHitLib(closestHitBlob.get(), L"IndirectClosestHit");
+		pipelineBuilder.AddAnyHitLib(anyHitBlob.get(), L"IndirectAnyHit");
+
+		pipelineBuilder.AddHitGroup(L"IndirectHitGroup", L"IndirectClosestHit", L"IndirectAnyHit");
+		pipelineBuilder.AddHitGroup(L"ShadowHitGroup");
+
+		pipelineBuilder.AddShaderConfig(24, 8);  // 24 bytes: float4 color (16) + PayloadData (4) + hitKind (4)
+		pipelineBuilder.AddGlobalRootSignature(rootSignature.get());
+		pipelineBuilder.AddPipelineConfig(4);
+
+		auto desc = pipelineBuilder.MakeStateObjectDesc();
+		HRESULT hr = d3d12Device->CreateStateObject(desc, IID_PPV_ARGS(&ddgiScreenPipeline));
+		if (FAILED(hr)) {
+			logger::error("[DDGI] Failed to create screen pipeline: {}", hr);
+			return;
+		}
+		DX::ThrowIfFailed(ddgiScreenPipeline->SetName(L"DDGI Screen Pipeline"));
+
+		// Create SBT for screen-space sampling
+		winrt::com_ptr<ID3D12StateObjectProperties> props;
+		ddgiScreenPipeline->QueryInterface(props.put());
+
+		ddgiScreenSBT = eastl::make_unique<DX12::ShaderBindingTable>(pipelineBuilder.CreateShaderBindingTable(props.get()));
+		auto sbtSize = ddgiScreenSBT->GetTotalSize();
+
+		ddgiScreenSBTBuffer = eastl::make_unique<DX12::ResourceUpload>(d3d12Device.get(), sbtSize);
+		ddgiScreenSBTBuffer->SetName(L"DDGI Screen SBT");
+
+		std::vector<uint8_t> sbtData(sbtSize);
+		ddgiScreenSBT->Build(sbtData.data());
+		ddgiScreenSBTBuffer->Update(sbtData.data(), sbtSize);
+		ddgiScreenSBTBuffer->Upload(commandList.get());
+		ddgiScreenSBTBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+
+		logger::info("[DDGI] Screen-space sampling pipeline created successfully");
+	}
+
+	// Create probe visualization compute pipeline
+	{
+		winrt::com_ptr<IDxcBlob> visBlob;
+		ShaderUtils::CompileShader(visBlob, L"Data/Shaders/Raytracing/DDGI/ProbeVisualizationCS.hlsl", { { L"HLSL", L"1" }, { L"RTXGI_COORDINATE_SYSTEM", L"0" } }, L"cs_6_5", L"main");
+
+		if (visBlob && visBlob->GetBufferSize() > 0) {
+			D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc = {};
+			computeDesc.pRootSignature = rootSignature.get();
+			computeDesc.CS = { visBlob->GetBufferPointer(), visBlob->GetBufferSize() };
+
+			HRESULT hr = d3d12Device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(ddgiVisPipeline.put()));
+			if (SUCCEEDED(hr)) {
+				ddgiVisPipeline->SetName(L"DDGI Probe Visualization Pipeline");
+				logger::info("[DDGI] Probe visualization pipeline created successfully");
+			} else {
+				logger::warn("[DDGI] Failed to create probe visualization pipeline: 0x{:08X}", static_cast<unsigned int>(hr));
+			}
+		} else {
+			logger::warn("[DDGI] Failed to compile probe visualization shader");
+		}
+	}
+
+	// Create UAV for DDGI ProbeRayData (used by probe tracing shader at u3)
+	if (ddgiManager->IsInitialized()) {
+		auto probeRayData = ddgiManager->GetProbeRayData();
+		auto desc = probeRayData->GetDesc();
+
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = desc.Format;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+		uavDesc.Texture2DArray.MipSlice = 0;
+		uavDesc.Texture2DArray.FirstArraySlice = 0;
+		uavDesc.Texture2DArray.ArraySize = desc.DepthOrArraySize;
+
+		d3d12Device->CreateUnorderedAccessView(
+			probeRayData,
+			nullptr,
+			&uavDesc,
+			giHeap->CPUHandle(GIHeap::Slot::DDGIProbeRayData));
+
+		logger::info("[DDGI] Created UAV for ProbeRayData at u3");
+	}
+
+	// Note: SRVs for DDGI probe textures (Irradiance, Distance, Data) are created
+	// by DDGIManager::Initialize() in the main GI heap at slots DDGIProbeIrradiance,
+	// DDGIProbeDistance, DDGIProbeData for screen-space sampling
+
+	logger::info("[DDGI] Initialization complete");
 }
 
 void Raytracing::CompileRTShadowsShaders()

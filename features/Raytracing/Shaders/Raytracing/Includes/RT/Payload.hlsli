@@ -56,6 +56,7 @@ struct Payload
 {
     float4 color;
     PayloadData data;
+    uint hitKind;  // HIT_KIND_TRIANGLE_FRONT_FACE or HIT_KIND_TRIANGLE_BACK_FACE (for DDGI backface detection)
 };
 
 

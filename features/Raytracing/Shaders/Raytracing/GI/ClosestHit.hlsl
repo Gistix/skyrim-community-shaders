@@ -20,6 +20,9 @@ void main(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttribute
 
 void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
+    // Capture hit kind early for DDGI backface detection
+    payload.hitKind = HitKind();
+
     float3 worldPosition = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
 
     Instance instance = GetInstance();
@@ -75,26 +78,39 @@ void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttrib
 
     float3 viewDirection = normalize(-WorldRayDirection());
 
+    // Emissive contribution (self-illumination from materials)
+    payload.color += float4(emissive, 0.0f);
+
     // Directional Light
     payload.color += float4(GGXDirectD(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, Frame.Directional), 0.0f);
 
-    #if defined(LAMBERT)
-    payload.color += LambertianDirect(worldPosition, worldNormal, albedo, instance.LightData, randomSeed);
-    #else
-    payload.color += float4(GGXDirectP(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, instance.LightData, randomSeed), 0.0f);
-    #endif
+    // Point lights
+    if (instance.LightData.Count > 0)
+    {
+        #if defined(LAMBERT)
+        payload.color += float4(LambertianDirect(worldPosition, worldNormal, albedo, instance.LightData, randomSeed), 0.0f);
+        #else
+        payload.color += float4(GGXDirectP(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, instance.LightData, randomSeed), 0.0f);
+        #endif
+    }
 
     uint currentDepth = payload.data.GetDepth();
 
+    // For DDGI probe tracing, skip indirect lighting - probes only gather direct lighting
+    // The probes themselves provide the indirect lighting, so recursive TraceRay is not needed
+    // This also prevents exceeding MaxRecursionDepth which would cause a GPU hang
+#if !defined(DDGI_PROBE)
     if (currentDepth < MAX_DEPTH)
     {
         #if defined(LAMBERT)
-        payload.color += LambertianIndirect(worldPosition, worldNormal, albedo, currentDepth, randomSeed);
+        payload.color += float4(LambertianIndirect(worldPosition, worldNormal, albedo, currentDepth, randomSeed), 0.0f);
         #else
         float4 indirect = GGXIndirect(worldPosition, worldNormal, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, metalness, currentDepth, randomSeed);
-        indirect.a = RayTCurrent();
-
         payload.color += indirect;
         #endif
     }
+#endif
+
+    // Always store hit distance in alpha for DDGI probe tracing
+    payload.color.a = RayTCurrent();
 }

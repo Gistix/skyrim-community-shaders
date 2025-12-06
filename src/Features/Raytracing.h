@@ -21,6 +21,7 @@
 #include "Features/Raytracing/Types.h"
 #include "Features/Raytracing/Shape.h"
 #include "Features/Raytracing/Model.h"
+#include "Features/Raytracing/DDGI.h"
 
 #include "Raytracing/Includes/Types/VertexUpdate.hlsli"
 #include "Raytracing/Includes/Types/Vertex.hlsli"
@@ -55,9 +56,9 @@ struct Raytracing : public Feature
 {
 	static constexpr uint MAX_TEXTURES = 512;
 	static constexpr uint MAX_MESHES = 1024;
-	static constexpr uint MAX_SUBMESHES = 2048;
+	static constexpr uint MAX_SUBMESHES = 4096;
 	static constexpr uint MAX_MATERIALS = MAX_SUBMESHES;
-	static constexpr uint MAX_INSTANCES = 2048;
+	static constexpr uint MAX_INSTANCES = 4096;
 	
 	static constexpr uint MAX_LIGHTS = 255;
 
@@ -71,25 +72,34 @@ struct Raytracing : public Feature
 			SRV,
 			VertexBuffer,
 			TriangleBuffer,
-			Textures
+			Textures,
+			DDGI  // DDGI probe SRVs in space4 for irradiance sampling
 		};
 
 		enum class Slot
 		{
-			Output,
-			Reflectance,
-			SpecularHitDist,
-			Main,
-			Depth,
-			Albedo,
-			NormalRoughness,
-			GNMD,
-			TLAS,
-			SkyHemisphere,
-			Lights,
-			Materials,
-			Instances,
-			Vertices,
+			// UAV slots (0-3) - must be contiguous for descriptor table binding
+			Output,                 // 0: u0 - ray traced output
+			Reflectance,            // 1: u1 - reflectance for denoiser
+			SpecularHitDist,        // 2: u2 - specular hit distance
+			DDGIProbeRayData,       // 3: u3 - DDGI probe ray data output (MUST be slot 3 for UAV table)
+			// SRV slots start here (4+) - t0, t1, t2, ...
+			Main,                   // 4: t0 - main texture (input)
+			Depth,                  // 5: t1 - depth buffer
+			Albedo,                 // 6: t2 - albedo
+			NormalRoughness,        // 7: t3 - normal + roughness
+			GNMD,                   // 8: t4 - geometry normal + metalness
+			TLAS,                   // 9: t5 - acceleration structure
+			SkyHemisphere,          // 10: t6 - sky hemisphere
+			Lights,                 // 11: t7 - lights buffer
+			Materials,              // 12: t8 - materials buffer
+			Instances,              // 13: t9 - instances buffer
+			// DDGI Probe textures for irradiance sampling (space4)
+			DDGIProbeIrradiance,    // 14: SRV - probe irradiance (octahedral encoded)
+			DDGIProbeDistance,      // 15: SRV - probe distance data
+			DDGIProbeData,          // 16: SRV - probe relocation + classification
+			// Unbounded arrays start here
+			Vertices,               // 17+
 			Triangles = Vertices + Raytracing::MAX_SUBMESHES,
 			Textures = Triangles + Raytracing::MAX_SUBMESHES,
 			NumDescriptors = Textures + Raytracing::MAX_TEXTURES,
@@ -186,6 +196,7 @@ struct Raytracing : public Feature
 	void CompileSkinningShaders();
 	void CompileRTGIShaders();
 	void CompileRTShadowsShaders();
+	void InitializeDDGI();
 
 	void Initialize();
 	void InitD3D12(ID3D11Device* ppDevice, ID3D11DeviceContext* pImmediateContext, IDXGIAdapter* a_adapter);
@@ -194,6 +205,7 @@ struct Raytracing : public Feature
 	void CreateSkinningRootSignature();
 	void UpdateDynamicSkinning(ID3D12GraphicsCommandList4* pCommandList);
 	void DrawRTGI();
+	void DrawDDGI();  // Separate DDGI pass (probe tracing + blending)
 	void UpdateShadowsFrameBuffer();
 	void RenderShadows();
 
@@ -273,7 +285,9 @@ struct Raytracing : public Feature
 		SpecularHitDistance,
 		ReflectangeGBuffer,
 		RoughnessGBuffer,
-		Passthrough
+		Passthrough,
+		DDGIProbeIrradiance,
+		DDGIProbeDistance
 	};
 
 	enum struct DLSSRRQuality : int32_t
@@ -294,7 +308,8 @@ struct Raytracing : public Feature
 	struct Settings
 	{
 		bool Enabled = true;
-		bool GlobalIllumination = true;
+		bool GlobalIllumination = true;  // Path-traced GI (indirect + reflections)
+		bool DDGI = false;               // Probe-based diffuse GI (alternative to path tracing)
 		Denoiser Denoiser = Denoiser::Accumulation;
 		int Bounces = 2;
 		int SamplesPerPixel = 1;
@@ -539,12 +554,23 @@ struct Raytracing : public Feature
 	eastl::vector<VertexUpdate> vertexUpdate;
 	eastl::unique_ptr<DX12::StructuredBufferUpload<VertexUpdateData>> vertexUpdateBuffer = nullptr;
 
-	// GI
+	// GI (Path Tracing)
 	winrt::com_ptr<ID3D12RootSignature> rootSignature = nullptr;
 	winrt::com_ptr<ID3D12StateObject> pipelineRT = nullptr;
-	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;	
+	eastl::unique_ptr<DX12::ShaderBindingTable> shaderBindingTable = nullptr;
 	eastl::unique_ptr<DX12::ResourceUpload> shaderBindingTableBuffer = nullptr;
-	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap>> giHeap = nullptr;	
+	eastl::unique_ptr<DX12::DescriptorHeap<GIHeap>> giHeap = nullptr;
+
+	// DDGI (Probe-based GI)
+	eastl::unique_ptr<DX12::DDGIManager> ddgiManager = nullptr;
+	winrt::com_ptr<ID3D12StateObject> ddgiProbePipeline = nullptr;           // Probe ray tracing pipeline
+	eastl::unique_ptr<DX12::ShaderBindingTable> ddgiProbeSBT = nullptr;
+	eastl::unique_ptr<DX12::ResourceUpload> ddgiProbeSBTBuffer = nullptr;
+	winrt::com_ptr<ID3D12StateObject> ddgiScreenPipeline = nullptr;          // Screen-space sampling pipeline
+	eastl::unique_ptr<DX12::ShaderBindingTable> ddgiScreenSBT = nullptr;
+	eastl::unique_ptr<DX12::ResourceUpload> ddgiScreenSBTBuffer = nullptr;
+	eastl::unique_ptr<DX12::StructuredBufferUpload<rtxgi::DDGIVolumeDescGPUPacked>> ddgiConstantsBuffer = nullptr;
+	winrt::com_ptr<ID3D12PipelineState> ddgiVisPipeline = nullptr;           // Probe visualization compute pipeline
 
 	// Shadows
 	winrt::com_ptr<ID3D12RootSignature> shadowRS = nullptr;

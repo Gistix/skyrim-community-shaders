@@ -22,14 +22,14 @@ alignas(16)
     float Specular;
     float Emissive;
 	float Effect;
-	float Sky;    
+	float Sky;
+    float DDGIIntensity;  // DDGI contribution scale (0.0 - 2.0)
     #ifdef SHARC
     float SHARCScale;
     #else
     uint Pad0;
-    #endif  
+    #endif
     uint Pad1;
-	uint Pad2;    
 };
 #ifdef __cplusplus
 static_assert(sizeof(GIFrameData) % 256 == 0);
