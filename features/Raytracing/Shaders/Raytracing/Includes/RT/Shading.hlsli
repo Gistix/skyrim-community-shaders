@@ -45,7 +45,16 @@ float LinearAtten(float dist, float range)
     return saturate(1.0 - dist / range);
 }
 
-float3 LambertianDirect(in float3 position, in float3 normal, in float3 albedo, in LightData lightData, inout uint randomSeed)
+float3 LambertianDirectD(in float3 position, in float3 normal, in float3 albedo, in Light light)
+{
+    float3 L = normalize(light.Vector);
+ 
+    float NdotL = saturate(dot(normal, L)) * TraceRayShadow(Scene, position, L);
+            
+    return NdotL * light.Color * albedo * Frame.Diffuse; 
+}
+
+float3 LambertianDirectP(in float3 position, in float3 normal, in float3 albedo, in LightData lightData, inout uint randomSeed)
 {
     uint lightIdx = min(uint(Random(randomSeed) * lightData.Count), lightData.Count - 1);
 

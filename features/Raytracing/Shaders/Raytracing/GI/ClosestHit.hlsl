@@ -35,7 +35,6 @@ void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttrib
 
     Material material = Materials[meshID];
 
-
     float2 texCoord = material.TexCoord(Interpolate(v0.Texcoord0, v1.Texcoord0, v2.Texcoord0, uvw));
 
     float3x3 objectToWorld3x3 = (float3x3)ObjectToWorld3x4();
@@ -53,53 +52,44 @@ void HitMesh(inout IndirectPayload payload, in BuiltInTriangleIntersectionAttrib
     float3 effect = effectTexture.SampleLevel(BaseSampler, texCoord, 0).rgb;
 
     // Lighting Shader
-    float3 lightingAlbedo = Color::GammaToLinear(base) * vertexColor.rgb;
-    float3 lightingEmissive = Color::GammaToLinear(effect) * material.EffectColor.rgb * material.EffectColor.a;
+    float3 albedo = Color::GammaToLinear(base) * vertexColor.rgb;
+    float3 emissive = Color::GammaToLinear(effect) * material.EffectColor.rgb * material.EffectColor.a;
 
-    // Effect Shader
-    float3 baseColorMul = material.EffectColor.rgb * vertexColor.rgb;
-    float3 baseColor = base.rgb * baseColorMul;
-
-    float baseColorScale = material.EffectColor.a;
-    float2 grayscaleToColorUv = float2(base.y, baseColorMul.x);
-
-    baseColor = baseColorScale * effectTexture.SampleLevel(BaseSampler, grayscaleToColorUv, 0).rgb;
-
-    float3 effectAlbedo = Color::GammaToLinear(baseColor.xyz);
-    float3 effectEmissive = baseColor * Frame.Effect;
-
-    float3 albedo = lerp(lightingAlbedo, effectAlbedo, material.ShaderType);
-    float3 emissive = lerp(lightingEmissive, effectEmissive, material.ShaderType);
-
+    #if !defined(LAMBERT)
+    float3 viewDirection = normalize(-WorldRayDirection());
+    
     const unorm float metalness = Scale01(DEFAULT_METALNESS, Frame.Metalness.x, Frame.Metalness.y);
-	const unorm float roughness = max(Scale01(DEFAULT_ROUGHNESS, Frame.Roughness.x, Frame.Roughness.y), MIN_ROUGHNESS);
+	const unorm float roughness = max(Scale01(DEFAULT_ROUGHNESS, Frame.Roughness.x, Frame.Roughness.y), MIN_ROUGHNESS);      
+    #endif
 
     uint randomSeed = payload.data.GetSeed();
-
-    float3 viewDirection = normalize(-WorldRayDirection());
-
+    
     // Emissive contribution (self-illumination from materials)
     payload.color += float4(emissive, 0.0f);
 
     // Directional Light
+    #if defined(LAMBERT)
+    payload.color += float4(LambertianDirectD(worldPosition, worldNormal, albedo, Frame.Directional), 0.0f);
+    #else
     payload.color += float4(GGXDirectD(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, Frame.Directional), 0.0f);
+    #endif
 
     // Point lights
     if (instance.LightData.Count > 0)
     {
         #if defined(LAMBERT)
-        payload.color += float4(LambertianDirect(worldPosition, worldNormal, albedo, instance.LightData, randomSeed), 0.0f);
+        payload.color += float4(LambertianDirectP(worldPosition, worldNormal, albedo, instance.LightData, randomSeed), 0.0f);
         #else
         payload.color += float4(GGXDirectP(worldPosition, worldNormal, viewDirection, albedo, DEFAULT_SPECULAR, roughness, instance.LightData, randomSeed), 0.0f);
         #endif
     }
-
-    uint currentDepth = payload.data.GetDepth();
-
+    
     // For DDGI probe tracing, skip indirect lighting - probes only gather direct lighting
     // The probes themselves provide the indirect lighting, so recursive TraceRay is not needed
     // This also prevents exceeding MaxRecursionDepth which would cause a GPU hang
 #if !defined(DDGI_PROBE)
+    uint currentDepth = payload.data.GetDepth();
+    
     if (currentDepth < MAX_DEPTH)
     {
         #if defined(LAMBERT)
