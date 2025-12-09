@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <dxcapi.h>
 #include <winrt/base.h>
 #include <EASTL/unique_ptr.h>
 #include <EASTL/vector.h>
