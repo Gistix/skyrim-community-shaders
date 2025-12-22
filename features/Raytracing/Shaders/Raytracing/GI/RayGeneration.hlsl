@@ -95,7 +95,7 @@ void main()
     BRDFContext sourceBRDFContext = BRDFContext(sourceSurface, -sourceDirection);
     
     // Direct Light for PT
-    float3 direct = sourceSurface.Albedo * SampleRadiance(sourceSurface, sourceBRDFContext, sourceInstance, sourceMaterial, randomSeed);
+    float3 direct = sourceSurface.Albedo * EvaluateRadiance(sourceSurface, sourceBRDFContext, sourceInstance, sourceMaterial, randomSeed);
 #else
     float2 uv = (idx + 0.5f) / size;
     
@@ -117,7 +117,7 @@ void main()
         
         OutputTexture[idx] = MainTexture[idx];
         SpecularAlbedo[idx] = float4(0.5f, 0.5f, 0.5f, 0.0f);
-        SpecularHitDist[idx] = 0.0f;
+        SpecularHitDist[idx] = RAY_TMAX;
         return;
     }
 
@@ -128,11 +128,8 @@ void main()
     const unorm float linearRoughness = normalRoughness.w;
 
     // Metalness and AO packed in 16 bits
-    uint metalnessAO = normalMetalnessAO.z * 65535.0;
-    
-    const float metalness = (metalnessAO & 0xFF) / 255.0f;
-    
-    const float ao = saturate(((metalnessAO >> 8) & 0xFF) / 255.0f);
+    float metalness, ao;
+    UnpackMAO(normalMetalnessAO.z, metalness, ao);
     
     const float3 positionVS = ScreenToViewPosition(uv, depthView, Frame.NDCToView);
     const float3 positionCS = ViewToWorldPosition(positionVS, Frame.ViewInverse);
@@ -200,8 +197,13 @@ void main()
         [loop]
         for (uint j = 0; j < MAX_BOUNCES; j++)
         {
-#if defined(LAMBERT)
-            direction = surface.Mul(SampleCosineHemisphere(randomSeed));        
+#if LIGHTING_MODE == LIGHTING_MODE_DIFFUSE
+            direction = surface.Mul(SampleCosineHemisphere(randomSeed));
+            
+            float NdotD = saturate(dot(surface.Normal, direction));
+            
+            throughput *= surface.AO;
+            throughput *= surface.Albedo * Frame.Diffuse; // Is this actually correct?
 #else
             SampleDefaultBRDF(surface, brdfContext, randomSeed, direction, brdfWeight);
             throughput *= surface.AO;
@@ -213,7 +215,7 @@ void main()
             ray.Origin = surface.Position + surface.GeomNormal * 0.01f;
             ray.Direction = direction;
             ray.TMin = 0.01f;
-            ray.TMax = 1e30;
+            ray.TMax = RAY_TMAX;
 
             payload.hitDistance = -1.0f;
             payload.primitiveIndex = 0;
@@ -221,6 +223,11 @@ void main()
             payload.PackInstanceShapeIndex(0, 0);
 
             TraceRay(Scene, RAY_FLAG_NONE, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, ray, payload);
+              
+            if (j == 0)
+            {
+                hitDistance = max(hitDistance, payload.hitDistance);
+            }              
             
             if (!payload.Hit())
             {
@@ -237,12 +244,7 @@ void main()
                 sampleRadiance += skyIrradiance * throughput;
                 break;
             }                  
-   
-            if (j == 0)
-            {
-                hitDistance = max(hitDistance, payload.hitDistance);
-            }           
-          
+ 
             float3 localPosition = ray.Origin + direction * payload.hitDistance;             
 
             surface = Surface(localPosition, payload, instance, material);
@@ -278,24 +280,8 @@ void main()
                 // Do something expensive
             }*/
             
-            float3 localRadiance = SampleRadiance(surface, brdfContext, instance, material, randomSeed);
-            
-#if defined(LAMBERT)
-            float NdotD = saturate(dot(n, direction));
-            float3 diffuse = localRadiance.rgb * NdotD * surface.AO * Frame.Diffuse;
-            
-            sampleRadiance += surface.Albedo * diffuse * throughput;
-            
-            throughput *= surface.Albedo;
-#else                                
-            // float3 diffuse = isSpecular ? 0.0 : localRadiance.rgb * BRDF_over_PDF * diffuseAO * Frame.Diffuse;
-            
-            // float3 specularAO = BRDF::SpecularAO(brdfContext.NdotV, surface.Roughness, surface.AO, surface.F0);
-            // float3 specular = isSpecular ? localRadiance.rgb * BRDF_over_PDF * (specularAO * Frame.Specular) : 0.0;
+            sampleRadiance += EvaluateRadiance(surface, brdfContext, instance, material, randomSeed) * throughput;
 
-            sampleRadiance += localRadiance * throughput;
-#endif     
-       
 #if defined(SHARC) && defined(SHARC_UPDATE)
             if (Frame.SHaRC.UpdatePass)
             {
@@ -306,11 +292,12 @@ void main()
 
                 throughput = float3(1.0f, 1.0f, 1.0f);
             } else 
-#endif              
+#endif
+            if (Frame.RussianRoulette)
             {
                 float rrProbability = j < RR_MIN_BOUNCE ? 1.0f : min(0.95f, Color::RGBToLuminance(throughput));
             
-                if (Frame.RussianRoulette && rrProbability < Random(randomSeed))
+                if (rrProbability < Random(randomSeed))
                     break;
                 else
                     throughput /= rrProbability;
@@ -347,5 +334,5 @@ void main()
     const float3 specularAlbedo = float3(sourceSurface.F0 * envBRDF.x + envBRDF.y);
     SpecularAlbedo[idx] = float4(specularAlbedo, 0.0f);
 
-    SpecularHitDist[idx] = max(0.0f, hitDistance);
+    SpecularHitDist[idx] = hitDistance;
 }

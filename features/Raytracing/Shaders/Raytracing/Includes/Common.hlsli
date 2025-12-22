@@ -98,6 +98,15 @@ float2 Get2D(uint seed)
 	return (SamplerCore(seed).xy) * 5.96046447754e-08;
 }
 
+// I keep it here because it is also used by DX11 to make the Diffuse Albedo texture from 'True Albedo'
+void UnpackMAO(float packed, out float metalness, out float ao)
+{
+    uint metalnessAO = packed * 65535.0;
+
+    metalness = saturate((metalnessAO & 0xFF) / 255.0f);   
+    ao = saturate(((metalnessAO >> 8) & 0xFF) / 255.0f);
+}
+
 float ShadowTerminatorTerm(float3 L, float3 N, float3 Ns)
 {
 	// Disney terminator softening:
