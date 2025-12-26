@@ -3,5 +3,5 @@
 void Allocation::FreeAllocation() const
 {
 	logger::info("[RT] Allocation::FreeAllocation - {} Index {}", allocator->name, index);
-	allocator->Free(index);
+	allocator->Free(alloc);
 }

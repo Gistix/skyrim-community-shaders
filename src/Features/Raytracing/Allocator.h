@@ -1,15 +1,18 @@
 #pragma once
 
+#include <D3D12MemAlloc.h>
+
 class Allocator;
 
 class Allocation
 {
+	D3D12MA::VirtualAllocation alloc;
 	uint16_t index;
 	Allocator* allocator;
 
 public:
-	Allocation(uint16_t slot, Allocator* allocator) :
-		index(slot), allocator(allocator) {}
+	Allocation(D3D12MA::VirtualAllocation alloc, uint16_t slot, Allocator* allocator) :
+		alloc(alloc), index(slot), allocator(allocator) {}
 
     Allocation(const Allocation&) = delete;
 	Allocation& operator=(const Allocation&) = delete;
@@ -29,56 +32,47 @@ class Allocator
 {
 public:
 	eastl::string name;
+	winrt::com_ptr<D3D12MA::VirtualBlock> block;
 
 	explicit Allocator(uint16_t maxSlots, const char* name = nullptr) :
-		nextFree(0), slots(maxSlots), name(name)
+		slots(maxSlots), name(name)
 	{
-		// Initialize free list
-		for (uint16_t i = 0; i < maxSlots - 1; ++i)
-			slots[i] = i + 1;
+		D3D12MA::VIRTUAL_BLOCK_DESC blockDesc{};
+		blockDesc.Size = maxSlots;
 
-		slots[maxSlots - 1] = INVALID;  // end of list
+		CreateVirtualBlock(&blockDesc, block.put());
 	}
 
 	// Allocate the lowest available slot
 	Allocation* Allocate()
 	{
-		assert(nextFree != INVALID && "No available slots!");
-		uint16_t slot = nextFree;
-		nextFree = slots[slot];  // move head
-		return new Allocation(slot, this);
+		D3D12MA::VIRTUAL_ALLOCATION_DESC allocDesc = {};
+		allocDesc.Size = 1;
+
+		D3D12MA::VirtualAllocation alloc;
+		UINT64 allocOffset;
+
+		block->Allocate(&allocDesc, &alloc, &allocOffset);
+
+		return new Allocation(alloc, static_cast<uint16_t>(allocOffset), this);
 	}
 
 	// Free a slot
-	void Free(uint16_t slot)
+	void Free(D3D12MA::VirtualAllocation alloc) const
 	{
-		slots[slot] = nextFree;
-		nextFree = slot;
-	}
-
-	bool HasFree() const { return nextFree != INVALID; }
-
-	uint16_t FreeCount() const
-	{
-		uint16_t count = 0;
-		uint16_t cur = nextFree;
-
-		while (cur != INVALID) {
-			++count;
-			cur = slots[cur];
-		}
-		return count;
+		block->FreeAllocation(alloc);
 	}
 
 	uint16_t UsedCount() const
 	{
-		return static_cast<uint16_t>(slots.size() - FreeCount());
+		D3D12MA::Statistics outStats;
+		block->GetStatistics(&outStats);
+
+		return static_cast<uint16_t>(outStats.AllocationCount);
 	}
 
 private:
-	static constexpr uint16_t INVALID = 0xFFFF;
-	uint16_t nextFree;
-	eastl::vector<uint16_t> slots;
+	uint16_t slots;
 };
 
 struct AllocationDeleter

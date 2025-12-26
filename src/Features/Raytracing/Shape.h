@@ -161,7 +161,7 @@ public:
 
 	Shape(Allocation* allocation, RE::BSGeometry* geometry, Flags flags = Flags::None) :
 		allocation({ allocation, AllocationDeleter() }), geometry(geometry), flags(flags) {
-		//logger::info("[RT] Shape {} at Index {}", geometry->name, allocation->GetIndex());
+		logger::info("[RT] Shape {} at Index {}", geometry->name, allocation->GetIndex());
 	}
 
 	/*~Shape() {
