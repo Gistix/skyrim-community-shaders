@@ -28,8 +28,10 @@ public:
 class Allocator
 {
 public:
-	explicit Allocator(uint16_t maxSlots) :
-		nextFree(0), slots(maxSlots)
+	eastl::string name;
+
+	explicit Allocator(uint16_t maxSlots, const char* name = nullptr) :
+		nextFree(0), slots(maxSlots), name(name)
 	{
 		// Initialize free list
 		for (uint16_t i = 0; i < maxSlots - 1; ++i)

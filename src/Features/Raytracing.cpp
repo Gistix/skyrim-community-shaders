@@ -1112,19 +1112,6 @@ void Raytracing::CheckFrameConstants()
 }
 #endif
 
-static std::wstring StringViewToWString(std::string_view sv)
-{
-	std::string str(sv);
-
-	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-
-	std::wstring wstr(size_needed, 0);
-
-	MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size_needed);
-
-	return wstr;
-}
-
 void Raytracing::ShareRT(ID3D11Texture2D* pTexture2D, const GIHeap::Slot& target, const ShadowsHeap::Slot& cTarget, ID3D12Resource** ppResource) const
 {
 	D3D11_TEXTURE2D_DESC desc;
@@ -1385,6 +1372,49 @@ void Raytracing::SkyCubeToHemi() const
 	//context->CSSetUnorderedAccessViews(0, 1, nullptr, nullptr);
 }
 
+void Raytracing::Main_RenderPlayerView()
+{
+	std::lock_guard lock{ resourceQueueMutex };
+	
+	for (auto it = instanceRemovalQueue.begin(); it != instanceRemovalQueue.end();) {
+		auto& [formID, pRoot, releaseModel] = *it;
+
+		if (pRoot)
+			RemoveInstance(pRoot, releaseModel);
+		else
+			RemoveInstance(formID, releaseModel);
+
+		it = instanceRemovalQueue.erase(it);
+	}
+
+	for (auto modelIt = modelQueue.begin(); modelIt != modelQueue.end();) {
+		auto& model = *modelIt;
+
+		for (auto& shape : model.shapes) {
+			auto name = shape->geometry->name.c_str();
+
+			// BuildMaterial is queued because it calls GetTextureRegister which creates a SRV
+			shape->BuildMaterial(shape->geometry->GetGeometryRuntimeData(), name);
+			shape->CreateBuffers(ToWide(name));
+		}
+		
+		CommitModel(model);
+
+		models.emplace(model.key, eastl::move(model));
+
+		modelIt = modelQueue.erase(modelIt);
+		modelQueueSet.erase(model.key);
+	}
+
+	for (auto it = instanceQueue.begin(); it != instanceQueue.end();) {
+		auto& [formID, pRoot, key] = *it;
+
+		AddInstance(formID, pRoot, key);
+
+		it = instanceQueue.erase(it);
+	}
+}
+
 void Raytracing::Main_RenderWorld(bool a1)
 {
 	if (Active()) {
@@ -1423,22 +1453,9 @@ void Raytracing::MakeAndCopy(const eastl::vector<T>& data, winrt::com_ptr<ID3D12
 	res->Unmap(0, nullptr);
 }
 
-inline std::wstring ToWide(const std::string& str)
-{
-	if (str.empty())
-		return std::wstring();
-
-	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
-		(int)str.size(), nullptr, 0);
-	std::wstring wstr(size_needed, 0);
-	MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
-		(int)str.size(), &wstr[0], size_needed);
-	return wstr;
-}
-
 void Raytracing::CommitModel(Model& model)
 {
-	std::lock_guard lock{ renderMutex };
+	//std::lock_guard lock{ renderMutex };
 
 	auto& shapes = model.shapes;
 	auto meshCount = shapes.size();
@@ -1633,15 +1650,16 @@ void Raytracing::CreateModel(RE::TESObjectREFR* refr, const char* path, RE::NiNo
 	}
 
 	auto formID = refr->GetFormID();
-	auto baseFormID = refr->GetBaseObject()->GetFormID();
+	//auto baseFormID = refr->GetBaseObject()->GetFormID();
 
 	// We only need one buffer per model
-	if (models.find(path) != models.end()) {
-		AddInstance(formID, pRoot, path);
+	if (modelQueueSet.find(path) != modelQueueSet.end() || models.find(path) != models.end()) {
+		std::lock_guard lock{ resourceQueueMutex };
+		instanceQueue.emplace_back(formID, pRoot, path);
 		return;
 	}
 
-	logger::info("[RT] CreateModel - Path: {}, Base FormID [0x{:08X}], FormID [0x{:08X}], NiNode [0x{:08X}]: {}", path, baseFormID, formID, reinterpret_cast<uintptr_t>(pRoot), pRoot->name);
+	//logger::info("[RT] CreateModel - Path: {}, Base FormID [0x{:08X}], FormID [0x{:08X}], NiNode [0x{:08X}]: {}", path, baseFormID, formID, reinterpret_cast<uintptr_t>(pRoot), pRoot->name);
 
 	auto rootWorldInverse = pRoot->world.Invert();
 
@@ -1706,8 +1724,8 @@ void Raytracing::CreateModel(RE::TESObjectREFR* refr, const char* path, RE::NiNo
 			auto meshData = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, flags);
 
 			meshData->BuildMesh(triShapeRD, triShapeRuntime.vertexCount, triShapeRuntime.triangleCount, 0, localToRoot);
-			meshData->BuildMaterial(geometryRuntimeData, name);
-			meshData->CreateBuffers(ToWide(name));
+			//meshData->BuildMaterial(geometryRuntimeData, name);
+			//meshData->CreateBuffers(ToWide(name));
 
 			shapes.push_back(eastl::move(meshData));
 		} else if (auto* skinInstance = (RE::BSDismemberSkinInstance*)geometryRuntimeData.skinInstance.get()) {  // Skinned
@@ -1730,8 +1748,8 @@ void Raytracing::CreateModel(RE::TESObjectREFR* refr, const char* path, RE::NiNo
 				auto meshData = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, flags | Flags::Skinned);
 
 				meshData->BuildMesh(partition.buffData, skinPartition->vertexCount, partition.triangles, partition.bonesPerVertex, localToRoot);
-				meshData->BuildMaterial(geometryRuntimeData, name);
-				meshData->CreateBuffers(ToWide(name));
+				//meshData->BuildMaterial(geometryRuntimeData, name);
+				//meshData->CreateBuffers(ToWide(name));
 
 				shapes.push_back(eastl::move(meshData));
 			}
@@ -1748,26 +1766,18 @@ void Raytracing::CreateModel(RE::TESObjectREFR* refr, const char* path, RE::NiNo
 	});
 
 	if (auto shapeCount = shapes.size(); shapeCount > 0) {
-		eastl::string modelKey = path;
+		auto model = Model(path, pRoot, shapes);
 
-		auto model = Model(shapes);
+		eastl::string key = model.key;
 
-		// Models with these flags cannot be instanced directly
-		if ((model.GetFlags() & Flags::Dynamic) || (model.GetFlags() & Flags::Skinned))
-			modelKey.append(std::format("_{:08X}", reinterpret_cast<uintptr_t>(pRoot)).c_str());
+		std::lock_guard lock{ resourceQueueMutex };
 
-		auto [it, emplaced] = models.emplace(modelKey, eastl::move(model));
+		auto [it, emplaced] = modelQueueSet.emplace(key);
 
 		if (emplaced) {
-			CommitModel(it->second);
-			AddInstance(formID, pRoot, modelKey);
-
-			logger::debug("[RT] CreateModel - Commited {} TriShapes", shapeCount);
-		} else {
-			logger::warn("[RT] CreateModel - Emplace failed for {} TriShapes", shapeCount);
+			modelQueue.push_back(eastl::move(model));
+			instanceQueue.emplace_back(formID, pRoot, key);
 		}
-	} else {
-		logger::debug("[RT] CreateModel - No TriShapes to commit");
 	}
 }
 
@@ -1791,7 +1801,7 @@ bool Raytracing::RemoveInstance(RE::NiNode* pRoot, bool releaseModel)
 				// Not sure if its necesary to mutex here, but when the model goes out of scope the buffers are destroyed so I assume it is
 				std::lock_guard lock{ renderMutex };
 
-				logger::debug("[RT] RemoveInstance - No refs, erasing from collection");
+				logger::info("[RT] RemoveInstance - No refs, erasing from collection");
 				models.erase(modelIt);
 			}
 		}
@@ -1827,7 +1837,7 @@ eastl::shared_ptr<Allocation> Raytracing::GetTextureRegister(ID3D11Texture2D* dx
 
 	// Search for texture in shared map
 	if (auto sharedIt = sharedTextures.find(dx11Texture); sharedIt != sharedTextures.end()) {
-		std::lock_guard lock{ renderMutex };
+		//std::lock_guard lock{ renderMutex };
 
 		// Texture not in heap, so create SRV at next available heap slot
 		auto dx12Texture = sharedIt->second.get();
@@ -2503,6 +2513,8 @@ void Raytracing::DrawRTGI()
 	// We mutex here to prevent changes to resources while the command list is in flight, we could just queue everything maybe?
 	std::lock_guard lock{ renderMutex };
 
+	logger::info("[RT] DrawRTGI - Start");
+
 	if (!d3d11Context) {
 		logger::error("d3d11Context is nullptr");
 	}
@@ -2835,6 +2847,8 @@ void Raytracing::DrawRTGI()
 		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		d3d11Context->ClearRenderTargetView(globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kINDIRECT_DOWNSCALED].RTV, clearColor);
 	}
+
+	logger::info("[RT] DrawRTGI - End");
 }
 
 void Raytracing::UpdateShadowsFrameBuffer()
@@ -3723,18 +3737,29 @@ RE::BSEventNotifyControl Raytracing::TESObjectLoadedEventHandler::ProcessEvent(c
 
 	auto* eventRef = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_event->formID);
 
+	auto& rt = globals::features::raytracing;
+
 	// Unloaded
 	if (!a_event->loaded) {
-		auto formID = eventRef->GetFormID();
-
-		logger::info("[RT] TESObjectLoadedEventHandler - Unloading Name: {}, FormID [0x{:08X}]", eventRef->GetName(), formID);
-
-		bool removed = globals::features::raytracing.RemoveInstance(formID, true);
-
-		logger::info("[RT] TESObjectLoadedEventHandler - Unloaded {}", removed);
-
+		//rt.instanceRemovalQueue.emplace_back(eventRef->GetFormID(), nullptr, true);
+		rt.RemoveInstance(eventRef->GetFormID(), true);
 		return RE::BSEventNotifyControl::kContinue;
 	}
+
+	/*auto flags = eventRef->GetFormFlags();
+	RE::FormType type = eventRef->GetFormType();
+
+	logger::info("[RT] Load3DA - ClassName: {}, Flags [0x{:08X}]: {}", typeid(*eventRef).name(), flags, GetFlagsString<RE::TESObjectREFR::RecordFlags::RecordFlag>(flags));
+	logger::info("[RT] Load3DA - Name: {}, FormID: [0x{:08X}], FormType: {}", eventRef->GetName(), eventRef->GetFormID(), magic_enum::enum_name(type));
+
+	if (auto* baseObject = eventRef->GetBaseObject())
+	{
+		auto baseFlags = eventRef->GetFormFlags();
+		RE::FormType baseType = eventRef->GetFormType();
+
+		logger::info("[RT] Load3DB - ClassName: {}, Flags [0x{:08X}]: {}", typeid(*baseObject).name(), baseFlags, GetFlagsString<RE::TESObjectREFR::RecordFlags::RecordFlag>(baseFlags));
+		logger::info("[RT] Load3DB - Name: {}, FormID: [0x{:08X}], FormType: {}", baseObject->GetName(), baseObject->GetFormID(), magic_enum::enum_name(baseType));
+	}*/
 
 	//if (eventRef->formType.none(RE::FormType::NPC, RE::FormType::LeveledNPC, RE::FormType::ActorCharacter))
 	if (eventRef->formType.none(RE::FormType::ActorCharacter))

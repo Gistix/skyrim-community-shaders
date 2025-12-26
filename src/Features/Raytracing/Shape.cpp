@@ -415,8 +415,6 @@ void Shape::CreateBuffers(const std::wstring& name)
 
 	auto* materialBuffer = rt.materialBuffer.get();
 
-	std::lock_guard lock{ rt.renderMutex };
-
 	// Dynamic
 	if (flags & Flags::Dynamic) {
 		// Not really a buffer but we need to initialize it somewhere

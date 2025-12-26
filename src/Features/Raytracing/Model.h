@@ -21,19 +21,23 @@
 
 struct Model
 {
+	eastl::string key;
 	eastl::vector<eastl::unique_ptr<Shape>> shapes;
 
 	winrt::com_ptr<D3D12MA::Allocation> blasBuffer = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> blasScratchBuffer = nullptr;
 
-	Model(eastl::vector<eastl::unique_ptr<Shape>>& shapes) :
-		shapes(eastl::move(shapes))
+	Model(const char* pKey, RE::NiNode* pNiNode, eastl::vector<eastl::unique_ptr<Shape>>& shapes) :
+		key(pKey), shapes(eastl::move(shapes))
 	{
 		for (auto& shape : this->shapes) {
 			flags |= shape->flags;
 			shaderTypes |= shape->material.shaderType;
 			features |= static_cast<int>(shape->material.Feature);
 		}
+
+		if (flags & Flags::Dynamic || flags & Flags::Skinned)
+			key.append(std::format("_{:08X}", reinterpret_cast<uintptr_t>(pNiNode)).c_str());
 	}
 
 	Flags GetFlags() const

@@ -256,6 +256,7 @@ struct Raytracing : public OverlayFeature
 	eastl::vector<LightLimitFix::LightData> GetPointLights();
 	void UpdateLights();
 
+	void Main_RenderPlayerView();
 	void Main_RenderWorld(bool a1);
 	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
 
@@ -555,8 +556,8 @@ struct Raytracing : public OverlayFeature
 
 	eastl::shared_ptr<Allocation> GetTextureRegister(ID3D11Texture2D* texture, eastl::shared_ptr<Allocation> defaultTexture);
 
-	Allocator shapeRegisters = Allocator(MAX_SHAPES);
-	Allocator textureRegisters = Allocator(MAX_TEXTURES);
+	Allocator shapeRegisters = Allocator(MAX_SHAPES,"Shapes");
+	Allocator textureRegisters = Allocator(MAX_TEXTURES, "Textures");
 
 	struct DefaultTexture
 	{
@@ -604,6 +605,15 @@ struct Raytracing : public OverlayFeature
 	eastl::shared_ptr<DefaultTexture> defaultNormalTexture = nullptr;
 	eastl::shared_ptr<DefaultTexture> defaultBlackTexture = nullptr;
 	eastl::shared_ptr<DefaultTexture> defaultRMAOSTexture = nullptr;
+
+	// When the game loads a new model we process it and add it to this queue so GPU resources will be created in a opportune time
+	eastl::deque<Model> modelQueue;
+	eastl::hash_set<eastl::string> modelQueueSet;
+
+	eastl::deque<eastl::tuple<RE::FormID, RE::NiNode*, eastl::string>> instanceQueue;
+	eastl::hash_set<RE::NiNode*> instanceQueueSet;
+
+	eastl::deque<eastl::tuple<RE::FormID, RE::NiNode*, bool>> instanceRemovalQueue;
 
 	// We'll group trishapes by their parent nodes, hopefully trishapes don't move on their own
 	eastl::unordered_map<eastl::string, Model> models;
@@ -830,11 +840,10 @@ struct Raytracing : public OverlayFeature
 
 	eastl::unique_ptr<WrappedResource> mainTexture = nullptr;
 
-	std::shared_mutex geometryMutex;
-	std::shared_mutex bufferMutex;
 	std::shared_mutex sharedTextureMutex;
+	std::shared_mutex resourceQueueMutex;
 	std::shared_mutex renderMutex;
-
+	
 	uint2 renderSize;
 
 	// Timings
@@ -1251,9 +1260,16 @@ struct Raytracing : public OverlayFeature
 					if (flags & MarkerFlags::MapMarker || flags & MarkerFlags::HeadingMarker)
 						return result;
 
-					/*RE::FormID id = baseObject->GetFormID();
-					logger::info("[RT] Load3DA - Name: {}, Flags [0x{:8X}]: {}", typeid(*baseObject).name(), flags, GetFlagsString<RE::TESObjectREFR::RecordFlags::RecordFlag>(flags));
-					logger::info("[RT] Load3DA - FormID: [0x{:8X}], FormType: {}", id, magic_enum::enum_name(type));*/
+					/*auto flagsRefr = oThis->GetFormFlags();
+					RE::FormType typeRefr = oThis->GetFormType();
+					logger::info("[RT] Load3DA - ClassName: {}, Flags [0x{:08X}]: {}", typeid(*oThis).name(), flagsRefr, GetFlagsString<RE::TESObjectREFR::RecordFlags::RecordFlag>(flagsRefr));
+					logger::info("[RT] Load3DA - Name: {}, FormID: [0x{:08X}], FormType: {}", oThis->GetName(), oThis->GetFormID(), magic_enum::enum_name(typeRefr));
+
+					//test->GetName()
+					//test->GetDisplayFullName();
+
+					logger::info("[RT] Load3DB - ClassName: {}, Flags [0x{:08X}]: {}", typeid(*baseObject).name(), flags, GetFlagsString<RE::TESObjectREFR::RecordFlags::RecordFlag>(flags));
+					logger::info("[RT] Load3DB - Name: {}, FormID: [0x{:08X}], FormType: {}", baseObject->GetName(), baseObject->GetFormID(), magic_enum::enum_name(type));*/
 
 					if (auto* model = baseObject->As<RE::TESModel>()) {
 						rt.CreateModel(oThis, model->GetModel(), netimmerse_cast<RE::NiNode*>(result));
@@ -1271,7 +1287,10 @@ struct Raytracing : public OverlayFeature
 			static void thunk(T* oThis)
 			{
 				if (auto& rt = globals::features::raytracing; rt.Active()) {
-					if (auto* pNiAVObject = oThis->Get3D()) {
+					if (RE::NiAVObject* pNiAVObject = oThis->Get3D()) {
+						/*std::lock_guard lock{ rt.resourceQueueMutex };
+						rt.instanceRemovalQueue.emplace_back(0, netimmerse_cast<RE::NiNode*>(pNiAVObject), false);*/
+
 						rt.RemoveInstance(netimmerse_cast<RE::NiNode*>(pNiAVObject), true);
 					}
 				}
@@ -1398,7 +1417,9 @@ struct Raytracing : public OverlayFeature
 		{
 			static void thunk(T* oThis)
 			{
-				if (auto& rt = globals::features::raytracing; rt.Active()) {
+				if (auto& rt = globals::features::raytracing; rt.loaded) {
+					//std::lock_guard lock{ rt.resourceQueueMutex };
+					//rt.instanceRemovalQueue.emplace_back(0, oThis, false);
 					rt.RemoveInstance(oThis, false);
 				}
 
@@ -1454,6 +1475,20 @@ struct Raytracing : public OverlayFeature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct Main_RenderPlayerView
+		{
+			static void thunk(void* a1, bool a2, bool a3)
+			{
+				auto& rt = globals::features::raytracing;
+
+				if (rt.loaded)
+					rt.Main_RenderPlayerView();
+
+				func(a1, a2, a3);
+			};
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			stl::write_vfunc<0x6A, Load3D<RE::TESObjectREFR>>(RE::VTABLE_TESObjectREFR[0]);
@@ -1471,6 +1506,7 @@ struct Raytracing : public OverlayFeature
 			stl::write_vfunc<0x0, Destructor<RE::BSFadeNode>>(RE::VTABLE_BSLeafAnimNode[0]);
 			//stl::write_vfunc<0x0, Destructor<RE::BSFadeNode>>(RE::VTABLE_BSTreeNode[0]);
 			
+			stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 
 			//stl::detour_thunk<BSBatchRenderer_RenderBatches>(REL::RelocationID(100852, 107642));
