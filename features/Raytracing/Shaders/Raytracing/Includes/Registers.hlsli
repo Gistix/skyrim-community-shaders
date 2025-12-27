@@ -30,9 +30,8 @@ StructuredBuffer<Material> Materials            : register(t8, space0);
 StructuredBuffer<Instance> Instances            : register(t9, space0);
 ByteAddressBuffer Indirection                   : register(t10, space0);
 
-StructuredBuffer<Vertex> Vertices[]             : register(t0, space1);
-StructuredBuffer<Triangle> Triangles[]          : register(t0, space2);
-Texture2D<float4> Textures[]                    : register(t0, space3);
+StructuredBuffer<Triangle> Triangles[]          : register(t0, space1);
+Texture2D<float4> Textures[]                    : register(t0, space2);
 
 SamplerState BaseSampler                        : register(s0);
 //SamplerState EffectSampler                      : register(s1);

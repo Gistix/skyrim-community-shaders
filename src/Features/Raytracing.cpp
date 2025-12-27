@@ -2656,17 +2656,14 @@ void Raytracing::DrawRTGI()
 			// Parameter 1: Fixed SRVs
 			commandList->SetComputeRootDescriptorTable(1, giHeap->TableGPUHandle(GIHeap::Table::SRV));
 
-			// Parameter 2: Vertex buffers
-			commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::VertexBuffer));
+			// Parameter 2: Triangle buffers
+			commandList->SetComputeRootDescriptorTable(2, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
 
-			// Parameter 3: Triangle buffers
-			commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::TriangleBuffer));
+			// Parameter 3: Textures
+			commandList->SetComputeRootDescriptorTable(3, giHeap->TableGPUHandle(GIHeap::Table::Textures));
 
-			// Parameter 4: Textures
-			commandList->SetComputeRootDescriptorTable(4, giHeap->TableGPUHandle(GIHeap::Table::Textures));
-
-			// Parameter 5: Constant buffer
-			commandList->SetComputeRootConstantBufferView(5, frameBuffer->resource->GetGPUVirtualAddress());
+			// Parameter 4: Constant buffer
+			commandList->SetComputeRootConstantBufferView(4, frameBuffer->resource->GetGPUVirtualAddress());
 
 			D3D12_DISPATCH_RAYS_DESC dispatchDesc{};
 			dispatchDesc.Depth = 1;
@@ -3288,22 +3285,12 @@ void Raytracing::CreateRootSignature()
 			{ GIHeap::Slot::Indirection, 1 }			
 		});
 
-
-	// Vertex buffers (unbounded)
-	giHeap->CreateTable(
-		GIHeap::Table::VertexBuffer, 
-		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-		{
-			{ GIHeap::Slot::Vertices, UINT_MAX, 1, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE }
-		});
-	
-
 	// Triangle buffers (unbounded)
 	giHeap->CreateTable(
 		GIHeap::Table::TriangleBuffer, 
 		D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 
 		{ 
-			{ GIHeap::Slot::Triangles, UINT_MAX, 2, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE } 
+			{ GIHeap::Slot::Triangles, UINT_MAX, 1, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE } 
 		});
 
 	// Textures (unbounded)
@@ -3311,7 +3298,7 @@ void Raytracing::CreateRootSignature()
 		GIHeap::Table::Textures,
 		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
 		{ 
-			{ GIHeap::Slot::Textures, UINT_MAX, 3, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE } 
+			{ GIHeap::Slot::Textures, UINT_MAX, 2, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE } 
 		});
 
 

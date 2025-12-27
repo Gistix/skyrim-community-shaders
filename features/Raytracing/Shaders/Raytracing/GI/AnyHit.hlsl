@@ -9,7 +9,7 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attrib
 {
     uint shapeIdx = GetShapeIdx(InstanceIndex(), GeometryIndex());
     
-    Vertex v0, v1, v2;
+    VertexRT v0, v1, v2;
     GetVertices(shapeIdx, PrimitiveIndex(), v0, v1, v2);
     
     float3 uvw = GetBary(attribs.barycentrics);

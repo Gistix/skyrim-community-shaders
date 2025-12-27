@@ -30,6 +30,13 @@ DEFINE_ENUM_FLAG_OPERATORS(Flags);
 class Shape
 {
 public:
+	struct TriangleIndices
+	{
+		uint16_t x;
+		uint16_t y;
+		uint16_t z;
+	};
+
 	struct Material
 	{
 		enum ShaderType : uint16_t
@@ -90,7 +97,7 @@ public:
 
 			for (const auto& [flag, name] : entries) {
 				for (const auto& [originalFlag, originalName] : originalEntries) {
-					if ((shaderFlags & originalFlag) && name == originalName) {
+					if (shaderFlags.any(originalFlag) && name == originalName) {
 						shaderFlagsLocal |= flag;
 						break;
 					}
@@ -113,7 +120,7 @@ public:
 		eastl::shared_ptr<Allocation> RMAOSTexture;
 
 		RE::BSShader::Type shaderType;
-		stl::enumeration<RE::BSShaderProperty::EShaderPropertyFlag, uint64_t> shaderFlags;
+		REX::EnumSet<RE::BSShaderProperty::EShaderPropertyFlag, std::uint64_t> shaderFlags;
 		RE::BSShaderMaterial::Feature Feature;
 		stl::enumeration<PBRShaderFlags, uint16_t> PBRFlags;
 
@@ -146,12 +153,16 @@ public:
 	eastl::vector<float4> dynamicPosition;
 	eastl::vector<Vertex> vertices;
 	eastl::vector<Skinning> skinning;
-	eastl::vector<Triangle> triangles;
+	eastl::vector<TriangleIndices> triangles;
+
+	// Each triangle contains the data of its three vertices, prevents three random memory acess during raytracing
+	eastl::vector<Triangle> trianglesFlattened;
 
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<float4>> dynamicPositionBuffer = nullptr;
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Vertex>> vertexBuffer = nullptr;
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Skinning>> skinningBuffer = nullptr;
-	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Triangle>> triangleBuffer = nullptr;
+	eastl::unique_ptr<DX12::StructuredBufferUploadMA<TriangleIndices>> triangleBuffer = nullptr;
+	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Triangle>> triangleFlattenedBuffer = nullptr;
 
 	Material material;
 
@@ -185,13 +196,37 @@ public:
 		return clone;
 	}*/
 
+	static VertexRT GetVertexRT(Vertex vertex) {
+		VertexRT vertexRT{};
+
+		vertexRT.Texcoord0 = vertex.Texcoord0;
+		vertexRT.Normal = vertex.Normal;
+		vertexRT.Tangent = vertex.Tangent;
+
+		half4 color = UnpackUByte4(vertex.Color.packed);
+
+		float3 normal = vertex.Normal;
+		float3 tangent = vertex.Tangent;
+		float3 bitangent = vertex.Bitangent;
+
+		auto pack = [](float v, float max = 255.0f) -> uint32_t {
+			v = std::clamp(v, 0.0f, 1.0f);
+			return static_cast<uint32_t>(v * max + 0.5f);
+		};
+
+		bool handedness = normal.Cross(tangent).Dot(bitangent) >= 0;
+		vertexRT.Data = Data(pack(color.x), pack(color.y), pack(color.z), pack(color.w, 127), handedness);
+
+		return vertexRT;
+	}
+
 	void BuildMesh(RE::BSGraphics::TriShape* rendererData, const std::uint32_t& vertexCountIn, const std::uint16_t& triangleCountIn, const std::uint16_t& bonesPerVertex, const float4x4& transform);
 
 	void BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryRuntimeData, [[maybe_unused]] const char* name);
 	
 	void CreateBuffers(const std::wstring& name);
 
-	void CalculateNTB(bool normals);
+	void CalculateVectors(bool calculateNormal);
 
 	// For PBR shader flags we need to copy exactly what TruePBR does 
 	static stl::enumeration<PBRShaderFlags, uint16_t> GetPBRShaderFlags(const BSLightingShaderMaterialPBR* pbrMaterial);

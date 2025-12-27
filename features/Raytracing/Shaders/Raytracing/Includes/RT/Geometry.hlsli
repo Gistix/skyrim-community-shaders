@@ -13,6 +13,11 @@ float3 GetBary(float2 barycentrics)
     );
 }
 
+inline float Interpolate(half u, half v, half w, float3 uvw)
+{
+    return u * uvw.x + v * uvw.y + w * uvw.z;
+}
+
 inline float2 Interpolate(half2 u, half2 v, half2 w, float3 uvw)
 {
     return u * uvw.x + v * uvw.y + w * uvw.z;
@@ -55,14 +60,13 @@ Triangle GetTriangle(in uint shapeIdx, in uint primitiveIdx)
     return Triangles[shapeIdx][primitiveIdx];
 }
 
-void GetVertices(in uint shapeIndex, in uint primitiveIndex, out Vertex v0, out Vertex v1, out Vertex v2)
+void GetVertices(in uint shapeIndex, in uint primitiveIndex, out VertexRT v0, out VertexRT v1, out VertexRT v2)
 {
     Triangle geomTriangle = GetTriangle(shapeIndex, primitiveIndex);
-    
-    StructuredBuffer<Vertex> vertices = Vertices[shapeIndex];    
-    v0 = vertices[geomTriangle.x];
-    v1 = vertices[geomTriangle.y];
-    v2 = vertices[geomTriangle.z];  
+     
+    v0 = geomTriangle.v0;
+    v1 = geomTriangle.v1;
+    v2 = geomTriangle.v2;
 }
 
 #endif // GEOMETRY_HLSL

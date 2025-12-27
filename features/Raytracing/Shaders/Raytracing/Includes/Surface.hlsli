@@ -56,7 +56,7 @@ struct Surface
         uint shapeIndex = GetShapeIdx(payload, instance);
 
         // Loads all geometry releated data
-        Vertex v0, v1, v2;
+        VertexRT v0, v1, v2;
         GetVertices(shapeIndex, payload.primitiveIndex, v0, v1, v2);
         
         float3 uvw = GetBary(payload.Barycentrics());
@@ -67,15 +67,19 @@ struct Surface
         
         float3x3 objectToWorld3x3 = (float3x3) instance.Transform;
         
-        surface.GeomNormal = normalize(mul(objectToWorld3x3, Interpolate(v0.Normal, v1.Normal, v2.Normal, uvw)));
+        float3 normalWS = normalize(mul(objectToWorld3x3, Interpolate(v0.Normal, v1.Normal, v2.Normal, uvw)));
         float3 tangentWS = normalize(mul(objectToWorld3x3, Interpolate(v0.Tangent, v1.Tangent, v2.Tangent, uvw)));
-        float3 bitangentWS = normalize(mul(objectToWorld3x3, Interpolate(v0.Bitangent, v1.Bitangent, v2.Bitangent, uvw)));
         
-        float4 vertexColor = Interpolate(v0.Color.unpack(), v1.Color.unpack(), v2.Color.unpack(), uvw);
-
+        float handedness = Interpolate(v0.Handedness(), v1.Handedness(), v2.Handedness(), uvw);
+        
+        float3 bitangentWS = normalize(cross(normalWS, tangentWS)) * handedness;
+        
+        float4 vertexColor = Interpolate(v0.Color(), v1.Color(), v2.Color(), uvw);
+        
         Texture2D baseTexture = Textures[NonUniformResourceIndex(material.BaseTexture)];
         Texture2D effectTexture = Textures[NonUniformResourceIndex(material.EffectTexture)];        
         
+        [branch]
         if (material.ShaderType == ShaderType::Effect)
         {
             float3 base = float3(1, 1, 1);
@@ -110,7 +114,7 @@ struct Surface
         }
         else
         {        
-            float3 base = baseTexture.SampleLevel(BaseSampler, texCoord0, 0).rgb;
+            float3 base = baseTexture.SampleLevel(BaseSampler, texCoord0, 0).rgb;         
             float3 effect = effectTexture.SampleLevel(BaseSampler, texCoord0, 0).rgb;
         
             surface.Albedo = base * material.BaseColor.rgb * vertexColor.rgb;     
@@ -121,13 +125,16 @@ struct Surface
         surface.Albedo = float3(1.0f, 1.0f, 1.0f);
 #endif        
         
+        surface.GeomNormal = normalWS;
+        
 #ifdef PATH_TRACING        
         Texture2D normalTexture = Textures[NonUniformResourceIndex(material.NormalTexture)];
         Texture2D rmaosTexture = Textures[NonUniformResourceIndex(material.RMAOSTexture)];
         
         NormalMap(
-            normalTexture.SampleLevel(BaseSampler, texCoord0, 0).rgb, 
-            surface.GeomNormal, tangentWS, bitangentWS, 
+            normalTexture.SampleLevel(BaseSampler, texCoord0, 0).rgb,
+            handedness,
+            normalWS, tangentWS, bitangentWS, 
             surface.Normal, surface.Tangent, surface.Bitangent
         );
         
@@ -137,7 +144,7 @@ struct Surface
         surface.Metallic = saturate(rmaos.y);
         surface.AO = rmaos.z;
 #else 
-        surface.Normal = surface.GeomNormal;
+        surface.Normal = normalWS;
         surface.Tangent = tangentWS;
         surface.Bitangent = bitangentWS;
         
