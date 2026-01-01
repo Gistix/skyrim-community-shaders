@@ -24,6 +24,7 @@
 #include "Features/Raytracing/Model.h"
 #include "Features/Raytracing/Pipelines/SHaRCPipeline.h"
 #include "Features/Raytracing/Pipelines/SVGFPipeline.h"
+#include "Features/Raytracing/Pipelines/NRDPipeline.h"
 #include "Features/Raytracing/RTPipelineBuilder.h"
 #include "Features/Raytracing/ShaderBindingTable.h"
 #include "Features/Raytracing/Shape.h"
@@ -164,25 +165,6 @@ struct Raytracing : public OverlayFeature
 	};
 	using ShadowsHeap = Heap<ShadowsHeapDef::Table, ShadowsHeapDef::Slot>;
 
-	struct SVGFHeapDef
-	{
-		enum class Table
-		{
-			UAV,
-			SRV
-		};
-
-		enum class Slot
-		{
-			ShadowMask,
-			Depth,
-			TLAS,
-			NumDescriptors,
-			None
-		};
-	};
-	using SVGFHeap = Heap<SVGFHeapDef::Table, SVGFHeapDef::Slot>;
-
 	////////////////////////////////////////////////// Boilerplate
 	// Metadata
 	virtual inline std::string GetName() override { return "Raytracing"; }
@@ -313,8 +295,12 @@ struct Raytracing : public OverlayFeature
 		if (!sharcPipeline)
 			sharcPipeline = eastl::make_unique<SHaRCPipeline>();
 
-		static eastl::array<IPipeline*, 1> pipelines = {
-			sharcPipeline.get()
+		if (!nrdPipeline)
+			nrdPipeline = eastl::make_unique<NRDPipeline>();
+
+		static eastl::array<IPipeline*, 2> pipelines = {
+			sharcPipeline.get(),
+			nrdPipeline.get()
 		};
 
 		return pipelines;
@@ -340,6 +326,7 @@ struct Raytracing : public OverlayFeature
 	{
 		None,
 		SVGF,
+		NRD,
 #ifdef DLSS_RR
 		DLSSRR
 #endif
@@ -799,6 +786,9 @@ struct Raytracing : public OverlayFeature
 
 	// SHaRC (Radiance cache)
 	eastl::unique_ptr<SHaRCPipeline> sharcPipeline = nullptr;
+
+	// SVGF (denoiser)
+	eastl::unique_ptr<NRDPipeline> nrdPipeline = nullptr;
 
 	// SVGF (denoiser)
 	eastl::unique_ptr<SVGFPipeline> svgfDenoiser = nullptr;
