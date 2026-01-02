@@ -79,6 +79,11 @@ find_package(D3D12MemoryAllocator CONFIG REQUIRED)
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
 
 set(NRD_USE_DX12 ON CACHE BOOL "" FORCE)
+set(NRD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+
+set(NRD_EMBEDS_SPIRV_SHADERS OFF CACHE BOOL "" FORCE)
+set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(extern/NRD)
 
 find_path(DETOURS_INCLUDE_DIRS "detours/detours.h")
