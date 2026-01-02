@@ -95,7 +95,20 @@ void NRDPipeline::SetupResources(ID3D12Device5* device)
 			break;
 		}
 
-		samplers.emplace_back(samplerIndex, filter, address, address, address);
+		samplers.emplace_back(
+			instanceDesc->samplersBaseRegisterIndex + samplerIndex, 
+			filter, 
+			address, 
+			address, 
+			address, 
+			0.0f, 
+			16u, 
+			D3D12_COMPARISON_FUNC_LESS_EQUAL, 
+			D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+			0.0f,
+			D3D12_FLOAT32_MAX,
+			D3D12_SHADER_VISIBILITY_ALL,
+			instanceDesc->constantBufferAndSamplersSpaceIndex);
 	}
 
 	pipelines.resize(instanceDesc->pipelinesNum);
@@ -134,27 +147,31 @@ void NRDPipeline::SetupResources(ID3D12Device5* device)
 			}
 		}
 
-		if (!srvRanges.empty()) {
-			CD3DX12_ROOT_PARAMETER1 srvTable;
-			srvTable.InitAsDescriptorTable(
+		if (srvRanges.empty()) {
+			rootParameters.emplace_back().InitAsDescriptorTable(0, nullptr);
+		} else {
+			rootParameters.emplace_back().InitAsDescriptorTable(
 				(UINT)srvRanges.size(),
 				srvRanges.data(),
 				D3D12_SHADER_VISIBILITY_ALL);
-			rootParameters.push_back(srvTable);
 		}
 
-		if (!uavRanges.empty()) {
-			CD3DX12_ROOT_PARAMETER1 uavTable;
-			uavTable.InitAsDescriptorTable(
+		if (uavRanges.empty()) {
+			rootParameters.emplace_back().InitAsDescriptorTable(0, nullptr);
+		} else {
+			rootParameters.emplace_back().InitAsDescriptorTable(
 				(UINT)uavRanges.size(),
 				uavRanges.data(),
 				D3D12_SHADER_VISIBILITY_ALL);
-			rootParameters.push_back(uavTable);
 		}
 
 		CD3DX12_ROOT_PARAMETER1 constantRootParam;
 		constantRootParam.InitAsConstantBufferView(instanceDesc->constantBufferRegisterIndex, instanceDesc->constantBufferAndSamplersSpaceIndex);
 		rootParameters.push_back(constantRootParam);
+
+		auto flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS |
+		             D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+		             D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS;
 
 		CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSigDesc;
 		rootSigDesc.Init_1_1(
@@ -162,7 +179,7 @@ void NRDPipeline::SetupResources(ID3D12Device5* device)
 			rootParameters.data(),
 			(uint)samplers.size(),
 			samplers.data(),
-			D3D12_ROOT_SIGNATURE_FLAG_NONE);
+			flags);
 
 		winrt::com_ptr<ID3DBlob> serializedRootSig = nullptr;
 		winrt::com_ptr<ID3DBlob> errorBlob = nullptr;
