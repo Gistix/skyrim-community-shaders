@@ -27,6 +27,7 @@
 #include "Features/Raytracing/Pipelines/SHaRCPipeline.h"
 #include "Features/Raytracing/Pipelines/SVGFPipeline.h"
 #include "Features/Raytracing/RTPipelineBuilder.h"
+#include "Features/Raytracing/SkyboxRenderer.h"
 #include "Features/Raytracing/ShaderBindingTable.h"
 #include "Features/Raytracing/Shape.h"
 #include "Features/Raytracing/Types.h"
@@ -76,6 +77,8 @@ struct Raytracing : public OverlayFeature
 	static constexpr uint MAX_LIGHTS = 255;
 
 	static constexpr uint SKY_CUBEMAP_SIZE = 256;
+
+	static constexpr uint SKY_HEMI_RES = SKY_CUBEMAP_SIZE * 2;
 
 	enum MarkerFlags : uint32_t
 	{
@@ -262,6 +265,7 @@ struct Raytracing : public OverlayFeature
 
 	void Main_RenderWorld(bool a1);
 	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
+	void BSSkyShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass);
 
 	void SkyCubeToHemi() const;
 	void CheckResourcesSide(int side);
@@ -831,7 +835,31 @@ struct Raytracing : public OverlayFeature
 	bool renderingCubemap = false;
 
 	eastl::unique_ptr<WrappedResource> skyHemisphere = nullptr;
+	eastl::unique_ptr<Texture2D> skyHemisphereDepth = nullptr;
+	eastl::unordered_map<ID3D11RasterizerState*, winrt::com_ptr<ID3D11RasterizerState>> skyRasterStates;
+
 	winrt::com_ptr<ID3D11ComputeShader> cubeToHemiCS = nullptr;
+	winrt::com_ptr<ID3D11DepthStencilState> skyboxDS = nullptr;
+	
+	eastl::unordered_map<uint32_t, winrt::com_ptr<ID3D11GeometryShader>> skyGS;
+
+	struct alignas(16) SkyPerGeometry
+	{
+		float4x4 WorldViewProj;
+		float4x4 World;
+		float4x4 PreviousWorld;
+		float3 EyePosition;
+		float VParams;
+		float4 BlendColor[3];
+		float2 TexCoordOff;
+		uint2 Pad0;
+	};
+	STATIC_ASSERT_ALIGNAS_16(SkyPerGeometry);
+
+	eastl::unique_ptr<SkyPerGeometry> skyPerGeometryData = nullptr;
+	eastl::unique_ptr<ConstantBuffer> skyPerGeometryCB = nullptr;
+
+	uint skyCubeFace = 0;
 
 	// Shadow maps
 	bool renderingShadowmap = false;
@@ -914,8 +942,117 @@ struct Raytracing : public OverlayFeature
 		{
 			static HRESULT WINAPI thunk(ID3D11Device* This, const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Texture2D** ppTexture2D)
 			{
+				auto& rt = globals::features::raytracing;
+
+				if (!pDesc || !pInitialData || !rt.loaded || !rt.shareTexture)
+					return func(This, pDesc, pInitialData, ppTexture2D);
+
 				D3D11_TEXTURE2D_DESC descCopy = *pDesc;
 				const D3D11_SUBRESOURCE_DATA* initialDataCopy = pInitialData;
+
+				bool shareTexture = false;
+
+				eastl::vector<D3D11_SUBRESOURCE_DATA> initialDataLocal;
+				eastl::vector<eastl::vector<uint8_t>> mipStorage;
+
+				//bool share = IsShareableFormat(pDesc->Format);
+
+				if (pDesc->ArraySize == 1 && pDesc->Usage == D3D11_USAGE_DEFAULT && pDesc->BindFlags == D3D11_BIND_SHADER_RESOURCE && pDesc->MiscFlags == 0 && pDesc->CPUAccessFlags == 0) {
+					bool recompress = rt.settings.RecompressTextures;
+
+					// Final texture format based on input format and recompress option
+					descCopy.Format = GetCompatibleFormat(pDesc->Format, recompress);
+
+					if (pDesc->Format != descCopy.Format) {
+						logger::info("[RT] ID3D11Device::CreateTexture2D - Sharing Texture - Original Format: {}, Target Format: {}", magic_enum::enum_name(pDesc->Format), magic_enum::enum_name(descCopy.Format));
+
+						initialDataLocal.resize(pDesc->MipLevels);
+						mipStorage.resize(pDesc->MipLevels);
+		
+						// Intermediary (or final if recompress is off) texture format
+						auto decompressedFormat = GetCompatibleFormat(pDesc->Format, false);
+
+						auto range = std::views::iota(0u, pDesc->MipLevels);
+						std::for_each(std::execution::seq, range.begin(), range.end(), [&](uint mip) {
+							// Load source mip
+							DirectX::Image src;
+							src.width = std::max(1u, pDesc->Width >> mip);
+							src.height = std::max(1u, pDesc->Height >> mip);
+							src.format = pDesc->Format;
+							src.rowPitch = pInitialData[mip].SysMemPitch;
+							src.slicePitch = pInitialData[mip].SysMemSlicePitch;
+							src.pixels = (uint8_t*)pInitialData[mip].pSysMem;
+
+							// Decompress to an intermediate format
+							DirectX::ScratchImage decompressedScratch;
+							DX::ThrowIfFailed(DirectX::Decompress(src, decompressedFormat, decompressedScratch));
+
+							DirectX::ScratchImage outputScratch;
+							const DirectX::Image* outputImage = nullptr;
+
+							// Recompress if required
+							if (recompress) {
+								const DirectX::Image* decompressed = decompressedScratch.GetImage(0, 0, 0);
+								DX::ThrowIfFailed(DirectX::Compress(*decompressed, descCopy.Format, DirectX::TEX_COMPRESS_DEFAULT | DirectX::TEX_COMPRESS_PARALLEL, DirectX::TEX_THRESHOLD_DEFAULT, outputScratch));								
+								outputImage = outputScratch.GetImage(0, 0, 0);
+							} else {
+								outputImage = decompressedScratch.GetImage(0, 0, 0);
+							}
+
+							// Copy pixel data into safe storage
+							mipStorage[mip].resize(outputImage->slicePitch);
+							std::memcpy(mipStorage[mip].data(), outputImage->pixels, outputImage->slicePitch);
+
+							initialDataLocal[mip].pSysMem = mipStorage[mip].data();
+							initialDataLocal[mip].SysMemPitch = static_cast<UINT>(outputImage->rowPitch);
+							initialDataLocal[mip].SysMemSlicePitch = static_cast<UINT>(outputImage->slicePitch);
+						});
+
+						initialDataCopy = initialDataLocal.data();
+					}
+
+					descCopy.MiscFlags |= D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+					shareTexture = true;
+				}
+
+				HRESULT hr = func(This, &descCopy, initialDataCopy, ppTexture2D);
+
+				if (shareTexture) {
+					if (SUCCEEDED(hr)) {
+						winrt::com_ptr<IDXGIResource1> dxgiResource = nullptr;
+						DX::ThrowIfFailed((*ppTexture2D)->QueryInterface(IID_PPV_ARGS(dxgiResource.put())));
+
+						HANDLE sharedHandle = nullptr;
+						DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &sharedHandle));
+
+						winrt::com_ptr<ID3D12Resource> resource = nullptr;
+						HRESULT hrOSH = rt.d3d12Device->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(resource.put()));
+
+						CloseHandle(sharedHandle);
+
+						if (SUCCEEDED(hrOSH)) {
+							rt.sharedTextures.emplace(*ppTexture2D, std::move(resource));
+						} else {
+							logger::warn("[RT] Error opening shared handle - [0x{:x}], Format: {}, Dimension: ({}, {}), MipLevels: {}", hrOSH, magic_enum::enum_name(pDesc->Format), pDesc->Width, pDesc->Height, pDesc->MipLevels);
+						}
+					} else {
+						logger::warn("[RT] Error creating shareable texture - [0x{:x}], Format: {}, Dimension: ({}, {}), MipLevels: {}", hr, magic_enum::enum_name(pDesc->Format), pDesc->Width, pDesc->Height, pDesc->MipLevels);
+					}
+				}
+
+				return hr;
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct ID3D11Device_CreateTexture2D2
+		{
+			static HRESULT WINAPI thunk(ID3D11Device* This, const D3D11_TEXTURE2D_DESC* pDesc, const D3D11_SUBRESOURCE_DATA* pInitialData, ID3D11Texture2D** ppTexture2D)
+			{
+				D3D11_TEXTURE2D_DESC descCopy = *pDesc;
+				const D3D11_SUBRESOURCE_DATA* initialDataCopy = pInitialData;
+
 
 				auto& rt = globals::features::raytracing;
 
@@ -929,6 +1066,7 @@ struct Raytracing : public OverlayFeature
 				if (rt.loaded && share && pDesc && pInitialData && pDesc->ArraySize == 1 && pDesc->Usage == D3D11_USAGE_DEFAULT && pDesc->BindFlags == D3D11_BIND_SHADER_RESOURCE && pDesc->MiscFlags == 0 && pDesc->CPUAccessFlags == 0) {
 					bool recompress = rt.settings.RecompressTextures;
 
+					// Final texture format based on input format and recompress option
 					descCopy.Format = GetCompatibleFormat(pDesc->Format, recompress);
 
 					logger::trace("[RT] ID3D11Device::CreateTexture2D - Sharing Texture - Original Format: {}, Target Format: {}", magic_enum::enum_name(pDesc->Format), magic_enum::enum_name(descCopy.Format));
@@ -939,6 +1077,7 @@ struct Raytracing : public OverlayFeature
 
 						auto range = std::views::iota(0u, pDesc->MipLevels);
 
+						// Intermediary (or final if recompress is off) texture format
 						auto decompressedFormat = GetCompatibleFormat(pDesc->Format, false);
 
 						std::for_each(std::execution::par, range.begin(), range.end(), [&](uint mip) {
@@ -1124,6 +1263,20 @@ struct Raytracing : public OverlayFeature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct BSSkyShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
+			{
+				func(This, Pass, RenderFlags);
+
+				auto& rt = globals::features::raytracing;
+				if (rt.Active()) {
+					rt.BSSkyShader_SetupGeometry(This, Pass);
+				}
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		struct BSCubeMapCamera_RenderCubemap
 		{
 			static void thunk(RE::NiCamera* camera, int a2, bool a3, bool a4, bool a5)
@@ -1131,6 +1284,10 @@ struct Raytracing : public OverlayFeature
 				auto& rt = globals::features::raytracing;
 
 				rt.renderingCubemap = true;
+
+				/*auto& runtimeData = camera->GetRuntimeData2();			
+
+				logger::info("[RT] BSCubeMapCamera::RenderCubemap - Near: {}, Far: {}", runtimeData.viewFrustum.fNear, runtimeData.viewFrustum.fFar);*/
 
 				func(camera, a2, a3, a4, a5);
 
@@ -1571,7 +1728,7 @@ struct Raytracing : public OverlayFeature
 			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::Effect>>(RE::VTABLE_BSEffectShader[0]);
 			//stl::write_vfunc<0x6, BSShader_SetupGeometry<RE::BSShader::Type::DistantTree>>(RE::VTABLE_BSDistantTreeShader[0]);
 
-			//stl::write_vfunc<0x6, BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
+			stl::write_vfunc<0x6, BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 
 			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
 

@@ -132,8 +132,23 @@ VS_OUTPUT main(VS_INPUT input)
 
 #	endif  // OCCLUSION MOONMASK HORIZFADE
 
-	vsout.Position = mul(WorldViewProj[eyeIndex], inputPosition).xyww;
+	//vsout.Position = mul(WorldViewProj[eyeIndex], inputPosition).xyww;
 	vsout.WorldPosition = mul(World[eyeIndex], inputPosition);
+
+	{
+        float3 dir = normalize(vsout.WorldPosition);
+
+		dir.z = max(dir.z, 0.0f);
+
+        float r = sqrt(1.0f - dir.z);
+
+        float phi = atan2(dir.y, dir.x);
+
+        float2 disk = r * float2(cos(phi), sin(phi));
+
+        vsout.Position = float4(disk, dir.z * 0.999f, 1.0f);
+	}
+
 	vsout.PreviousWorldPosition = mul(PreviousWorld[eyeIndex], inputPosition);
 
 #	ifdef VR

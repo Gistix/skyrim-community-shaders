@@ -22,6 +22,8 @@
 #include "Features/HairSpecular.h"
 #include "Features/WetnessEffects.h"
 
+#include "ShaderTools/BSShader.h"
+
 #include <imgui_stdlib.h>
 
 #ifdef DLSS_RR
@@ -507,6 +509,16 @@ void Raytracing::DrawDebugSettings()
 		}
 	}
 
+	ImGui::SliderInt("Sky Cube Face", (int*)&skyCubeFace, 0, 5, "%d", ImGuiSliderFlags_AlwaysClamp);
+
+	ImGui::Image(skyHemisphere->srv, { SKY_HEMI_RES, SKY_HEMI_RES }, { 0.0f, 0.0f }, { 1.0f, 1.0f });
+
+	/*ImGui::SameLine();
+
+	auto reflections = globals::game::renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGET_CUBEMAP::kREFLECTIONS];
+
+	ImGui::Image(reflections.SRV, { SKY_HEMI_RES, SKY_HEMI_RES });*/
+
 	ImGui::PopID();
 
 	ImGui::EndTabItem();
@@ -690,8 +702,10 @@ void Raytracing::SetupResources()
 	renderResData = eastl::make_unique<RenderResData>();
 
 	// Constant buffers
-	auto cbDesc = ConstantBufferDesc<RenderResData>();
-	renderResCB = eastl::make_unique<ConstantBuffer>(cbDesc);
+	{
+		auto cbDesc = ConstantBufferDesc<RenderResData>();
+		renderResCB = eastl::make_unique<ConstantBuffer>(cbDesc);
+	}
 
 	// Setup default textures (this is a bit wordy...)
 	{
@@ -892,15 +906,20 @@ void Raytracing::SetupResources()
 
 	// Sky Hemisphere
 	{
+		skyPerGeometryData = eastl::make_unique<SkyPerGeometry>();
+
+		auto cbDesc = ConstantBufferDesc<SkyPerGeometry>();
+		skyPerGeometryCB = eastl::make_unique<ConstantBuffer>(cbDesc);
+
 		D3D11_TEXTURE2D_DESC texDesc{};
-		texDesc.Width = SKY_CUBEMAP_SIZE * 2;
-		texDesc.Height = SKY_CUBEMAP_SIZE * 2;
+		texDesc.Width = SKY_HEMI_RES;
+		texDesc.Height = SKY_HEMI_RES;
 		texDesc.MipLevels = 1;
 		texDesc.ArraySize = 1;
-		texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;  // DXGI_FORMAT_R8G8B8A8_UNORM DXGI_FORMAT_R11G11B10_FLOAT
 		texDesc.SampleDesc.Count = 1;
 		texDesc.SampleDesc.Quality = 0;
-		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 
 		skyHemisphere = eastl::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
 		DX::ThrowIfFailed(skyHemisphere->resource->SetName(L"Sky Hemisphere"));
@@ -915,6 +934,48 @@ void Raytracing::SetupResources()
 		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
 		d3d12Device->CreateShaderResourceView(skyHemisphere->resource.get(), &srvDesc, giHeap->CPUHandle(GIHeap::Slot::SkyHemisphere));
+
+		D3D11_TEXTURE2D_DESC texDescDepth{};
+		texDescDepth.Width = SKY_HEMI_RES;
+		texDescDepth.Height = SKY_HEMI_RES;
+		texDescDepth.MipLevels = 1;
+		texDescDepth.ArraySize = 1;
+		texDescDepth.Format = DXGI_FORMAT_R24G8_TYPELESS;
+		texDescDepth.SampleDesc.Count = 1;
+		texDescDepth.SampleDesc.Quality = 0;
+		texDescDepth.Usage = D3D11_USAGE_DEFAULT;
+		texDescDepth.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_DEPTH_STENCIL;
+		texDescDepth.CPUAccessFlags = 0;
+		texDescDepth.MiscFlags = 0;
+		skyHemisphereDepth = eastl::make_unique<Texture2D>(texDescDepth);
+
+		D3D11_DEPTH_STENCIL_VIEW_DESC depthDesc = {};
+		depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		depthDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+		depthDesc.Flags = 0;
+		depthDesc.Texture2D.MipSlice = 0;
+		skyHemisphereDepth->CreateDSV(depthDesc);
+
+		D3D11_DEPTH_STENCIL_DESC dsDesc = {};
+		dsDesc.DepthEnable = true;
+		dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+		dsDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+
+		device->CreateDepthStencilState(&dsDesc, skyboxDS.put());
+
+		/*D3D11_RASTERIZER_DESC rastDesc{};
+		rastDesc.FillMode = D3D11_FILL_SOLID;
+		rastDesc.CullMode = D3D11_CULL_FRONT;
+		rastDesc.FrontCounterClockwise = true;
+		rastDesc.DepthBias = 0;
+		rastDesc.DepthBiasClamp = -100.0f;
+		rastDesc.SlopeScaledDepthBias = 0;
+		rastDesc.DepthClipEnable = true;
+		rastDesc.ScissorEnable = false;
+		rastDesc.MultisampleEnable = false;
+		rastDesc.AntialiasedLineEnable = false;
+
+		device->CreateRasterizerState(&rastDesc, skyRasterState.put());*/
 	}
 
 	// Skinning
@@ -1440,9 +1501,7 @@ void Raytracing::SkyCubeToHemi() const
 	ID3D11UnorderedAccessView* uav = skyHemisphere->uav;
 	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
-	float hemiResolution = SKY_CUBEMAP_SIZE * 2.0f;
-	uint dispatch = (uint)std::ceil(hemiResolution / 8.0f);
-
+	uint dispatch = (uint)std::ceil(SKY_HEMI_RES / 8.0f);
 	context->Dispatch(dispatch, dispatch, 1);
 
 	uav = nullptr;
@@ -1455,7 +1514,26 @@ void Raytracing::Main_RenderWorld(bool a1)
 		renderingWorld = true;
 		lightsUpdated = false;
 
-		SkyCubeToHemi();
+		//SkyCubeToHemi();
+		auto* context = globals::d3d::context;
+
+		float color[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		context->ClearRenderTargetView(skyHemisphere->rtv, color);
+
+		auto main = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kMAIN];
+
+		D3D11_BOX box{};
+		box.left = 0;
+		box.top = 0;
+		box.front = 0;
+		box.right = SKY_HEMI_RES;
+		box.bottom = SKY_HEMI_RES;
+		box.back = 1;
+
+		// Copy clear color
+		context->CopySubresourceRegion(skyHemisphere->resource11, 0, 0, 0, 0, main.texture, 0, &box);
+
+		context->ClearDepthStencilView(skyHemisphereDepth->dsv.get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 	}
 
 	Hooks::Main_RenderWorld::func(a1);
@@ -2442,6 +2520,211 @@ void Raytracing::BSShader_SetupGeometry([[maybe_unused]] RE::BSShader* oThis, [[
 		return;
 
 	UpdateLights();
+}
+
+static void GetSkyShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
+{
+	using enum SIE::ShaderCache::SkyShaderTechniques;
+
+	const auto technique = static_cast<SIE::ShaderCache::SkyShaderTechniques>(descriptor & 255);
+	size_t lastIndex = 0;
+	switch (technique) {
+	case SunOcclude:
+		{
+			defines[lastIndex++] = { "OCCLUSION", nullptr };
+			break;
+		}
+	case SunGlare:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			defines[lastIndex++] = { "DITHER", nullptr };
+			break;
+		}
+	case MoonAndStarsMask:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			defines[lastIndex++] = { "MOONMASK", nullptr };
+			break;
+		}
+	case Stars:
+		{
+			defines[lastIndex++] = { "HORIZFADE", nullptr };
+			break;
+		}
+	case Clouds:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			defines[lastIndex++] = { "CLOUDS", nullptr };
+			break;
+		}
+	case CloudsLerp:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			defines[lastIndex++] = { "CLOUDS", nullptr };
+			defines[lastIndex++] = { "TEXLERP", nullptr };
+			break;
+		}
+	case CloudsFade:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			defines[lastIndex++] = { "CLOUDS", nullptr };
+			defines[lastIndex++] = { "TEXFADE", nullptr };
+			break;
+		}
+	case Texture:
+		{
+			defines[lastIndex++] = { "TEX", nullptr };
+			break;
+		}
+	case Sky:
+		{
+			defines[lastIndex++] = { "DITHER", nullptr };
+			break;
+		}
+	}
+
+	uint32_t flags = descriptor >> 8;
+
+	if (flags) {
+		defines[lastIndex++] = { "DEFERRED", nullptr };
+	}
+
+	for (auto* feature : Feature::GetFeatureList()) {
+		if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Sky)) {
+			defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };
+		}
+	}
+
+	defines[lastIndex] = { nullptr, nullptr };
+}
+
+void Raytracing::BSSkyShader_SetupGeometry([[maybe_unused]] RE::BSShader* oThis, [[maybe_unused]] RE::BSRenderPass* pPass)
+{
+	if (!Active())
+		return;
+
+	if (!renderingWorld)
+		return;
+
+	auto* context = globals::d3d::context;
+
+	auto* pTriShape = skyrim_cast<RE::BSTriShape*>(pPass->geometry);
+
+	auto& triShapeRuntimeData = pTriShape->GetTrishapeRuntimeData();
+
+	/*ID3D11Buffer* prevCB = nullptr;
+	context->VSGetConstantBuffers(2, 1, &prevCB);*/
+
+	context->OMSetDepthStencilState(skyboxDS.get(), 255u);
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	context->OMSetRenderTargets(1, &skyHemisphere->rtv, skyHemisphereDepth->dsv.get());
+
+	ID3D11RasterizerState* prevRS = nullptr;
+	context->RSGetState(&prevRS);
+
+	ID3D11RasterizerState* currRS = nullptr;
+	if (auto it = skyRasterStates.find(prevRS); it != skyRasterStates.end()) {
+		currRS = it->second.get();
+	} else {
+		D3D11_RASTERIZER_DESC rsDesc{};
+		prevRS->GetDesc(&rsDesc);
+
+		rsDesc.CullMode = D3D11_CULL_NONE;
+
+		winrt::com_ptr<ID3D11RasterizerState> rs = nullptr;
+		globals::d3d::device->CreateRasterizerState(&rsDesc, rs.put());
+
+		auto [it2, emplaced] = skyRasterStates.emplace(prevRS, std::move(rs));
+
+		currRS = it2->second.get();		
+	}
+
+	context->RSSetState(currRS);
+
+	D3D11_VIEWPORT viewport{};
+	viewport.TopLeftX = 0;
+	viewport.TopLeftY = 0;
+	viewport.Width = SKY_HEMI_RES;
+	viewport.Height = SKY_HEMI_RES;
+	viewport.MinDepth = 0;
+	viewport.MaxDepth = 1;
+
+	context->RSSetViewports(1, &viewport);
+
+	/*ID3D11Buffer* perGeometryCB = nullptr;
+	context->VSGetConstantBuffers(2, 1, &perGeometryCB);
+
+	// Read CB
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	context->Map(perGeometryCB, 0, D3D11_MAP_READ, 0, &mapped);
+	memcpy(skyPerGeometryData.get(), mapped.pData, sizeof(SkyPerGeometry));
+	context->Unmap(perGeometryCB, 0);
+
+	logger::info("[RT] BSSkyShader::SetupGeometry - {}", skyPerGeometryData->WorldViewProj);*/
+
+	//globals::state->currentVertexDescriptor;
+	//auto& test = oThis->vertexShaders.find(
+
+	/*auto* vertexShader = globals::shaderCache->GetVertexShader(*oThis, globals::state->currentVertexDescriptor);
+	auto& perGeometry = vertexShader->constantBuffers[REX::ConstantGroupLevel::CONSTANT_GROUP_LEVEL_GEOMETRY];
+	auto* perGeometryData = reinterpret_cast<SkyPerGeometry*>(perGeometry.data);*/
+
+	/*auto* vertexShader = globals::shaderCache->GetVertexShader(*oThis, globals::state->currentVertexDescriptor);
+
+	for (auto& vs : oThis->vertexShaders) {
+		if (vs->id == globals::state->currentVertexDescriptor) {
+		
+		}
+	}*/
+
+	/*ID3D11GeometryShader* currSkyGS = nullptr;
+	if (auto it = skyGS.find(globals::state->currentVertexDescriptor); it != skyGS.end()) {
+		currSkyGS = it->second.get();
+	} else {
+		winrt::com_ptr<ID3D11GeometryShader> gs = nullptr;
+
+		std::vector<D3D_SHADER_MACRO> defines(64);
+		GetSkyShaderDefines(globals::state->currentVertexDescriptor, defines);
+
+		std::vector<std::pair<const char*, const char*>> definesStr;
+		for (auto& define : defines) {
+			if (!define.Name)
+				break;
+
+			definesStr.emplace_back(define.Name, define.Definition);
+		}
+
+		if (auto rawPtr = reinterpret_cast<ID3D11GeometryShader*>(Util::CompileShader(L"Data\\Shaders\\Raytracing\\Sky.GS.hlsl", definesStr, "gs_5_0")); rawPtr)
+			gs.attach(rawPtr);
+
+		auto [it2, emplaced] = skyGS.emplace(globals::state->currentVertexDescriptor, std::move(gs));
+
+		currSkyGS = it2->second.get();
+	}
+
+	if (currSkyGS == nullptr)
+		logger::critical("[RT] BSSkyShader::SetupGeometry - nullptr GS for {}", pTriShape->name);
+
+	context->GSSetShader(currSkyGS, nullptr, 0);*/
+
+
+	context->DrawIndexed(triShapeRuntimeData.triangleCount * 3, 0, 0);
+
+	context->RSSetState(prevRS);
+
+	if (prevRS)
+		prevRS->Release();
+
+	//context->VSSetConstantBuffers(2, 1, &prevCB);
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	//context->GSSetShader(nullptr, nullptr, 0);
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET | RE::BSGraphics::ShaderFlags::DIRTY_VIEWPORT); //  | RE::BSGraphics::ShaderFlags::DIRTY_RASTER_CULL_MODE | RE::BSGraphics::ShaderFlags::DIRTY_RASTER_DEPTH_BIAS
+
 }
 
 void Raytracing::BuildTLAS()
