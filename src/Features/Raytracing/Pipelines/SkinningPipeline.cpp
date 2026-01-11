@@ -92,7 +92,7 @@ void SkinningPipeline::QueueUpdate(Flags updateFlags, eastl::string name, Shape*
 		updateFlags);
 }
 
-bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList, uint& count, uint& vertexCount)
+bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList, eastl::vector<DispatchDesc>& dispatches)
 {
 	if (queueModels.empty())
 		return false;
@@ -107,6 +107,8 @@ bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList,
 	barriers.reserve(queueSize);
 
 	for (auto& model : queueModels) {
+		const uint vertexDispatchSize = DivideRoundUp(vertexCount, THREAD_SIZE);
+
 		vertexCount = std::max(vertexCount, (uint)model.vertexCount);
 		vertexUpdateData.emplace_back(model.allocatedIndex, model.flags, model.vertexCount, 0);
 
@@ -154,10 +156,8 @@ void SkinningPipeline::RestoreResources(ID3D12GraphicsCommandList4* commandList)
 
 void SkinningPipeline::Dispatch(ID3D12GraphicsCommandList4* commandList)
 {
-	uint count = 0;
-	uint vertexCount = 0;
-
-	if (!PrepareResources(commandList, count, vertexCount))
+	eastl::vector<DispatchDesc> dispatches;
+	if (!PrepareResources(commandList, dispatches))
 		return;
 
 	commandList->SetPipelineState(pipelineState.get());
@@ -185,8 +185,7 @@ void SkinningPipeline::Dispatch(ID3D12GraphicsCommandList4* commandList)
 
 	commandList->ResourceBarrier(_countof(uavBarrier), uavBarrier);*/
 
-	const uint vertexDispatchSize = DivideRoundUp(vertexCount, THREAD_SIZE);
-	commandList->Dispatch(count, vertexDispatchSize, 1);
+	commandList->Dispatch(count, 1, 1);
 
 	//commandList->ResourceBarrier(_countof(uavBarrier), uavBarrier);
 

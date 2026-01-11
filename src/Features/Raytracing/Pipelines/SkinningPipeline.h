@@ -54,6 +54,11 @@ struct SkinningPipeline : ComputePipeline<SkinningHeap>
 		Flags flags;
 	};
 
+	struct DispatchDesc
+	{
+		uint threadGroupCount;
+	};
+
 	eastl::vector<ModelUpdate> queueModels;
 	eastl::unique_ptr<DX12::StructuredBufferUpload<VertexUpdateData>> vertexUpdateBuffer = nullptr;
 
@@ -70,7 +75,7 @@ struct SkinningPipeline : ComputePipeline<SkinningHeap>
 	void CompileShaders(ID3D12Device5* device) override;
 	void SetupResources(ID3D12Device5* device) override;
 	void QueueUpdate(Flags updateFlags, eastl::string name, Shape* shape);
-	bool PrepareResources(ID3D12GraphicsCommandList4* commandList, uint& count, uint& vertexCount);
+	bool PrepareResources(ID3D12GraphicsCommandList4* commandList, eastl::vector<DispatchDesc>& dispatches);
 	void RestoreResources(ID3D12GraphicsCommandList4* commandList);
 	void Dispatch(ID3D12GraphicsCommandList4* commandList);
 };
