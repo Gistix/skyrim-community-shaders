@@ -53,8 +53,6 @@ public:
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Skinning>> skinningBuffer = nullptr;
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Triangle>> triangleBuffer = nullptr;
 
-	eastl::vector<float3x4> boneMatrices;
-
 	Material material;
 
 	Flags flags = Flags::None;
@@ -97,7 +95,7 @@ public:
 
 	eastl::shared_ptr<Allocation> TextureRegister(const RE::NiPointer<RE::NiSourceTexture> niPointer, eastl::shared_ptr<Allocation> defaultTexture, bool modelSpaceNormalMap);
 
-	//eastl::vector<float3x4> GetBoneMatrices();
+	eastl::vector<float3x4> GetBoneMatrices();
 
 	// For PBR shader flags we need to copy exactly what TruePBR does
 	static stl::enumeration<PBRShaderFlags, uint32_t> GetPBRShaderFlags(const BSLightingShaderMaterialPBR* pbrMaterial);

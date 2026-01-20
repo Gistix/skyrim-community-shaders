@@ -117,8 +117,16 @@ bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList,
 	for (auto& [shape, queuedShape] : queuedShapes) {
 		uint boneOffset = (uint)boneMatricesData.size();
 
+		float4x4 skinRoot;
+
+		if (queuedShape.updateFlags & Flags::Skinned) {
+			auto& skinInstance = shape->geometry->GetGeometryRuntimeData().skinInstance;
+
+			skinRoot = GetXMFromNiTransform(skinInstance->rootParent->world.Invert());
+		}
+
 		vertexCount = std::max(vertexCount, (uint)shape->vertexCount);
-		vertexUpdateData.emplace_back(shape->allocation->GetIndex(), queuedShape.updateFlags, shape->vertexCount, boneOffset, bonePivot, 0);
+		vertexUpdateData.emplace_back(shape->allocation->GetIndex(), queuedShape.updateFlags, shape->vertexCount, boneOffset, bonePivot, skinRoot, 0);
 
 		// Dynamic TriShapes
 		shape->UpdateUploadDynamicBuffers(commandList);
@@ -131,9 +139,11 @@ bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList,
 				shape->vertexBuffer->Upload(commandList);
 			}
 
+			auto boneMatrices = shape->GetBoneMatrices();
+
 			boneMatricesData.insert(boneMatricesData.end(),
-				eastl::make_move_iterator(shape->boneMatrices.begin()),
-				eastl::make_move_iterator(shape->boneMatrices.end()));
+				eastl::make_move_iterator(boneMatrices.begin()),
+				eastl::make_move_iterator(boneMatrices.end()));
 		}
 
 		CD3DX12_RESOURCE_BARRIER barrier;

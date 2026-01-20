@@ -8,6 +8,10 @@ struct VertexUpdateData
 	uint vertexCount;
     uint boneOffset;
 	float3 bonePivot;
+#ifndef __cplusplus
+	row_major
+#endif	
+	float4x4 skinRoot;
 	uint pad;
 };
 

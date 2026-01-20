@@ -935,17 +935,13 @@ bool Shape::UpdateSkinning()
 	return true;
 }
 
-/*eastl::vector<float3x4> Shape::GetBoneMatrices()
+eastl::vector<float3x4> Shape::GetBoneMatrices()
 {
-	eastl::vector<float3x4> boneMatrices;
-
-	if ((flags & Flags::Skinned) != Flags::Skinned)
-		return boneMatrices;
-
 	auto& skinInstance = geometry->GetGeometryRuntimeData().skinInstance;
 
-	boneMatrices.resize(skinInstance->numMatrices);
+	eastl::vector<float3x4> boneMatrices(skinInstance->numMatrices);
+
 	std::memcpy(boneMatrices.data(), skinInstance->boneMatrices, skinInstance->allocatedSize);
 
 	return boneMatrices;
-}*/
+}

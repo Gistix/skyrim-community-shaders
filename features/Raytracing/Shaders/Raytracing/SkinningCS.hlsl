@@ -42,6 +42,21 @@ float3x4 GetBoneTransformMatrix(Skinning skinning, float3 pivot, uint boneOffset
 		    (boneMatrix4 - pivotMatrix) * skinning.weight[3];
 }
 
+float3x4 GetBoneTransformMatrix(Skinning skinning, VertexUpdateData updateData)
+{
+    float3x4 pivotMatrix = transpose(float4x3(0.0.xxx, 0.0.xxx, 0.0.xxx, updateData.bonePivot));
+
+	float3x4 boneMatrix1 = BoneMatrices[updateData.boneOffset + skinning.GetBone(0)].World;
+	float3x4 boneMatrix2 = BoneMatrices[updateData.boneOffset + skinning.GetBone(1)].World;
+	float3x4 boneMatrix3 = BoneMatrices[updateData.boneOffset + skinning.GetBone(2)].World;
+	float3x4 boneMatrix4 = BoneMatrices[updateData.boneOffset + skinning.GetBone(3)].World;
+
+	return (boneMatrix1 - pivotMatrix) * skinning.weight[0] +
+		    (boneMatrix2 - pivotMatrix) * skinning.weight[1] +
+		    (boneMatrix3 - pivotMatrix) * skinning.weight[2] +
+		    (boneMatrix4 - pivotMatrix) * skinning.weight[3];
+}
+
 float3x3 GetBoneRSMatrix(Skinning skinning, uint boneOffset)
 {
     float3x4 boneMatrix1 = BoneMatrices[boneOffset + skinning.GetBone(0)].World;
@@ -96,8 +111,25 @@ void main(uint3 DTid : SV_DispatchThreadID)
     {
         Skinning skinning = MeshSkinning[shapeIndex][vertexIndex];
 
-        float3x4 boneMatrix = GetBoneTransformMatrix(skinning, updateData.bonePivot, updateData.boneOffset);
+        float3x4 boneMatrix = mul(GetBoneTransformMatrix(skinning, updateData), updateData.skinRoot);
+        
+        //float3x4 boneMatrix = GetBoneTransformMatrix(skinning, updateData);
 
+        //float3x4 boneMatrix = boneMatrixWS * updateData.skinRoot;       
+
+        /*float3x4 boneMatrixWS = GetBoneTransformMatrix(skinning, updateData.bonePivot, updateData.boneOffset);
+
+        float4x4 boneMatrix = float4x4(
+            boneMatrixWS[0][0], boneMatrixWS[0][1], boneMatrixWS[0][2], boneMatrixWS[0][3],
+            boneMatrixWS[1][0], boneMatrixWS[1][1], boneMatrixWS[1][2], boneMatrixWS[1][3],
+            boneMatrixWS[2][0], boneMatrixWS[2][1], boneMatrixWS[2][2], boneMatrixWS[2][3],
+            0.0f, 0.0f, 0.0f, 1.0f
+        ) * updateData.skinRoot;*/
+        
+        //float4x4 boneMatrix = float4x4(boneMatrixWS, float4(0, 0, 0, 1)) * updateData.skinRoot;
+   
+        //float4x4 boneMatrix = float4x4(boneMatrixWS[0], boneMatrixWS[1], boneMatrixWS[2], 0.0.xxxx) * updateData.skinRoot;
+        
         vertex.Position = mul(boneMatrix, float4(vertex.Position, 1.0f));
 
         if ((updateData.flags & Flags::Dynamic) == 0)

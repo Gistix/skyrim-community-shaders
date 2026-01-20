@@ -59,21 +59,6 @@ struct Instance
 					updateFlags |= Flags::Skinned;
 				}
 
-				if (updateFlags & Flags::Skinned) {
-					auto& skinInstance = shape->geometry->GetGeometryRuntimeData().skinInstance;
-
-					shape->boneMatrices.clear();
-					shape->boneMatrices.resize(skinInstance->numMatrices);
-
-					float3x4* boneMatricesArray = reinterpret_cast<float3x4*>(skinInstance->boneMatrices);
-
-					auto skinRootInverse = GetXMFromNiTransform(skinInstance->rootParent->world.Invert());
-
-					for (uint i = 0; i < skinInstance->numMatrices; i++) {
-						XMStoreFloat3x4(&shape->boneMatrices[i], XMMatrixMultiply(XMLoadFloat3x4(&boneMatricesArray[i]), skinRootInverse));
-					}
-				}
-
 				if ((updateFlags & Flags::Dynamic) || (updateFlags & Flags::Skinned)) {
 					skinningPipeline->QueueUpdate(updateFlags, path, shape.get());
 				}
