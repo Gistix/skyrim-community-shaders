@@ -38,12 +38,6 @@ struct Instance
 		/*if (pNiNode->lastUpdatedFrameCounter < globals::state->frameCount && hasUpdated)
 				return true;*/
 
-		// Is this working?
-		if (pNiNode->GetAppCulled())
-			return;
-
-		//logger::info("Render Use: {}", pNiNode->GetFlags().any(RE::NiAVObject::Flag::kRenderUse));
-
 		// Instance has already been updated this frame
 		if (!frameChecker.IsNewFrame())
 			return;
@@ -51,10 +45,20 @@ struct Instance
 		// Sets the BLAS instance transform
 		XMStoreFloat3x4(&transform, GetXMFromNiTransform(pNiNode->world));
 
+		if (pNiNode->GetAppCulled())
+			return;
+
 		auto& [path, model] = modelPair;
 
 		if ((model->GetFlags() & Shape::Flags::Dynamic) || (model->GetFlags() & Shape::Flags::Skinned)) {
+			logger::info("Update {}", filename);
+			
 			for (auto& shape : model->shapes) {
+				logger::info("Update {} - [0x{:08X}] {}", shape->geometry->name, shape->geometry->GetFlags().underlying(), GetFlagsString<RE::NiAVObject::Flag>(shape->geometry->GetFlags().underlying()));
+
+				if (shape->geometry->GetFlags().any(RE::NiAVObject::Flag::kNoAnimSyncS))
+					continue;
+
 				Shape::Flags updateFlags = Shape::Flags::None;
 
 				if (shape->UpdateDynamicPosition()) {

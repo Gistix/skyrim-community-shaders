@@ -29,6 +29,7 @@
 #include "Features/Raytracing/BufferMA.h"
 #include "Features/Raytracing/Heap.h"
 #include "Features/Raytracing/HeapManager.h"
+#include "Features/Raytracing/magic_enum_spec.h"
 #include "Features/Raytracing/Pipelines/SHaRCPipeline.h"
 #include "Features/Raytracing/Pipelines/SVGFPipeline.h"
 #include "Features/Raytracing/Pipelines/SkinningPipeline.h"
@@ -650,6 +651,8 @@ struct Raytracing : public OverlayFeature
 
 	// We'll group trishapes by their parent nodes, hopefully trishapes don't move on their own
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>> models;
+
+	eastl::unordered_map<RE::BSDismemberSkinInstance*, eastl::vector<eastl::shared_ptr<Shape>>> dismemberSkinInstances;
 
 	winrt::com_ptr<D3D12MA::Allocator> allocator = nullptr;
 
@@ -1277,6 +1280,25 @@ struct Raytracing : public OverlayFeature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 		
+		struct BSDismemberSkinInstance_UpdateDismemberPartion
+		{
+			static void thunk(RE::BSDismemberSkinInstance* a_instance, std::uint16_t a_slot, bool a_enable)
+			{
+				func(a_instance, a_slot, a_enable);
+
+				logger::info("BSDismemberSkinInstance::UpdateDismemberPartion - Hook");
+
+				auto& rt = globals::features::raytracing;
+
+				if (auto it = rt.dismemberSkinInstances.find(a_instance); it != rt.dismemberSkinInstances.end()) {
+					for (auto& shape : it->second) {
+						shape->UpdateDismemberPartion(a_instance, a_slot, a_enable);
+					}
+				}
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			stl::detour_thunk<TES_Load3D>(REL::RelocationID(0, 13355));
@@ -1295,6 +1317,8 @@ struct Raytracing : public OverlayFeature
 			stl::write_vfunc<0x0, Destructor<RE::NiNode>>(RE::VTABLE_NiNode[0]);
 			stl::write_vfunc<0x0, Destructor<RE::BSFadeNode>>(RE::VTABLE_BSFadeNode[0]);
 			stl::write_vfunc<0x0, Destructor<RE::BSFadeNode>>(RE::VTABLE_BSLeafAnimNode[0]);
+			
+			stl::detour_thunk<BSDismemberSkinInstance_UpdateDismemberPartion>(REL::RelocationID(15576, 15753));
 
 			//stl::write_vfunc<0x0, Destructor<RE::BSFadeNode>>(RE::VTABLE_BSTreeNode[0]);
 

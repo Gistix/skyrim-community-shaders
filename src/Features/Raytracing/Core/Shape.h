@@ -11,6 +11,8 @@
 #include "Features/Raytracing/Utils.h"
 
 #include "Features/Raytracing/Core/Material.h"
+#include "Features/Raytracing/Core/Events/EventSubscriber.h"
+#include "Features/Raytracing/Core/Events/UpdateDismemberPartionEvent.h"
 
 #include "Raytracing/Includes/Types/Skinning.hlsli"
 #include "Raytracing/Includes/Types/Triangle.hlsli"
@@ -30,7 +32,8 @@ public:
 
 	enum State : uint8_t
 	{
-		Hidden = 1 << 0
+		Hidden = 1 << 0,
+		HiddenDismember = 1 << 1
 	};
 
 	// The position of this meshes SRV in the register stack
@@ -63,6 +66,8 @@ public:
 
 	Flags flags = Flags::None;
 
+	State state;
+
 	float boundRadius;
 
 	Shape(Allocation* allocation, RE::BSGeometry* geometry, Flags flags = Flags::None) :
@@ -92,6 +97,16 @@ public:
 	void CreateBuffers(const std::wstring& name);
 
 	void CalculateVectors(bool calculateNormal);
+
+    void UpdateDismemberPartion([[maybe_unused]] const RE::BSDismemberSkinInstance* instance, [[maybe_unused]] std::uint16_t a_slot, [[maybe_unused]] bool enable)
+	{
+		logger::info("BSDismemberSkinInstance::UpdateDismemberPartion - ProcessEvent");
+
+		if (enable)
+			state &= ~State::HiddenDismember;
+		else
+			state |= State::HiddenDismember;
+	}
 
 	bool UpdateDynamicPosition();
 

@@ -18,12 +18,12 @@
 
 struct Model
 {
-	eastl::vector<eastl::unique_ptr<Shape>> shapes;
+	eastl::vector<eastl::shared_ptr<Shape>> shapes;
 
 	winrt::com_ptr<D3D12MA::Allocation> blasBuffer = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> blasScratchBuffer = nullptr;
 
-	Model(eastl::vector<eastl::unique_ptr<Shape>>& shapes) :
+	Model(eastl::vector<eastl::shared_ptr<Shape>>& shapes) :
 		shapes(eastl::move(shapes))
 	{
 		for (auto& shape : this->shapes) {
@@ -46,6 +46,16 @@ struct Model
 	auto GetFeatures() const
 	{
 		return features;
+	}
+
+	bool RenderUse() const
+	{
+		for (auto& shape : shapes) {
+			if (shape->geometry->GetFlags().any(RE::NiAVObject::Flag::kRenderUse))
+				return true;
+		}
+
+		return false;
 	}
 
 	void AddRef()
