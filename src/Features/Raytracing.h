@@ -24,6 +24,9 @@
 #include "Features/Raytracing/Core/Model.h"
 #include "Features/Raytracing/Core/Shape.h"
 
+#include "Features/Raytracing/Core/Clustering/ClusteringProcess.h"
+#include "Features/Raytracing/Core/Clustering/BVH.h"
+
 #include "Features/Raytracing/Helpers/ModelSpaceToTangent.h"
 
 #include "Features/Raytracing/Allocator.h"
@@ -552,9 +555,11 @@ struct Raytracing : public OverlayFeature
 
 	// Debug variables
 	std::string debugDefines = "";
-	bool debugDisableTriShapesUpdate = false;
 	bool debugDisableTextureSharing = false;
+#if defined(DEBUG_MSNCONVERSION)
 	uint debugNormalMap = 0;
+#endif
+	bool debugCluster = false;
 
 	enum class RecompileReason : uint32_t
 	{
@@ -798,6 +803,7 @@ struct Raytracing : public OverlayFeature
 	eastl::deque<TempGPUData> tempGPUData;
 
 	// All 'DestAccelerationStructureData' written with 'BuildRaytracingAccelerationStructure' this frame
+	// This is used to check if the BLAS was already built by the command list before we try to update it in the same frame
 	eastl::hash_set<D3D12_GPU_VIRTUAL_ADDRESS> destASFrame;
 
 	// D3D11
@@ -891,6 +897,8 @@ struct Raytracing : public OverlayFeature
 
 	float shadowsCPUTime;
 	float shadowsGPUTime;
+
+	float clusterTime;
 
 #if defined(DLSS_RR)
 	HMODULE interposer = NULL;

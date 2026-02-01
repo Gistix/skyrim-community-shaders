@@ -54,7 +54,11 @@ void Instance::Update(RE::NiAVObject* node, RE::NiPoint3 cameraPosition, const e
 
 	if (extraData) {
 		auto aabbData = reinterpret_cast<RE::AABB*>(extraData);
-		aabb = AABB(Float3(aabbData->center), Float3(aabbData->extents) * 2.0f);
+
+		auto min = Float3(node->world * (aabbData->center - aabbData->extents));
+		auto max = Float3(node->world * (aabbData->center + aabbData->extents));
+
+		aabb = AABB::FromMinMax(min, max);
 
 		//logger::info("AABB Center: {} Size: {}, Center: {}, Radius: {}", aabb.center, aabb.extents, node->worldBound.center, node->worldBound.radius);
 	}
@@ -64,12 +68,17 @@ void Instance::Update(RE::NiAVObject* node, RE::NiPoint3 cameraPosition, const e
 
 	auto& [path, model] = modelPair;
 
-	if ((model->GetFlags() & Shape::Flags::Dynamic) || (model->GetFlags() & Shape::Flags::Skinned)) {
-		logger::trace("Update {} - [0x{:08X}] {}", filename, node->GetFlags().underlying(), GetFlagsString<RE::NiAVObject::Flag>(node->GetFlags().underlying()));
+	bool isRenderUseValid = model->IsRenderUseValid();
 
-		for (auto& shape : model->shapes) {
-			logger::trace("Update {} - [0x{:08X}] {}", shape->geometry->name, shape->geometry->GetFlags().underlying(), GetFlagsString<RE::NiAVObject::Flag>(shape->geometry->GetFlags().underlying()));
+	for (auto& shape : model->shapes) {
+		if (isRenderUseValid && shape->geometry->GetFlags().none(RE::NiAVObject::Flag::kRenderUse)) {
+			shape->state |= Shape::State::Hidden;
+			continue;
+		} else {
+			shape->state &= ~Shape::State::Hidden;
+		}
 
+		if ((model->GetFlags() & Shape::Flags::Dynamic) || (model->GetFlags() & Shape::Flags::Skinned)) {
 			Shape::Flags updateFlags = Shape::Flags::None;
 
 			if (shape->UpdateDynamicPosition()) {

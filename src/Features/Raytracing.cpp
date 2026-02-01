@@ -540,7 +540,9 @@ void Raytracing::DrawDebugSettings()
 	}
 
 	ImGui::Checkbox("Disable Texture Sharing", &debugDisableTextureSharing);
-	
+
+	ImGui::Checkbox("Enable Cluster", &debugCluster);
+
 	ImGui::InputText("Shader Defines", &debugDefines);
 
 	ImGui::SameLine();
@@ -643,7 +645,7 @@ void Raytracing::DrawDebugSettings()
 	}
 
 	// Debug Draw Original and Converted Normal Maps
-//#if defined(DEBUG_MSNCONVERSION)
+#if defined(DEBUG_MSNCONVERSION)
 	if (normalMaps.empty()) {
 		ImGui::Text("No normal maps converted.");
 	} else {
@@ -692,7 +694,7 @@ void Raytracing::DrawDebugSettings()
 			ImGui::Image(convertedNormal->Texture->srv.get(), ImVec2(256, 256));
 		}
 	}
-//#endif
+#endif
 
 	ImGui::Image(skyHemisphere->srv, ImVec2(512, 512));
 
@@ -758,6 +760,8 @@ void Raytracing::DrawOverlay()
 		ImGui::Text("Accumulation Frames: %d", accumulatedFrames);
 	}
 
+	ImGui::Text("Clustering Time: %g ms", clusterTime);
+	
 	ImGui::End();
 }
 
@@ -1903,12 +1907,14 @@ void Raytracing::CommitModel(Model* model)
 
 	winrt::com_ptr<D3D12MA::Allocation> scratch = nullptr;
 	DX::ThrowIfFailed(allocator->CreateResource(&blasScratchDesc, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, scratch.put(), IID_NULL, NULL));
+	scratch->SetName(L"BLAS Scratch Resource");
 
 	auto blasDesc = DEFAULT_HEAP_MA;
 	blasDesc.CustomPool = blasPool.get();
 
 	desc.Width = prebuildInfo.ResultDataMaxSizeInBytes;
 	DX::ThrowIfFailed(allocator->CreateResource(&blasDesc, &desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nullptr, model->blasBuffer.put(), IID_NULL, NULL));
+	model->blasBuffer->SetName(L"BLAS Resource");
 
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {
 		.DestAccelerationStructureData = model->blasBuffer->GetResource()->GetGPUVirtualAddress(),
@@ -1943,6 +1949,9 @@ void Raytracing::UpdateModelBLAS(Model* model)
 
 	for (auto i = 0; i < shapeCount; i++) {
 		auto& shape = shapes[i];
+
+		/*if (shape->state & Shape::State::Hidden)
+			continue;*/
 
 		bool hasAlphaTesting = shape->flags & Shape::Flags::AlphaTesting;
 		bool isBlend = (shape->flags & Shape::Flags::AlphaBlending) &&  (shape->material.Feature == RE::BSShaderMaterial::Feature::kHairTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGen || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGenRGBTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kEye);
@@ -2594,7 +2603,7 @@ void Raytracing::UpdateInstances()
 	//auto eye = Util::GetAverageEyePosition();
 	//float4 cameraPos = globals::game::frameBufferCached.GetCameraPosAdjust();
 
-	uint32_t totalShapeCount = 0;
+	uint32_t shapeCount = 0;
 	uint32_t instanceCount = 0;
 
 	for (auto& [node, instance] : instances) {
@@ -2669,18 +2678,19 @@ void Raytracing::UpdateInstances()
 		instance.Update(node, position, { it->first, model.get() }, skinningPipeline.get());
 
 		// This is temporary while I think of a better place to fit this (probably on instance.Update?)
-		auto firstShapeIndex = totalShapeCount;
-		auto shapeCount = model->shapes.size();
+		auto firstShapeIndex = shapeCount;
 
-		if (totalShapeCount + shapeCount > RTConstants::MAX_SHAPES) {
-			logger::error("[RT] UpdateInstances - Total shape count {} would excede RTConstants::MAX_SHAPES {}", totalShapeCount + shapeCount, RTConstants::MAX_SHAPES);
-			break;
+		for (auto& shape: model->shapes) {
+			/*if (shape->state & Shape::State::Hidden)
+				continue;*/
+
+			shapeData[shapeCount] = shape->GetData();
+			shapeCount++;
 		}
 
-		totalShapeCount += static_cast<uint32_t>(shapeCount);
-
-		for (size_t i = 0; i < shapeCount; i++) {
-			shapeData[firstShapeIndex + i] = model->shapes[i]->GetData();
+		if (shapeCount > RTConstants::MAX_SHAPES) {
+			logger::critical("[RT] UpdateInstances - Total shape count {} would exceeds RTConstants::MAX_SHAPES {}", shapeCount, RTConstants::MAX_SHAPES);
+			break;
 		}
 
 		// TODO: split double sided models so only them get the flag
@@ -3156,6 +3166,15 @@ void Raytracing::DrawRTGI()
 		//PIXBeginCapture(PIX_CAPTURE_GPU, PIXCaptureParameters
 		ga->BeginCapture();
 		//}
+	}
+
+	if (debugCluster)
+	{
+		auto clusterStart = Util::GetNowSecs();
+
+		ClusteringProcess::ClusterBVH(instances);
+
+		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
 	}
 
 	UpdateInstances();

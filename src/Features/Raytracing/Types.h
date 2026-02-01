@@ -223,4 +223,58 @@ struct AABB
 		const float3 size = max - min;
 		return AABB((min + max) * 0.5f, size, size * 0.5f, min, max);
 	}
+
+	float Overlap(const AABB& b) const
+	{
+		const float3 overlapMin = float3::Max(min, b.min);
+		const float3 overlapMax = float3::Min(max, b.max);
+
+		const float3 overlapSize = float3::Max(overlapMax - overlapMin, float3::Zero);
+
+		const float overlapVolume = overlapSize.x * overlapSize.y * overlapSize.z;
+
+		const float volumeA = size.x * size.y * size.z;
+
+		const float volumeB = b.size.x * b.size.y * b.size.z;
+
+		const float minVolume = std::min(volumeA, volumeB);
+
+		if (minVolume <= 0.0f)
+			return 0.0f;
+
+		return std::clamp(overlapVolume / minVolume, 0.0f, 1.0f);
+	}
+
+    EA_FORCE_INLINE bool Intersects(const AABB& b) const
+	{
+		return !(max.x < b.min.x || min.x > b.max.x ||
+				 max.y < b.min.y || min.y > b.max.y ||
+				 max.z < b.min.z || min.z > b.max.z);
+	}
+
+	EA_FORCE_INLINE bool IntersectsSIMD(const AABB& b) const
+	{
+		// Load mins and maxs (xyz + padding)
+		__m128 minA = _mm_set_ps(0.0f, min.z, min.y, min.x);
+		__m128 maxA = _mm_set_ps(0.0f, max.z, max.y, max.x);
+		__m128 minB = _mm_set_ps(0.0f, b.min.z, b.min.y, b.min.x);
+		__m128 maxB = _mm_set_ps(0.0f, b.max.z, b.max.y, b.max.x);
+
+		// Compare
+		__m128 cmp1 = _mm_cmple_ps(minA, maxB);
+		__m128 cmp2 = _mm_cmple_ps(minB, maxA);
+
+		// AND results
+		__m128 overlap = _mm_and_ps(cmp1, cmp2);
+
+		// Check xyz lanes
+		return (_mm_movemask_ps(overlap) & 0x7) == 0x7;
+	}
+
+	static AABB Merge(const AABB& a, const AABB& b)
+	{
+		float3 mergedMin = float3::Min(a.min, b.min);
+		float3 mergedMax = float3::Max(a.max, b.max);
+		return FromMinMax(mergedMin, mergedMax);
+	}
 };
