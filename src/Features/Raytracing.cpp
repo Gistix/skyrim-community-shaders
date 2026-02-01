@@ -2240,7 +2240,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 	if (auto shapeCount = shapes.size(); shapeCount > 0) {
 		eastl::string modelKey = path;
 
-		auto model = eastl::make_unique<Model>(shapes);
+		auto model = eastl::make_unique<Model>(shapes, form->formType.get());
 
 		// Models with these flags cannot be instanced directly
 		if ((model->GetFlags() & Shape::Flags::Dynamic) || (model->GetFlags() & Shape::Flags::Skinned))

@@ -17,12 +17,13 @@
 struct Model
 {
 	eastl::vector<eastl::unique_ptr<Shape>> shapes;
+	RE::FormType formType;
 
 	winrt::com_ptr<D3D12MA::Allocation> blasBuffer = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> blasScratchBuffer = nullptr;
 
-	Model(eastl::vector<eastl::unique_ptr<Shape>>& shapes) :
-		shapes(eastl::move(shapes))
+	Model(eastl::vector<eastl::unique_ptr<Shape>>& shapes, RE::FormType formType) :
+		shapes(eastl::move(shapes)), formType(formType)
 	{
 		for (auto& shape : this->shapes) {
 			flags |= shape->flags;
@@ -51,7 +52,6 @@ struct Model
 	{
 		return features;
 	}
-
 
 	auto GetShaderFlags() const
 	{
