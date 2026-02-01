@@ -1,6 +1,7 @@
 #include "Instance.h"
 
 #include "Features/Raytracing.h"
+#include "Features/Raytracing/RE/AABB.h"
 
 void Instance::SetDetached(bool detach)
 {
@@ -47,6 +48,16 @@ void Instance::Update(RE::NiAVObject* node, RE::NiPoint3 cameraPosition, const e
 
 	// Sets the BLAS instance transform
 	XMStoreFloat3x4(&transform, GetXMFromNiTransform(node->world));
+
+	auto dataName = RE::AABB::DataName();
+	auto extraData = Raytracing::GetExtraDataByName(node, &dataName);
+
+	if (extraData) {
+		auto aabbData = reinterpret_cast<RE::AABB*>(extraData);
+		aabb = AABB(Float3(aabbData->center), Float3(aabbData->extents) * 2.0f);
+
+		//logger::info("AABB Center: {} Size: {}, Center: {}, Radius: {}", aabb.center, aabb.extents, node->worldBound.center, node->worldBound.radius);
+	}
 
 	/*if (node->GetAppCulled())
 		return;*/

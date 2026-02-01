@@ -58,6 +58,8 @@ struct Instance
 	// Makes sure we only update once per frame
 	uint lastUpdate = 0;
 
+	AABB aabb;
+
 private:
 	bool detached = false;
 };

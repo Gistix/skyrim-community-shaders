@@ -202,10 +202,25 @@ struct AABB
 	float3 center;
 	float3 size;
 	float3 extents;
+	float3 min;
+	float3 max;
+
+	AABB() = default;
+
+	AABB(float3 center, float3 size) :
+		center(center), size(size)
+	{
+		extents = size * 0.5f;
+		min = center - extents;
+		max = center + extents;
+	}
+
+	AABB(float3 center, float3 size, float3 extents, float3 min, float3 max) :
+		center(center), size(size), extents(extents), min(min), max(max) {};
 
 	static AABB FromMinMax(float3 min, float3 max)
 	{
 		const float3 size = max - min;
-		return AABB((min + max) * 0.5f, size, size * 0.5f);
+		return AABB((min + max) * 0.5f, size, size * 0.5f, min, max);
 	}
 };

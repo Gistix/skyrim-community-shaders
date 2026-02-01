@@ -919,6 +919,13 @@ struct Raytracing : public OverlayFeature
 	sl::DLSSDOptimalSettings optimalSettings{};
 #endif
 
+	static void* GetExtraDataByName(RE::NiAVObject* target, RE::BSFixedString* name)
+	{
+		using func_t = decltype(&Raytracing::GetExtraDataByName);
+		static REL::Relocation<func_t> func{ RELOCATION_ID(0, 70510) };
+		return func(target, name);
+	}
+
 	struct Hooks
 	{
 		struct ID3D11Device_CreateTexture2D
@@ -1365,10 +1372,9 @@ struct Raytracing : public OverlayFeature
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 		
-		template <typename T>
-		struct Set3D
+		struct Actor_Set3D
 		{
-			static void thunk(T* oThis, RE::NiAVObject* a_object, bool a_queue3DTasks = true)
+			static void thunk(RE::Actor* oThis, RE::NiAVObject* a_object, bool a_queue3DTasks = true)
 			{
 				if (!a_object)
 					globals::features::raytracing.RemoveInstance(oThis->GetFormID(), true);
@@ -1386,7 +1392,7 @@ struct Raytracing : public OverlayFeature
 			// Releases 3D resources (instances and models)
 			{
 				stl::write_vfunc<0x6B, Release3DRelatedData<RE::TESObjectREFR>>(RE::VTABLE_TESObjectREFR[0]);
-				stl::detour_thunk<Set3D<RE::Actor>>(REL::RelocationID(36199, 37178));
+				stl::detour_thunk<Actor_Set3D>(REL::RelocationID(36199, 37178));
 			}
 			
 			// Makes Player FaceGenTint RenderTarget shareable
