@@ -80,23 +80,9 @@ public:
 		allocation({ allocation, AllocationDeleter() }), geometry(geometry), localToRoot(localToRoot) , flags(flags)
 	{ }
 
-	/*inline Shape Clone(uint16_t registerIndexIn, RE::BSGeometry* geometryIn) const
-	{
-		auto clone = Shape(registerIndexIn, geometryIn, flags);
-
-		clone.vertexCount = vertexCount;
-		clone.triangleCount = triangleCount;
-
-		clone.vertices = vertices;
-		clone.skinning = skinning;
-		clone.triangles = triangles;
-
-		clone.material = material;
-
-		return clone;
-	}*/
-
 	D3D12_GPU_VIRTUAL_ADDRESS TransformBuffer() const;
+
+	D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc() const;
 
 	void BuildMesh(RE::BSGraphics::TriShape* rendererData, const uint32_t& vertexCountIn, const uint32_t& triangleCountIn, const uint16_t& bonesPerVertex);
 

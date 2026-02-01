@@ -1829,172 +1829,6 @@ void Raytracing::MakeAndCopy(const eastl::vector<T>& data, winrt::com_ptr<ID3D12
 	res->Unmap(0, nullptr);
 }
 
-void Raytracing::CommitModel(Model* model)
-{
-	std::lock_guard lock{ renderMutex };
-
-	auto& shapes = model->shapes;
-	auto meshCount = shapes.size();
-
-	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs(meshCount);
-
-	// If no trishape has render use, we assume it is not used and skip using it to hide geometry
-	//bool isRenderUseValid = model->IsRenderUseValid();
-
-	for (auto i = 0; i < meshCount; i++) {
-		auto& shape = shapes[i];
-
-		/*if (isRenderUseValid && shape->geometry->GetFlags().none(RE::NiAVObject::Flag::kRenderUse))
-			continue;*/
-
-		bool hasAlphaTesting = shape->flags & Shape::Flags::AlphaTesting;
-		bool isBlend = (shape->flags & Shape::Flags::AlphaBlending) &&  (shape->material.Feature == RE::BSShaderMaterial::Feature::kHairTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGen || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGenRGBTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kEye);
-		bool isWindows = shape->material.shaderFlags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask) && (shape->material.Feature == RE::BSShaderMaterial::Feature::kGlowMap || shape->material.PBRFlags.any(PBRShaderFlags::HasEmissive));
-
-		bool isOpaque = !hasAlphaTesting && !(isWindows && settings.InteriorSun) && !isBlend;
-
-		geometryDescs[i] = {
-			.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-			.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE | D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION,
-			.Triangles = {
-				.Transform3x4 = shape->TransformBuffer(),
-				.IndexFormat = DXGI_FORMAT_R16_UINT,
-				.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT,
-				.IndexCount = shape->triangleCount * 3,
-				.VertexCount = shape->vertexCount,
-				.IndexBuffer = shape->triangleBuffer->resource->GetGPUVirtualAddress(),
-				.VertexBuffer = {
-					.StartAddress = shape->vertexBuffer->resource->GetGPUVirtualAddress(),
-					.StrideInBytes = sizeof(Vertex) } }
-		};
-	}
-
-	auto modelFlags = model->GetFlags();
-
-	bool updatable = (modelFlags & Shape::Flags::Skinned) || (modelFlags & Shape::Flags::Dynamic);
-
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
-
-	if (updatable)
-		buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
-	else
-		buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {
-		.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
-		.Flags = buildFlags,
-		.NumDescs = static_cast<uint>(geometryDescs.size()),
-		.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY,
-		.pGeometryDescs = geometryDescs.data()
-	};
-
-	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuildInfo;
-	d3d12Device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &prebuildInfo);
-
-	D3D12_RESOURCE_DESC desc = {
-		.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-		.Width = prebuildInfo.ScratchDataSizeInBytes,
-		.Height = 1,
-		.DepthOrArraySize = 1,
-		.MipLevels = 1,
-		.SampleDesc = NO_AA,
-		.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-		.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
-	};
-
-	auto blasScratchDesc = DEFAULT_HEAP_MA;
-	blasScratchDesc.CustomPool = blasScratchPool.get();
-
-	winrt::com_ptr<D3D12MA::Allocation> scratch = nullptr;
-	DX::ThrowIfFailed(allocator->CreateResource(&blasScratchDesc, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, scratch.put(), IID_NULL, NULL));
-	scratch->SetName(L"BLAS Scratch Resource");
-
-	auto blasDesc = DEFAULT_HEAP_MA;
-	blasDesc.CustomPool = blasPool.get();
-
-	desc.Width = prebuildInfo.ResultDataMaxSizeInBytes;
-	DX::ThrowIfFailed(allocator->CreateResource(&blasDesc, &desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nullptr, model->blasBuffer.put(), IID_NULL, NULL));
-	model->blasBuffer->SetName(L"BLAS Resource");
-
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {
-		.DestAccelerationStructureData = model->blasBuffer->GetResource()->GetGPUVirtualAddress(),
-		.Inputs = inputs,
-		.ScratchAccelerationStructureData = scratch->GetResource()->GetGPUVirtualAddress()
-	};
-
-	commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-
-	destASFrame.emplace(model->blasBuffer->GetResource()->GetGPUVirtualAddress());
-
-	const auto& asBarrier = CD3DX12_RESOURCE_BARRIER::UAV(model->blasBuffer->GetResource());
-	commandList->ResourceBarrier(1, &asBarrier);
-
-	if (updatable)
-		model->blasScratchBuffer = std::move(scratch);
-	else
-		tempGPUData.emplace_back(std::move(scratch), fenceValue);
-}
-
-void Raytracing::UpdateModelBLAS(Model* model)
-{
-	auto gpuVirtualAddr = model->blasBuffer->GetResource()->GetGPUVirtualAddress();
-
-	if (destASFrame.find(gpuVirtualAddr) != destASFrame.end())
-		return;
-
-	auto& shapes = model->shapes;
-	auto shapeCount = shapes.size();
-
-	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs(shapeCount);
-
-	for (auto i = 0; i < shapeCount; i++) {
-		auto& shape = shapes[i];
-
-		/*if (shape->state & Shape::State::Hidden)
-			continue;*/
-
-		bool hasAlphaTesting = shape->flags & Shape::Flags::AlphaTesting;
-		bool isBlend = (shape->flags & Shape::Flags::AlphaBlending) &&  (shape->material.Feature == RE::BSShaderMaterial::Feature::kHairTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGen || shape->material.Feature == RE::BSShaderMaterial::Feature::kFaceGenRGBTint || shape->material.Feature == RE::BSShaderMaterial::Feature::kEye);
-		bool isWindows = shape->material.shaderFlags.any(RE::BSShaderProperty::EShaderPropertyFlag::kAssumeShadowmask) && (shape->material.Feature == RE::BSShaderMaterial::Feature::kGlowMap || shape->material.PBRFlags.any(PBRShaderFlags::HasEmissive));
-
-		bool isOpaque = !hasAlphaTesting && !(isWindows && settings.InteriorSun) && !isBlend;
-
-		geometryDescs[i] = {
-			.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-			.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE | D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION,
-			.Triangles = {
-				.Transform3x4 = shape->TransformBuffer(),
-				.IndexFormat = DXGI_FORMAT_R16_UINT,
-				.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT,
-				.IndexCount = shape->triangleCount * 3,
-				.VertexCount = shape->vertexCount,
-				.IndexBuffer = shape->triangleBuffer->resource->GetGPUVirtualAddress(),
-				.VertexBuffer = {
-					.StartAddress = shape->vertexBuffer->resource->GetGPUVirtualAddress(),
-					.StrideInBytes = sizeof(Vertex) } }
-		};
-	}
-
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {
-		.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
-		.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE,
-		.NumDescs = static_cast<uint>(geometryDescs.size()),
-		.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY,
-		.pGeometryDescs = geometryDescs.data()
-	};
-
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {
-		.DestAccelerationStructureData = gpuVirtualAddr,
-		.Inputs = inputs,
-		.SourceAccelerationStructureData = gpuVirtualAddr,
-		.ScratchAccelerationStructureData = model->blasScratchBuffer->GetResource()->GetGPUVirtualAddress()
-	};
-
-	commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-
-	destASFrame.emplace(model->blasBuffer->GetResource()->GetGPUVirtualAddress());
-}
-
 // A custom visit controller built to ignore billboard/particle geometry
 static RE::BSVisit::BSVisitControl TraverseScenegraphRTGeometries(RE::NiAVObject* a_object, std::function<RE::BSVisit::BSVisitControl(RE::BSGeometry*)> a_func)
 {
@@ -2194,20 +2028,14 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 
-			auto meshData = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
+			auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
 
-			meshData->BuildMesh(triShapeRD, triShapeRuntime.vertexCount, triShapeRuntime.triangleCount, 0);
-			meshData->BuildMaterial(geometryRuntimeData, name, formID);
-			meshData->CreateBuffers(ToWide(name));
+			shape->BuildMesh(triShapeRD, triShapeRuntime.vertexCount, triShapeRuntime.triangleCount, 0);
+			shape->BuildMaterial(geometryRuntimeData, name, formID);
+			shape->CreateBuffers(ToWide(name));
 
-			shapes.push_back(eastl::move(meshData));
+			shapes.push_back(eastl::move(shape));
 		} else if (auto* skinInstance = (RE::BSDismemberSkinInstance*)geometryRuntimeData.skinInstance.get()) {  // Skinned
-			/*static REL::Relocation<const RE::NiRTTI*> bsDismemberedSkinInstanceRTTI{ RE::BSDismemberSkinInstance::Ni_RTTI };
-			bool isDismembered = skinInstance->GetRTTI()->IsKindOf(bsDismemberedSkinInstanceRTTI.get());
-
-			if (isDismembered)
-				logger::warn("\t\t[RT] CreateModel::TraverseScenegraphGeometries - Is dismembered");*/
-
 			auto& skinPartition = skinInstance->skinPartition;
 
 			if (!skinPartition) {
@@ -2233,13 +2061,13 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 				if (partition.bonesPerVertex > 0)
 					flags |= Shape::Flags::Skinned;
 
-				auto meshData = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
+				auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
 
-				meshData->BuildMesh(partition.buffData, skinPartition->vertexCount, partition.triangles, partition.bonesPerVertex);
-				meshData->BuildMaterial(geometryRuntimeData, name, formID);
-				meshData->CreateBuffers(ToWide(name));
+				shape->BuildMesh(partition.buffData, skinPartition->vertexCount, partition.triangles, partition.bonesPerVertex);
+				shape->BuildMaterial(geometryRuntimeData, name, formID);
+				shape->CreateBuffers(ToWide(name));
 
-				shapes.push_back(eastl::move(meshData));
+				shapes.push_back(eastl::move(shape));
 			}
 		}
 
@@ -2261,7 +2089,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 			if (it->second->ShouldQueueMSNConversion())
 				msnConvertionQueue.emplace_back(modelKey);
 
-			CommitModel(it->second.get());
+			//CommitModel(it->second.get());
 
 			AddInstance(formID, pRoot, modelKey);
 
@@ -2274,9 +2102,9 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 	}
 }
 
-bool Raytracing::RemoveInstance(RE::NiAVObject* pRoot, bool releaseModel)
+bool Raytracing::RemoveInstance([[maybe_unused]] RE::NiAVObject* pRoot, [[maybe_unused]] bool releaseModel)
 {
-	if (auto instanceIt = instances.find(pRoot); instanceIt != instances.end()) {
+	/*if (auto instanceIt = instances.find(pRoot); instanceIt != instances.end()) {
 		auto& instance = instanceIt->second;
 
 		logger::debug("[RT] RemoveInstance - \"{}\", \"{}\"", pRoot->name, instance.filename);
@@ -2301,40 +2129,40 @@ bool Raytracing::RemoveInstance(RE::NiAVObject* pRoot, bool releaseModel)
 		instances.erase(instanceIt);
 
 		return true;
-	}
+	}*/
 
 	return false;
 }
 
-bool Raytracing::RemoveInstance(RE::FormID formID, bool releaseModel)
+bool Raytracing::RemoveInstance([[maybe_unused]] RE::FormID formID, [[maybe_unused]] bool releaseModel)
 {
 	bool removed = false;
 
-	if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
+	/*if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
 		for (auto& rootNode : nodesIt->second) {
 			removed = RemoveInstance(rootNode, releaseModel);
 		}
 
 		formIDNodes.erase(nodesIt);
-	}
+	}*/
 
 	return removed;
 }
 
-void Raytracing::SetInstanceDetached(RE::NiAVObject* root, bool detached)
+void Raytracing::SetInstanceDetached([[maybe_unused]] RE::NiAVObject* root, [[maybe_unused]] bool detached)
 {
-	if (auto instanceIt = instances.find(root); instanceIt != instances.end()) {
+	/*if (auto instanceIt = instances.find(root); instanceIt != instances.end()) {
 		instanceIt->second.SetDetached(detached);
-	}
+	}*/
 }
 
-void Raytracing::SetInstanceDetached(RE::FormID formID, bool detached)
+void Raytracing::SetInstanceDetached([[maybe_unused]] RE::FormID formID, [[maybe_unused]] bool detached)
 {
-	if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
+	/*if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
 		for (auto& rootNode : nodesIt->second) {
 			SetInstanceDetached(rootNode, detached);
 		}
-	}
+	}*/
 }
 
 eastl::shared_ptr<Allocation> Raytracing::GetTextureRegister(ID3D11Texture2D* dx11Texture, eastl::shared_ptr<Allocation> defaultTexture)
@@ -2572,145 +2400,36 @@ static RE::NiCamera* FindNiCamera(RE::NiAVObject* object)
 	return nullptr;
 }
 
-void Raytracing::AddInstances()
-{
-	/*RE::BSVisit::TraverseScenegraphObjects(pRoot, [&](RE::NiAVObject* pObject) -> RE::BSVisit::BSVisitControl {
-
-		return RE::BSVisit::BSVisitControl::kContinue;
-	});*/
-}
-
-void Raytracing::ClearInstances()
-{
-	instances.clear();
-}
-
 void Raytracing::UpdateInstances()
 {
-	//std::lock_guard lock{ geometryMutex };
-
 	blasInstances.clear();
-	blasInstances.reserve(instances.size());
 
-	const auto& cullingSettings = settings.AdvancedSettings.Culling;
+	uint shapeCount = 0;
+	uint instanceCount = 0;
 
-	auto* player = RE::PlayerCharacter::GetSingleton();
+	for (auto& modelCluster : modelClusters) {
+		uint firstShape = shapeCount;
 
-	auto* tesCamera = RE::PlayerCamera::GetSingleton()->currentState->camera;
-	RE::NiCamera* camera = FindNiCamera(tesCamera->cameraRoot.get());
-	RE::NiPoint3 position = camera->world.translate;
-
-	//auto eye = Util::GetAverageEyePosition();
-	//float4 cameraPos = globals::game::frameBufferCached.GetCameraPosAdjust();
-
-	uint32_t shapeCount = 0;
-	uint32_t instanceCount = 0;
-
-	for (auto& [node, instance] : instances) {
-		if (instance.IsDetached())
-			continue;
-
-		if (blasInstances.size() > RTConstants::MAX_INSTANCES)
-			break;
-
-		if (instance.formID == player->formID && !player->Is3rdPersonVisible())
-			continue;
-
-		auto it = models.find(instance.filename);
-
-		// Model was erased but not its (this) instance
-		if (it == models.end())
-			continue;
-
-		auto& model = it->second;
-
-		auto flags = model->GetFlags();
-
-		bool dynamic = flags & Shape::Flags::Dynamic;
-		bool skinned = flags & Shape::Flags::Skinned;
-		bool landscape = flags & Shape::Flags::Landscape;
-
-		if (settings.DisableSkinned && (dynamic || skinned))
-			continue;
-
-		if (skinned && node->GetFlags().any(RE::NiAVObject::Flag::kHidden))
-			continue;
-
-		if (cullingSettings.Mode == CullingMode::Smart) {
-			if (landscape && node->GetFlags().any(RE::NiAVObject::Flag::kHidden))
-				continue;
-
-			auto worldBound = node->worldBound;
-
-			float worldBoundRadius = Util::Units::GameUnitsToMeters(worldBound.radius);
-			float distanceToBounds = Util::Units::GameUnitsToMeters(position.GetDistance(worldBound.center)) - worldBoundRadius;
-
-			auto shaderTypes = model->GetShaderTypes();
-			auto features = model->GetFeatures();
-
-			bool frustumCull = false;
-
-			// Culls small models outside of the player's view
-			if (cullingSettings.MinRadius > 0) {
-				// We'll exclude emissive models from radius frustum culling
-				bool frustumCullable = !(shaderTypes & RE::BSShader::Type::Effect) && !(features & static_cast<int>(RE::BSShaderMaterial::Feature::kGlowMap));
-				frustumCull |= frustumCullable && (worldBoundRadius < cullingSettings.MinRadius);
-			}
-
-			// Culls all models outside of the player's view, must satisfy condition
-			if (cullingSettings.DistanceMode == CullingDistanceMode::Minimal) {
-				frustumCull |= distanceToBounds > cullingSettings.MinDistance;
-			} else if (cullingSettings.DistanceMode == CullingDistanceMode::Ratio) {
-				float distanceToStart = std::max(0.0f, distanceToBounds - cullingSettings.StartDistance);
-				float adaptativeRadius = distanceToStart * cullingSettings.DistanceRatio;
-				frustumCull |= worldBoundRadius < adaptativeRadius;
-			}
-
-			// We'll cull small models or very distant ones (that are outside the player view)
-			if (frustumCull && !camera->NodeInFrustum(node))
-				continue;
-
-		} else if (cullingSettings.Mode == CullingMode::Skyrim) {
-			if (node->GetFlags().any(RE::NiAVObject::Flag::kHidden))
-				continue;
-		}
-
-		instance.Update(node, position, { it->first, model.get() }, skinningPipeline.get());
-
-		// This is temporary while I think of a better place to fit this (probably on instance.Update?)
-		auto firstShapeIndex = shapeCount;
-
-		for (auto& shape: model->shapes) {
-			/*if (shape->state & Shape::State::Hidden)
-				continue;*/
-
+		modelCluster.ForEachShape([&](Shape* shape) {
 			shapeData[shapeCount] = shape->GetData();
 			shapeCount++;
-		}
-
-		if (shapeCount > RTConstants::MAX_SHAPES) {
-			logger::critical("[RT] UpdateInstances - Total shape count {} would exceeds RTConstants::MAX_SHAPES {}", shapeCount, RTConstants::MAX_SHAPES);
-			break;
-		}
-
-		// TODO: split double sided models so only them get the flag
-		bool isDoubleSided = model->GetShaderFlags().any(RE::BSShaderProperty::EShaderPropertyFlag::kTwoSided);
+		});	
 
 		D3D12_RAYTRACING_INSTANCE_DESC blasInstance{};
 		blasInstance.InstanceID = 0;
 		blasInstance.InstanceMask = 1;
-		blasInstance.Flags = isDoubleSided ? D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-		blasInstance.AccelerationStructure = model->blasBuffer->GetResource()->GetGPUVirtualAddress();
+		blasInstance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+		blasInstance.AccelerationStructure = modelCluster.blas->GetResource()->GetGPUVirtualAddress();
 
 		// Copy transform matrix from Instance to DX12 BLAS instance
-		memcpy(blasInstance.Transform, instance.transform.m, sizeof(blasInstance.Transform));
+		memcpy(blasInstance.Transform, modelCluster.transform.m, sizeof(blasInstance.Transform));
 
 		blasInstances.push_back(blasInstance);
 
 		instanceData[instanceCount] = {
-			instance.transform,
-			LightData(GatherInstanceLights(node)),
-			firstShapeIndex
+			modelCluster.transform,
+			LightData(), // GatherInstanceLights(node)
+			firstShape
 		};
 
 		instanceCount++;
@@ -2723,247 +2442,6 @@ void Raytracing::UpdateInstances()
 
 	instanceBuffer->UpdateList(instanceData.data(), std::min(instanceCount, RTConstants::MAX_INSTANCES));
 	instanceBuffer->Upload(commandList.get(), 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-}
-
-auto GetFrustumCorners2(const RE::NiFrustum& frustum)
-{
-	eastl::array<float3, 8> corners;
-
-	// Near plane
-	corners[0] = { frustum.fLeft, frustum.fTop, frustum.fNear };      // near top-left
-	corners[1] = { frustum.fRight, frustum.fTop, frustum.fNear };     // near top-right
-	corners[2] = { frustum.fRight, frustum.fBottom, frustum.fNear };  // near bottom-right
-	corners[3] = { frustum.fLeft, frustum.fBottom, frustum.fNear };   // near bottom-left
-
-	// Far plane
-	float scale = frustum.fFar / frustum.fNear;
-	corners[4] = { frustum.fLeft * scale, frustum.fTop * scale, frustum.fFar };
-	corners[5] = { frustum.fRight * scale, frustum.fTop * scale, frustum.fFar };
-	corners[6] = { frustum.fRight * scale, frustum.fBottom * scale, frustum.fFar };
-	corners[7] = { frustum.fLeft * scale, frustum.fBottom * scale, frustum.fFar };
-
-	return corners;
-}
-
-auto GetFrustumCorners(const RE::NiFrustum& frustum)
-{
-	eastl::array<float3, 8> corners;
-
-	float scale = frustum.fFar / frustum.fNear;
-
-	// Near plane (Y = forward)
-	corners[0] = { frustum.fLeft, frustum.fNear, frustum.fTop };      // near top-left
-	corners[1] = { frustum.fRight, frustum.fNear, frustum.fTop };     // near top-right
-	corners[2] = { frustum.fRight, frustum.fNear, frustum.fBottom };  // near bottom-right
-	corners[3] = { frustum.fLeft, frustum.fNear, frustum.fBottom };   // near bottom-left
-
-	// Far plane
-	corners[4] = { frustum.fLeft * scale, frustum.fFar, frustum.fTop * scale };
-	corners[5] = { frustum.fRight * scale, frustum.fFar, frustum.fTop * scale };
-	corners[6] = { frustum.fRight * scale, frustum.fFar, frustum.fBottom * scale };
-	corners[7] = { frustum.fLeft * scale, frustum.fFar, frustum.fBottom * scale };
-
-	return corners;
-}
-
-void ComputeFrustumAABB(eastl::array<float3, 8> corners, float3& bbMin, float3& bbMax, DirectX::XMMATRIX* transform = nullptr)
-{
-	if (transform)
-		for (int i = 0; i < 8; i++) {
-			corners[i] = float3::Transform(corners[i], *transform);
-		}
-
-	// Initialize AABB
-	bbMin = corners[0];
-	bbMax = corners[0];
-
-	// Compute min/max for X, Y, Z
-	for (int i = 1; i < 8; i++) {
-		bbMin.x = std::min(bbMin.x, corners[i].x);
-		bbMin.y = std::min(bbMin.y, corners[i].y);
-		bbMin.z = std::min(bbMin.z, corners[i].z);
-
-		bbMax.x = std::max(bbMax.x, corners[i].x);
-		bbMax.y = std::max(bbMax.y, corners[i].y);
-		bbMax.z = std::max(bbMax.z, corners[i].z);
-	}
-}
-
-bool SphereCastAABB(const float3& sphereCenter, float sphereRadius, const float3& dir, float maxDistance, const float3& bbMin, const float3& bbMax, float* hitDistance = nullptr)
-{
-	auto SphereCastAxis = [](float origin, float dir, float min, float max, float& tmin, float& tmax) -> bool {
-		if (std::abs(dir) < 1e-6f) {
-			if (origin < min || origin > max)
-				return false;
-
-			return true;
-		}
-
-		float ood = 1.0f / dir;
-		float t1 = (min - origin) * ood;
-		float t2 = (max - origin) * ood;
-
-		if (t1 > t2)
-			std::swap(t1, t2);
-
-		tmin = std::max(tmin, t1);
-		tmax = std::min(tmax, t2);
-
-		return tmin <= tmax;
-	};
-
-	// Expand AABB by sphere radius
-	float3 min = bbMin - float3(sphereRadius, sphereRadius, sphereRadius);
-	float3 max = bbMax + float3(sphereRadius, sphereRadius, sphereRadius);
-
-	float tmin = 0.0f;
-	float tmax = maxDistance;
-
-	if (!SphereCastAxis(sphereCenter.x, dir.x, min.x, max.x, tmin, tmax))
-		return false;
-
-	if (!SphereCastAxis(sphereCenter.y, dir.y, min.y, max.y, tmin, tmax))
-		return false;
-
-	if (!SphereCastAxis(sphereCenter.z, dir.z, min.z, max.z, tmin, tmax))
-		return false;
-
-	if (hitDistance)
-		*hitDistance = tmin;
-
-	return true;
-}
-
-auto GetPlanes(float3 corners[8])
-{
-	eastl::array<DirectX::SimpleMath::Plane, 6> planes;
-
-	// Near plane
-	planes[0] = Plane(corners[0], corners[1], corners[2]);
-
-	// Far plane
-	planes[1] = Plane(corners[5], corners[4], corners[7]);
-
-	// Left plane
-	planes[2] = Plane(corners[4], corners[0], corners[3]);
-
-	// Right plane
-	planes[3] = Plane(corners[1], corners[5], corners[6]);
-
-	// Bottom plane
-	planes[4] = Plane(corners[0], corners[4], corners[5]);
-
-	// Top plane
-	planes[5] = Plane(corners[3], corners[7], corners[6]);
-
-	return planes;
-}
-
-bool SphereCastFrustum(const float3& sphereCenter, float radius, const float3& dir, const std::array<Plane, 6>& planes, float maxDistance = FLT_MAX, float* hitDistance = nullptr)
-{
-	float tmin = 0.0f;
-	float tmax = maxDistance;
-
-	for (const auto& plane : planes) {
-		float nDotDir = plane.DotNormal(dir);
-		float dist = plane.DotCoordinate(sphereCenter);
-
-		if (std::abs(nDotDir) < 1e-6f) {
-			// Ray is parallel to plane
-			if (dist < -radius)  // sphere completely outside
-				return false;
-			else
-				continue;  // sphere may be intersecting
-		}
-
-		float t1 = (-radius - dist) / nDotDir;
-		float t2 = (radius - dist) / nDotDir;
-		if (t1 > t2)
-			std::swap(t1, t2);
-
-		tmin = std::max(tmin, t1);
-		tmax = std::min(tmax, t2);
-
-		if (tmin > tmax)  // no intersection along this ray
-			return false;
-	}
-
-	if (hitDistance)
-		*hitDistance = tmin;
-
-	return true;
-}
-
-void Raytracing::UpdateShadowInstances()
-{
-	//std::lock_guard lock{ geometryMutex };
-
-	blasShadowInstances.clear();
-	blasShadowInstances.reserve(instances.size());
-
-	DirectX::XMMATRIX transformInverse;
-	float3 bbMin, bbMax;
-	float3 localLightDirection;
-
-	auto* tesCamera = RE::PlayerCamera::GetSingleton()->currentState->camera;
-	RE::NiCamera* camera = FindNiCamera(tesCamera->cameraRoot.get());
-	RE::NiPoint3 position = camera->world.translate;
-
-	if (settings.CullShadows) {
-		auto transform = GetXMFromNiTransform(camera->world);
-		transformInverse = DirectX::XMMatrixInverse(nullptr, transform);
-
-		RE::NiFrustum frustrum = camera->GetRuntimeData2().viewFrustum;
-
-		auto frustumCorners = GetFrustumCorners(frustrum);
-
-		ComputeFrustumAABB(frustumCorners, bbMin, bbMax);  // In local (camera) space
-
-		logger::trace("[RT] UpdateShadowInstances - Min: {}, Max: {}", bbMin, bbMax);
-
-		localLightDirection = float3::TransformNormal(float3(shadowsCBData->Direction), transformInverse);
-	}
-
-	for (auto& [pNiNode, instance] : instances) {
-		if (instance.IsDetached())
-			continue;
-
-		if (blasShadowInstances.size() > RTConstants::MAX_INSTANCES)
-			break;
-
-		if (settings.CullShadows) {
-			auto worldBound = pNiNode->worldBound;
-			float3 localCenter = float3::Transform(Float3(worldBound.center), transformInverse);
-
-			logger::trace("[RT] UpdateShadowInstances - Local Center: {}, Radius: {}", localCenter, worldBound.radius);
-
-			if (!SphereCastAABB(localCenter, worldBound.radius, localLightDirection, FLT_MAX, bbMin, bbMax))
-				continue;
-		}
-
-		auto it = models.find(instance.filename);
-
-		// Model was erased but not the instance
-		if (it == models.end())
-			continue;
-
-		auto& model = it->second;
-
-		instance.Update(pNiNode, position, { it->first, model.get() }, skinningPipeline.get());
-
-		D3D12_RAYTRACING_INSTANCE_DESC blasShadowInstance = {
-			.InstanceID = static_cast<uint>(blasShadowInstances.size()),
-			.InstanceMask = 1,
-			.AccelerationStructure = model->blasBuffer->GetResource()->GetGPUVirtualAddress()
-		};
-
-		memcpy(blasShadowInstance.Transform, instance.transform.m, sizeof(blasShadowInstance.Transform));
-
-		blasShadowInstances.push_back(blasShadowInstance);
-	}
-
-	blasShadowInstanceBuffer->UpdateList(blasShadowInstances.data(), std::min(blasShadowInstances.size(), (size_t)RTConstants::MAX_INSTANCES));
-	blasShadowInstanceBuffer->Upload(commandList.get());
 }
 
 void Raytracing::PostRaytraceCleanup()
@@ -3143,7 +2621,7 @@ void Raytracing::DrawRTGI()
 		d3d11Context->ClearRenderTargetView(rendererRuntimeData.renderTargets[ALBEDO].RTV, clearColor);
 	}
 
-	ConvertTextures();
+	//ConvertTextures();
 
 	// Wait for D3D11 to finish
 	{
@@ -3168,18 +2646,18 @@ void Raytracing::DrawRTGI()
 		//}
 	}
 
-	if (debugCluster)
+	/*if (debugCluster)
 	{
 		auto clusterStart = Util::GetNowSecs();
 
 		ClusteringProcess::ClusterBVH(instances);
 
 		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
-	}
+	}*/
 
-	UpdateInstances();
+	//UpdateInstances();
 
-	skinningPipeline->Dispatch(commandList.get(), d3d12Device.get());
+	//skinningPipeline->Dispatch(commandList.get(), d3d12Device.get());
 
 	// Upload buffers
 	lightBuffer->Upload(commandList.get(), 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -3681,7 +3159,7 @@ void Raytracing::RenderShadows()
 	}
 
 	// Do DX12 work...
-	UpdateShadowInstances();
+	//UpdateShadowInstances();
 
 	skinningPipeline->Dispatch(commandList.get(), d3d12Device.get());
 
@@ -3785,12 +3263,7 @@ void Raytracing::PostPostLoad()
 	Hooks::Install();
 	Initialize();
 
-	//MenuOpenCloseEventHandler::Register();
-	//TESLoadGameEventHandler::Register();
-
 	TESObjectLoadedEventHandler::Register();
-
-	//TESCellFullyLoadedEventHandler::Register();
 }
 static std::wstring GetLatestWinPixGpuCapturerPath()
 {
@@ -4467,33 +3940,6 @@ RaytracingFD::FeatureData Raytracing::GetCommonBufferData()
 	};
 
 	return featureData;
-}
-
-RE::BSEventNotifyControl Raytracing::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
-{
-	// When entering a loadscreen
-	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
-		//auto& rtgi = globals::features::raytracing;
-
-		logger::debug("MenuOpenCloseEventHandler::ProcessEvent - Opening: {}", a_event->opening);
-
-		if (a_event->opening) {
-			auto& rt = globals::features::raytracing;
-			rt.ClearInstances();
-		}
-	}
-
-	return RE::BSEventNotifyControl::kContinue;
-}
-
-RE::BSEventNotifyControl Raytracing::TESLoadGameEventHandler::ProcessEvent(const RE::TESLoadGameEvent* a_event, RE::BSTEventSource<RE::TESLoadGameEvent>*)
-{
-	logger::debug("TESLoadGameEventHandler::ProcessEvent {}", reinterpret_cast<intptr_t>(a_event));
-
-	auto& rt = globals::features::raytracing;
-	rt.AddInstances();
-
-	return RE::BSEventNotifyControl::kContinue;
 }
 
 RE::BSEventNotifyControl Raytracing::TESObjectLoadedEventHandler::ProcessEvent(const RE::TESObjectLoadedEvent* a_event, RE::BSTEventSource<RE::TESObjectLoadedEvent>*)

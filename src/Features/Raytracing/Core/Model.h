@@ -19,9 +19,6 @@ struct Model
 	eastl::vector<eastl::unique_ptr<Shape>> shapes;
 	RE::FormType formType;
 
-	winrt::com_ptr<D3D12MA::Allocation> blasBuffer = nullptr;
-	winrt::com_ptr<D3D12MA::Allocation> blasScratchBuffer = nullptr;
-
 	Model(eastl::vector<eastl::unique_ptr<Shape>>& shapes, RE::FormType formType) :
 		shapes(eastl::move(shapes)), formType(formType)
 	{
@@ -32,6 +29,8 @@ struct Model
 			shaderFlags.set(shape->material.shaderFlags.get());
 		}
 	}
+
+	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> GeometryDescs() const;
 
 	static std::string KeySuffix(RE::NiAVObject* root)
 	{

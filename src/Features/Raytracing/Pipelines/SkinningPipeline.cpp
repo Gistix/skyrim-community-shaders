@@ -183,7 +183,7 @@ void SkinningPipeline::RestoreResources(ID3D12GraphicsCommandList4* commandList)
 
 void SkinningPipeline::UpdateBLASES(ID3D12GraphicsCommandList4* commandList)
 {
-	auto& rt = globals::features::raytracing;
+	//auto& rt = globals::features::raytracing;
 
 	barriers.clear();
 	barriers.reserve(queuedShapes.size());
@@ -195,7 +195,7 @@ void SkinningPipeline::UpdateBLASES(ID3D12GraphicsCommandList4* commandList)
 	}
 
 	// Lets update all models which had at least one updated shape
-	for (auto& path : paths) {
+	/*for (auto& path : paths) {
 		if (auto it = rt.models.find(path); it != rt.models.end()) {
 			auto& model = it->second;
 
@@ -203,7 +203,7 @@ void SkinningPipeline::UpdateBLASES(ID3D12GraphicsCommandList4* commandList)
 
 			barriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(model->blasBuffer->GetResource()));
 		}
-	}
+	}*/
 
 	uint blasUpdateCount = (uint)barriers.size();
 

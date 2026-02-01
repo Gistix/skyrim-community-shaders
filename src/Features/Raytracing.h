@@ -20,12 +20,12 @@
 
 #include <RE/T/TESWaterReflections.h>
 
-#include "Features/Raytracing/Core/Instance.h"
-#include "Features/Raytracing/Core/Model.h"
 #include "Features/Raytracing/Core/Shape.h"
+#include "Features/Raytracing/Core/Model.h"
+#include "Features/Raytracing/Core/Instance.h"
+#include "Features/Raytracing/Core/InstanceCluster.h"
 
-#include "Features/Raytracing/Core/Clustering/ClusteringProcess.h"
-#include "Features/Raytracing/Core/Clustering/BVH.h"
+//#include "Features/Raytracing/Core/Clustering/ClusteringProcess.h"
 
 #include "Features/Raytracing/Helpers/ModelSpaceToTangent.h"
 
@@ -244,10 +244,6 @@ struct Raytracing : public OverlayFeature
 	eastl::vector<size_t> GatherInstanceLights(RE::NiAVObject* pNiNode);
 
 	void UpdateInstances();
-	void UpdateShadowInstances();
-
-	void AddInstances();
-	void ClearInstances();
 
 	template <typename T>
 	void MakeAndCopy(const eastl::vector<T>& data, winrt::com_ptr<ID3D12Resource>& res);
@@ -599,19 +595,12 @@ struct Raytracing : public OverlayFeature
 	void CreateModel(RE::TESForm* form, const char* model, RE::NiAVObject* root);
 	void CreateModelInternal(RE::TESForm* refr, const char* path, RE::NiAVObject* root);
 
-	// Creates a single BLAS for a collection of Shapes
-	// TODO: Move to Model struct
-	void CommitModel(Model* model);
-
 	// Removes the instance and optionally also releases the model and all its buffers if refCount reaches 0
 	bool RemoveInstance(RE::NiAVObject* root, bool releaseModel);
 	bool RemoveInstance(RE::FormID formID, bool releaseModel);
 
 	void SetInstanceDetached(RE::NiAVObject* root, bool detached);
 	void SetInstanceDetached(RE::FormID formID, bool detached);
-
-	// TODO: Move to Model struct
-	void UpdateModelBLAS(Model* model);
 
 	eastl::shared_ptr<Allocation> GetTextureRegister(ID3D11Texture2D* texture, eastl::shared_ptr<Allocation> defaultTexture);
 	eastl::shared_ptr<Allocation> GetMSNormalMapRegister(Shape* shape, RE::BSGraphics::Texture* texture, eastl::shared_ptr<Allocation> defaultTexture);
@@ -667,8 +656,8 @@ struct Raytracing : public OverlayFeature
 	eastl::shared_ptr<DefaultTexture> defaultRMAOSTexture = nullptr;
 	eastl::shared_ptr<DefaultTexture> defaultDetailTexture = nullptr;
 
-	// We'll group trishapes by their parent nodes, hopefully trishapes don't move on their own
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>> models;
+	eastl::vector<InstanceCluster> modelClusters;
 
 	winrt::com_ptr<D3D12MA::Allocator> allocator = nullptr;
 
@@ -1456,47 +1445,6 @@ struct Raytracing : public OverlayFeature
 			//stl::detour_vfunc<7, ID3D11Device_CreateShaderResourceView>(pDevice);
 
 			logger::info("[RT] Installed D3D11 hooks - {}", reinterpret_cast<uintptr_t>(pDevice));
-		}
-	};
-
-	class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
-	{
-	public:
-		virtual RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*);
-
-		static bool Register()
-		{
-			static MenuOpenCloseEventHandler singleton;
-			auto ui = globals::game::ui;
-
-			if (!ui) {
-				logger::error("UI event source not found");
-				return false;
-			}
-
-			ui->GetEventSource<RE::MenuOpenCloseEvent>()->AddEventSink(&singleton);
-
-			logger::info("Registered {}", typeid(singleton).name());
-
-			return true;
-		}
-	};
-
-	class TESLoadGameEventHandler : public RE::BSTEventSink<RE::TESLoadGameEvent>
-	{
-	public:
-		virtual RE::BSEventNotifyControl ProcessEvent(const RE::TESLoadGameEvent* a_event, RE::BSTEventSource<RE::TESLoadGameEvent>*);
-
-		static bool Register()
-		{
-			static TESLoadGameEventHandler singleton;
-
-			auto scriptEventSourceHolder = RE::ScriptEventSourceHolder::GetSingleton();
-			scriptEventSourceHolder->GetEventSource<RE::TESLoadGameEvent>()->AddEventSink(&singleton);
-
-			logger::info("Registered {}", typeid(singleton).name());
-
-			return true;
 		}
 	};
 

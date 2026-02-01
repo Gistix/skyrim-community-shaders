@@ -124,3 +124,15 @@ void Model::ConvertMSN()
 		rt.allocationMSNormalMaps.erase(allocation);
 	}
 }
+
+eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> Model::GeometryDescs() const
+{
+	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
+	geometryDescs.reserve(shapes.size());
+
+	for (auto& shape : shapes) {
+		geometryDescs.push_back(shape->GeometryDesc());
+	}
+
+	return geometryDescs;
+}
