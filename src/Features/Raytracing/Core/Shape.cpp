@@ -963,6 +963,7 @@ ShapeData Shape::GetData() const
 		{0, 0},
 		localToRoot
 	};
+}
 
 D3D12_RAYTRACING_GEOMETRY_DESC Shape::GeometryDesc() const
 {

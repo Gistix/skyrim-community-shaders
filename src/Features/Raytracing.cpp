@@ -2655,7 +2655,7 @@ void Raytracing::DrawRTGI()
 		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
 	}*/
 
-	//UpdateInstances();
+	UpdateInstances();
 
 	//skinningPipeline->Dispatch(commandList.get(), d3d12Device.get());
 
