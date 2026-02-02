@@ -21,7 +21,7 @@ struct ClusterAction
 struct InstanceCluster
 {
 	eastl::vector<RE::NiAVObject*> instances;
-	eastl::hash_set<RE::NiAVObject*> instancesMap;
+	//eastl::hash_set<RE::NiAVObject*> instancesMap;
 
 	winrt::com_ptr<D3D12MA::Allocation> blas = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> scratch = nullptr;
@@ -30,6 +30,14 @@ struct InstanceCluster
 
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>>& Models() const;
 	eastl::unordered_map<RE::NiAVObject*, Instance>& Instances() const;
+
+	InstanceCluster()
+	{
+		transform = float3x4(
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f);
+	}
 
 	template <typename Func>
 	void ForEachModel(Func&& func)

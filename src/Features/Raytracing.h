@@ -1431,7 +1431,7 @@ struct Raytracing : public OverlayFeature
 
 			stl::detour_thunk<CreateTextureFromDDS>(REL::RelocationID(69334, 70716));
 
-			stl::detour_thunk<TESObjectLAND_Attach3D>(REL::RelocationID(18334, 18750));
+			//stl::detour_thunk<TESObjectLAND_Attach3D>(REL::RelocationID(18334, 18750));
 
 			stl::detour_thunk<TESObjectLAND_Detach3D>(REL::RelocationID(18333, 18749)); // sub_1402A8A80
 			//stl::detour_thunk<TESObjectLAND_Detach3D2>(REL::RelocationID(18334, 18750));  // sub_1402A8B00

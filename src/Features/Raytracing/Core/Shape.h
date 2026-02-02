@@ -28,8 +28,14 @@ public:
 		Dynamic = 1 << 2,
 		Skinned = 1 << 3,
 		Landscape = 1 << 4,
-		Static = 1 << 5,
 		DoubleSidedGeom = 1 << 6
+	};
+
+	enum class Layer : uint8_t
+	{
+		Static = 0,
+		Dynamic = 1,
+		Skinned = 2
 	};
 
 	enum State : uint8_t
@@ -68,16 +74,18 @@ public:
 
 	Flags flags = Flags::None;
 
+	Layer layer;
+
 	State state;
 
 	AABB aabb;
 
 	float boundRadius;
 
-	float3x4 localToRoot;
+	float3x4 transform;
 
-	Shape(Allocation* allocation, RE::BSGeometry* geometry, float3x4 localToRoot, Flags flags = Flags::None) :
-		allocation({ allocation, AllocationDeleter() }), geometry(geometry), localToRoot(localToRoot) , flags(flags)
+	Shape(Allocation* allocation, RE::BSGeometry* geometry, float3x4 transform, Flags flags, Layer layer) :
+		allocation({ allocation, AllocationDeleter() }), geometry(geometry), transform(transform), flags(flags), layer(layer)
 	{ }
 
 	D3D12_GPU_VIRTUAL_ADDRESS TransformBuffer() const;

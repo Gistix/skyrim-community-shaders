@@ -950,6 +950,13 @@ void Raytracing::SetupResources()
 		defaultRMAOSTexture = eastl::make_shared<DefaultTexture>(d3d12Device.get(), textureRegisters.Allocate());
 		defaultDetailTexture = eastl::make_shared<DefaultTexture>(d3d12Device.get(), textureRegisters.Allocate());
 
+		defaultWhiteTexture->texture->SetName(L"Default White Texture");
+		defaultGrayTexture->texture->SetName(L"Default Gray Texture");
+		defaultNormalTexture->texture->SetName(L"Default Noral Texture");
+		defaultBlackTexture->texture->SetName(L"Default Black Texture");
+		defaultRMAOSTexture->texture->SetName(L"Default RMAOS Texture");
+		defaultDetailTexture->texture->SetName(L"Default Detail Texture");
+
 		defaultWhiteTexture->CreateSRV<GIHeap>(giHeap.get(), GIHeapDef::Slot::Textures);
 		defaultGrayTexture->CreateSRV<GIHeap>(giHeap.get(), GIHeapDef::Slot::Textures);
 		defaultNormalTexture->CreateSRV<GIHeap>(giHeap.get(), GIHeapDef::Slot::Textures);
@@ -1990,8 +1997,14 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 		if (geometryType.all(RE::BSGeometry::Type::kDynamicTriShape))
 			flags |= Shape::Flags::Dynamic;
 
-		float3x4 localToRoot;
-		XMStoreFloat3x4(&localToRoot, GetXMFromNiTransform(rootWorldInverse * pGeometry->world));
+		auto layer = Shape::Layer::Dynamic;
+
+		// I trust 'static' means what I think it means
+		if (formType == RE::FormType::Static || formType == RE::FormType::Land)
+			layer = Shape::Layer::Static;
+
+		float3x4 transform;
+		XMStoreFloat3x4(&transform, GetXMFromNiTransform(layer == Shape::Layer::Static ? pGeometry->world : rootWorldInverse * pGeometry->world));
 
 		if (auto* triShapeRD = geometryRuntimeData.rendererData) {  // Non-Skinned
 			auto* pTriShape = netimmerse_cast<RE::BSTriShape*>(pGeometry);
@@ -2008,7 +2021,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 
-			auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
+			auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, transform, flags, layer);
 
 			shape->BuildMesh(triShapeRD, triShapeRuntime.vertexCount, triShapeRuntime.triangleCount, 0);
 			shape->BuildMaterial(geometryRuntimeData, name, formID);
@@ -2041,7 +2054,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 				if (partition.bonesPerVertex > 0)
 					flags |= Shape::Flags::Skinned;
 
-				auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, localToRoot, flags);
+				auto shape = eastl::make_unique<Shape>(shapeRegisters.Allocate(), pGeometry, transform, flags, layer);
 
 				shape->BuildMesh(partition.buffData, skinPartition->vertexCount, partition.triangles, partition.bonesPerVertex);
 				shape->BuildMaterial(geometryRuntimeData, name, formID);
@@ -2404,28 +2417,36 @@ void Raytracing::UpdateClusters()
 
 		if (queuedInstance.Added) {
 			auto instanceCluster = InstanceCluster();
+
+			logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance.Instance), queuedInstance.Instance->name);
+
 			instanceCluster.instances.push_back(queuedInstance.Instance);
 			instanceCluster.Commit(commandList.get());
 
 			instanceClusters.push_back(instanceCluster);
 		} else {
-			for (auto instanceCluster = instanceClusters.begin(); instanceCluster != instanceClusters.end();) {
+			for (size_t i = 0; i < instanceClusters.size(); i++) {
+				auto& instanceCluster = instanceClusters[i];
 
 				// Erase instance from cluster
-				if (instanceCluster->instances.erase_first(queuedInstance.Instance)) {
+				if (eastl::erase(instanceCluster.instances, queuedInstance.Instance) > 0) {
 
-					// If no instances left, erase cluster
-					if (instanceCluster->instances.empty()) {
-						instanceCluster = instanceClusters.erase(instanceCluster);
-						continue;
+					logger::info("[RT] Instance Removed 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance.Instance), queuedInstance.Instance ? queuedInstance.Instance->name : "N/A");
+
+					if (instanceCluster.instances.empty()) {
+						// If no instances left, erase cluster
+						instanceClusters.erase(instanceClusters.begin() + i);
+
+						logger::info("[RT] Cluster Erased");
+					} else {
+						// Update if a instance was removed
+						instanceCluster.Update(commandList.get());
+
+						logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
 					}
 
-					// Update if a instance was removed
-					instanceCluster->Update(commandList.get());
+					break;
 				}
-
-				// Advance iterator
-				++instanceCluster;
 			}
 		}
 

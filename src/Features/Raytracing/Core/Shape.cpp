@@ -800,13 +800,13 @@ void Shape::CreateBuffers(const std::wstring& name)
 
 	// Updatable geometry is already in root space
 	if (updatable)
-		localToRoot = float3x4(
+		transform = float3x4(
 			1.0f, 0.0f, 0.0f, 0.0f,
 			0.0f, 1.0f, 0.0f, 0.0f,
 			0.0f, 0.0f, 1.0f, 0.0f);
 
 	// This buffer is used for BLAS build/rebuild
-	rt.transformBuffer->UpdateAt(&localToRoot, allocationIndex);
+	rt.transformBuffer->UpdateAt(&transform, allocationIndex);
 	rt.transformBuffer->UploadRegion(commandList, sizeof(float3x4), sizeof(float3x4) * allocationIndex);
 }
 
@@ -962,7 +962,7 @@ ShapeData Shape::GetData() const
 		material.GetData(),
 		allocation->GetIndex(),
 		{0, 0},
-		localToRoot
+		transform
 	};
 }
 
