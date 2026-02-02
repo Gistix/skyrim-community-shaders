@@ -1247,7 +1247,7 @@ void Raytracing::InitRR()
 	pref.flags = sl::PreferenceFlags::eUseManualHooking;
 	//sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
-	pref.logLevel = sl::LogLevel::eOff;
+	//pref.logLevel = sl::LogLevel::eOff;
 
 	slInit = (PFun_slInit*)GetProcAddress(interposer, "slInit");
 	slGetNewFrameToken = (PFun_slGetNewFrameToken*)GetProcAddress(interposer, "slGetNewFrameToken");
@@ -2681,7 +2681,7 @@ void Raytracing::DrawRTGI()
 		d3d11Context->ClearRenderTargetView(rendererRuntimeData.renderTargets[ALBEDO].RTV, clearColor);
 	}
 
-	//ConvertTextures();
+	ConvertTextures();
 
 	// Wait for D3D11 to finish
 	{
