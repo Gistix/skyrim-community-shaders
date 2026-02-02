@@ -672,6 +672,7 @@ void Shape::CreateBuffers(const std::wstring& name)
 	if (flags & Flags::Dynamic) {
 		allocDesc.CustomPool = rt.dynamicVertexPool.get();
 		dynamicPositionBuffer = eastl::make_unique<DX12::StructuredBufferUploadMA<float4>>(device, allocator, allocDesc, uploadAllocDesc, vertexCount, false);
+		dynamicPositionBuffer->SetName(std::format(L"Dynamic Vertex Buffer [{}] - {}", allocation->GetIndex(), name).c_str());
 
 		dynamicPositionBuffer->TransitionBarrier(commandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -684,9 +685,9 @@ void Shape::CreateBuffers(const std::wstring& name)
 	{
 		allocDesc.CustomPool = rt.vertexPool.get();
 		vertexBuffer = eastl::make_unique<DX12::StructuredBufferUploadMA<Vertex>>(device, allocator, allocDesc, uploadAllocDesc, vertexCount, updatable);
+		vertexBuffer->SetName(std::format(L"Vertex Buffer [{}] - {}", allocation->GetIndex(), name).c_str());
 
 		vertexBuffer->UpdateList(vertices.data(), vertexCount);
-		DX::ThrowIfFailed(vertexBuffer->resource->SetName(std::format(L"Vertex Buffer [{}] - {}", allocation->GetIndex(), name).c_str()));
 
 		if (vertexCount != vertices.size())
 			logger::error("[RT] Shape::CreateBuffers - VertexCount: {}, Vertices Size: {}", vertexCount, vertices.size());
@@ -726,9 +727,9 @@ void Shape::CreateBuffers(const std::wstring& name)
 	{
 		allocDesc.CustomPool = rt.vertexCopyPool.get();
 		vertexCopyBuffer = eastl::make_unique<DX12::StructuredBufferUploadMA<Vertex>>(device, allocator, allocDesc, uploadAllocDesc, vertexCount);
+		vertexCopyBuffer->SetName(std::format(L"Vertex Copy Buffer [{}] - {}", allocationIndex, name).c_str());
 
 		vertexCopyBuffer->UpdateList(vertices.data(), vertexCount);
-		DX::ThrowIfFailed(vertexCopyBuffer->resource->SetName(std::format(L"Vertex Copy Buffer [{}] - {}", allocationIndex, name).c_str()));
 
 		vertexCopyBuffer->Upload(commandList, 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -751,9 +752,9 @@ void Shape::CreateBuffers(const std::wstring& name)
 	if (flags & Flags::Skinned) {
 		allocDesc.CustomPool = rt.skinningPool.get();
 		skinningBuffer = eastl::make_unique<DX12::StructuredBufferUploadMA<Skinning>>(device, allocator, allocDesc, uploadAllocDesc, vertexCount, false);
+		skinningBuffer->SetName(std::format(L"Skinning Buffer [{}] - {}", allocationIndex, name).c_str());
 
 		skinningBuffer->UpdateList(skinning.data(), vertexCount);
-		DX::ThrowIfFailed(skinningBuffer->resource->SetName(std::format(L"Skinning Buffer [{}] - {}", allocationIndex, name).c_str()));
 
 		skinningBuffer->Upload(commandList, 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -776,9 +777,9 @@ void Shape::CreateBuffers(const std::wstring& name)
 	{
 		allocDesc.CustomPool = rt.trianglePool.get();
 		triangleBuffer = eastl::make_unique<DX12::StructuredBufferUploadMA<Triangle>>(device, allocator, allocDesc, uploadAllocDesc, triangleCount, false);
+		triangleBuffer->SetName(std::format(L"Triangle Buffer [{}] - {}", allocationIndex, name).c_str());
 
 		triangleBuffer->UpdateList(triangles.data(), triangles.size());
-		DX::ThrowIfFailed(triangleBuffer->resource->SetName(std::format(L"Triangle Buffer [{}] - {}", allocationIndex, name).c_str()));
 
 		triangleBuffer->Upload(commandList, 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 

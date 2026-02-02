@@ -19,9 +19,9 @@ namespace DX12
 
 		virtual ~ResourceMA() = default;
 
-		void SetName(LPCWSTR name) const
+		virtual void SetName(LPCWSTR name) const
 		{
-			allocation->SetName(name);
+			DX::ThrowIfFailed(resource->SetName(name));
 		}
 
 		D3D12_RESOURCE_STATES GetState() const
@@ -134,6 +134,16 @@ namespace DX12
 			DX::ThrowIfFailed(allocator->CreateResource(&uploadAllocDesc, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, uploadAllocation.put(), IID_PPV_ARGS(&uploadResource)));
 		}
 
+		virtual void SetName(LPCWSTR name) const override
+		{
+			ResourceMA::SetName(name);
+
+			std::wstring uploadName = name;
+			uploadName += L" (Upload)";
+
+			DX::ThrowIfFailed(uploadResource->SetName(uploadName.c_str()));
+		}
+
 		void Update(void const* src_data, size_t data_size) const
 		{
 			void* pData;
@@ -235,23 +245,35 @@ namespace DX12
 			D3D12_RESOURCE_DESC desc = StructuredBufferMA<T>::Desc(ResourceMA::desc.Width);
 
 			uploadAllocation.resize(uploadCount);
-			uploadResource.resize(uploadCount);
+			uploadResources.resize(uploadCount);
 
 			for (auto i = 0u; i < uploadCount; i++) {
-				DX::ThrowIfFailed(allocator->CreateResource(&uploadAllocDesc, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, uploadAllocation[i].put(), IID_PPV_ARGS(&uploadResource[i])));
+				DX::ThrowIfFailed(allocator->CreateResource(&uploadAllocDesc, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, uploadAllocation[i].put(), IID_PPV_ARGS(&uploadResources[i])));
+			}
+		}
+
+		virtual void SetName(LPCWSTR name) const override
+		{
+			ResourceMA::SetName(name);
+
+			std::wstring uploadName = name;
+			uploadName += L" (Upload)";
+
+			for (auto i = 0u; i < uploadResources.size(); i++) {
+				DX::ThrowIfFailed(uploadResources[i]->SetName(uploadName.c_str()));
 			}
 		}
 
 		void Update(void const* srcData, size_t dataSize, size_t begin = 0, uint uploadIndex = 0)
 		{
 			void* pData;
-			DX::ThrowIfFailed(uploadResource[uploadIndex]->Map(0, &readRange, &pData));
+			DX::ThrowIfFailed(uploadResources[uploadIndex]->Map(0, &readRange, &pData));
 
 			uint8_t* dst = static_cast<uint8_t*>(pData) + begin;
 			memcpy(dst, srcData, dataSize);
 
 			D3D12_RANGE writeRange = { begin, begin + dataSize };
-			uploadResource[uploadIndex]->Unmap(0, &writeRange);
+			uploadResources[uploadIndex]->Unmap(0, &writeRange);
 		}
 
 		void UpdateAt(T const* srcData, size_t index = 0, uint uploadIndex = 0)
@@ -259,13 +281,13 @@ namespace DX12
 			size_t begin = index * sizeof(T);
 
 			void* pData;
-			DX::ThrowIfFailed(uploadResource[uploadIndex]->Map(0, &readRange, &pData));
+			DX::ThrowIfFailed(uploadResources[uploadIndex]->Map(0, &readRange, &pData));
 
 			uint8_t* dst = static_cast<uint8_t*>(pData) + begin;
 			memcpy(dst, srcData, sizeof(T));
 
 			D3D12_RANGE writeRange = { begin, begin + sizeof(T) };
-			uploadResource[uploadIndex]->Unmap(0, &writeRange);
+			uploadResources[uploadIndex]->Unmap(0, &writeRange);
 		}
 
 		void UpdateList(T const* srcData, uint64_t localCount, uint uploadIndex = 0)
@@ -278,7 +300,7 @@ namespace DX12
 			D3D12_RESOURCE_STATES state = this->state;
 
 			this->TransitionBarrier(commandList, D3D12_RESOURCE_STATE_COPY_DEST);
-			commandList->CopyResource(this->resource.get(), uploadResource[uploadIndex].get());
+			commandList->CopyResource(this->resource.get(), uploadResources[uploadIndex].get());
 			this->TransitionBarrier(commandList, finalState != D3D12_RESOURCE_STATE_COMMON ? finalState : state);
 		}
 
@@ -288,12 +310,12 @@ namespace DX12
 			D3D12_RESOURCE_STATES state = this->state;
 
 			this->TransitionBarrier(commandList, D3D12_RESOURCE_STATE_COPY_DEST);
-			commandList->CopyBufferRegion(this->resource.get(), offset, uploadResource[uploadIndex].get(), offset, dataSize);
+			commandList->CopyBufferRegion(this->resource.get(), offset, uploadResources[uploadIndex].get(), offset, dataSize);
 			this->TransitionBarrier(commandList, state);
 		}
 
 		eastl::vector<winrt::com_ptr<D3D12MA::Allocation>> uploadAllocation;
-		eastl::vector<winrt::com_ptr<ID3D12Resource>> uploadResource;
+		eastl::vector<winrt::com_ptr<ID3D12Resource>> uploadResources;
 
 	private:
 		D3D12_RANGE readRange = { 0, 0 };

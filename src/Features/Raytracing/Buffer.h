@@ -25,7 +25,7 @@ namespace DX12
 
 		virtual ~Resource() = default;
 
-		void SetName(LPCWSTR name) const
+		virtual void SetName(LPCWSTR name) const
 		{
 			DX::ThrowIfFailed(resource->SetName(name));
 		}
@@ -126,6 +126,16 @@ namespace DX12
 				D3D12_RESOURCE_STATE_GENERIC_READ,
 				nullptr,
 				IID_PPV_ARGS(&uploadResource)));
+		}
+
+		virtual void SetName(LPCWSTR name) const override
+		{
+			Resource::SetName(name);
+
+			std::wstring uploadName = name;
+			uploadName += L" (Upload)";
+
+			DX::ThrowIfFailed(uploadResource->SetName(uploadName.c_str()));
 		}
 
 		void Update(void const* src_data, size_t data_size) const
@@ -251,6 +261,16 @@ namespace DX12
 				D3D12_RESOURCE_STATE_GENERIC_READ,
 				nullptr,
 				IID_PPV_ARGS(&uploadResource)));
+		}
+
+		virtual void SetName(LPCWSTR name) const override
+		{
+			Resource::SetName(name);
+
+			std::wstring uploadName = name;
+			uploadName += L" (Upload)";
+
+			DX::ThrowIfFailed(uploadResource->SetName(uploadName.c_str()));
 		}
 
 		void Update(void const* src_data, size_t data_size, size_t begin = 0)
@@ -385,6 +405,18 @@ namespace DX12
 					D3D12_RESOURCE_STATE_GENERIC_READ,
 					nullptr,
 					IID_PPV_ARGS(uploadResources[i].put())));
+			}
+		}
+
+		virtual void SetName(LPCWSTR name) const override
+		{
+			Resource::SetName(name);
+
+			std::wstring uploadName = name;
+			uploadName += L" (Upload)";
+
+			for (auto i = 0u; i < uploadResources.size(); i++) {
+				DX::ThrowIfFailed(uploadResources[i]->SetName(uploadName.c_str()));
 			}
 		}
 

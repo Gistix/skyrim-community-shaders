@@ -12,9 +12,16 @@
 #include "Features/Raytracing/Core/Model.h"
 #include "Features/Raytracing/Core/Instance.h"
 
+struct ClusterAction
+{
+	bool Added;
+	RE::NiAVObject* Instance;
+};
+
 struct InstanceCluster
 {
 	eastl::vector<RE::NiAVObject*> instances;
+	eastl::hash_set<RE::NiAVObject*> instancesMap;
 
 	winrt::com_ptr<D3D12MA::Allocation> blas = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> scratch = nullptr;

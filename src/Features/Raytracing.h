@@ -237,7 +237,6 @@ struct Raytracing : public OverlayFeature
 	void BSShader_SetupGeometry(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags);
 
 	void SkyCubeToHemi() const;
-	void CheckResourcesSide(int side);
 
 	void AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::string path);
 
@@ -245,8 +244,7 @@ struct Raytracing : public OverlayFeature
 
 	void UpdateInstances();
 
-	template <typename T>
-	void MakeAndCopy(const eastl::vector<T>& data, winrt::com_ptr<ID3D12Resource>& res);
+	void UpdateClusters();
 
 	void DeviceRemovedHandler();
 
@@ -556,6 +554,7 @@ struct Raytracing : public OverlayFeature
 	uint debugNormalMap = 0;
 #endif
 	bool debugCluster = false;
+	bool debugInstanceUpdate = true;
 
 	enum class RecompileReason : uint32_t
 	{
@@ -657,7 +656,10 @@ struct Raytracing : public OverlayFeature
 	eastl::shared_ptr<DefaultTexture> defaultDetailTexture = nullptr;
 
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>> models;
-	eastl::vector<InstanceCluster> modelClusters;
+
+	eastl::deque<ClusterAction> clusterQueue;
+
+	eastl::vector<InstanceCluster> instanceClusters;
 
 	winrt::com_ptr<D3D12MA::Allocator> allocator = nullptr;
 

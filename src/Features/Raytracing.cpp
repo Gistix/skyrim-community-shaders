@@ -543,6 +543,8 @@ void Raytracing::DrawDebugSettings()
 
 	ImGui::Checkbox("Enable Cluster", &debugCluster);
 
+	ImGui::Checkbox("Enable Instance Update", &debugInstanceUpdate);
+
 	ImGui::InputText("Shader Defines", &debugDefines);
 
 	ImGui::SameLine();
@@ -1085,7 +1087,7 @@ void Raytracing::SetupResources()
 	// Light buffer
 	{
 		lightBuffer = eastl::make_unique<DX12::StructuredBufferUpload<Light>>(d3d12Device.get(), RTConstants::MAX_LIGHTS);
-		DX::ThrowIfFailed(lightBuffer->resource->SetName(L"Light Buffer"));
+		lightBuffer->SetName(L"Light Buffer");
 
 		lightBuffer->CreateSRV(giHeap->CPUHandle(GIHeap::Slot::Lights));
 	}
@@ -1093,7 +1095,7 @@ void Raytracing::SetupResources()
 	// Shape buffer
 	{
 		shapeBuffer = eastl::make_unique<DX12::StructuredBufferUpload<ShapeData>>(d3d12Device.get(), RTConstants::MAX_SHAPES);
-		DX::ThrowIfFailed(shapeBuffer->resource->SetName(L"Shape Buffer"));
+		shapeBuffer->SetName(L"Shape Buffer");
 
 		shapeBuffer->CreateSRV(giHeap->CPUHandle(GIHeap::Slot::Shapes));
 
@@ -1103,7 +1105,7 @@ void Raytracing::SetupResources()
 	// Instance buffer
 	{
 		instanceBuffer = eastl::make_unique<DX12::StructuredBufferUpload<InstanceData>>(d3d12Device.get(), RTConstants::MAX_INSTANCES);
-		DX::ThrowIfFailed(instanceBuffer->resource->SetName(L"Instance Buffer"));
+		instanceBuffer->SetName(L"Instance Buffer");
 
 		instanceBuffer->CreateSRV(giHeap->CPUHandle(GIHeap::Slot::Instances));
 	}
@@ -1111,7 +1113,7 @@ void Raytracing::SetupResources()
 	// Geometry transform buffer
 	{
 		transformBuffer = eastl::make_unique<DX12::StructuredBufferUpload<float3x4>>(d3d12Device.get(), RTConstants::MAX_TRANSFORMS);
-		DX::ThrowIfFailed(transformBuffer->resource->SetName(L"Transform Buffer"));
+		transformBuffer->SetName(L"Transform Buffer");
 
 		transformBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
@@ -1119,7 +1121,7 @@ void Raytracing::SetupResources()
 	// Create instance buffer for BLAS
 	{
 		blasInstanceBuffer = eastl::make_unique<DX12::StructuredBufferUpload<D3D12_RAYTRACING_INSTANCE_DESC>>(d3d12Device.get(), RTConstants::MAX_INSTANCES, false);
-		DX::ThrowIfFailed(blasInstanceBuffer->resource->SetName(L"BLAS Instance Buffer"));
+		blasInstanceBuffer->SetName(L"BLAS Instance Buffer");
 
 		blasInstanceBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
@@ -1127,7 +1129,7 @@ void Raytracing::SetupResources()
 	// Create shadow instance buffer for BLAS
 	{
 		blasShadowInstanceBuffer = eastl::make_unique<DX12::StructuredBufferUpload<D3D12_RAYTRACING_INSTANCE_DESC>>(d3d12Device.get(), RTConstants::MAX_INSTANCES, false);
-		DX::ThrowIfFailed(blasShadowInstanceBuffer->resource->SetName(L"BLAS Instance Buffer"));
+		blasShadowInstanceBuffer->SetName(L"BLAS Instance Buffer");
 
 		blasShadowInstanceBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
@@ -1135,14 +1137,14 @@ void Raytracing::SetupResources()
 	logger::debug("Creating constant buffer...");
 	{
 		frameBuffer = eastl::make_unique<DX12::StructuredBufferUpload<FrameData>>(d3d12Device.get(), 1, false, 2);
-		DX::ThrowIfFailed(frameBuffer->resource->SetName(L"Frame Buffer"));
+		frameBuffer->SetName(L"Frame Buffer");
 
 		frameBuffer->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
 		frameData = eastl::make_unique<FrameData>();
 
 		shadowsCB = eastl::make_unique<DX12::StructuredBufferUpload<ShadowsFrameData>>(d3d12Device.get(), 1, false);
-		DX::ThrowIfFailed(shadowsCB->resource->SetName(L"Shadows Constant Buffer"));
+		shadowsCB->SetName(L"Shadows Constant Buffer");
 
 		shadowsCB->TransitionBarrier(commandList.get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
@@ -1807,28 +1809,6 @@ void Raytracing::Main_RenderWorld(bool a1)
 	}
 }
 
-static RE::BSFadeNode* FindBSFadeNode(RE::NiNode* a_niNode)
-{
-	if (auto fadeNode = a_niNode->AsFadeNode()) {
-		return fadeNode;
-	}
-	return a_niNode->parent ? FindBSFadeNode(a_niNode->parent) : nullptr;
-}
-
-template <typename T>
-void Raytracing::MakeAndCopy(const eastl::vector<T>& data, winrt::com_ptr<ID3D12Resource>& res)
-{
-	auto desc = BASIC_BUFFER_DESC;
-	desc.Width = sizeof(T) * data.size();
-
-	DX::ThrowIfFailed(d3d12Device->CreateCommittedResource(&UPLOAD_HEAP, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&res)));
-
-	void* ptr;
-	DX::ThrowIfFailed(res->Map(0, nullptr, &ptr));
-	memcpy(ptr, data.data(), desc.Width);
-	res->Unmap(0, nullptr);
-}
-
 // A custom visit controller built to ignore billboard/particle geometry
 static RE::BSVisit::BSVisitControl TraverseScenegraphRTGeometries(RE::NiAVObject* a_object, std::function<RE::BSVisit::BSVisitControl(RE::BSGeometry*)> a_func)
 {
@@ -2104,7 +2084,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 
 bool Raytracing::RemoveInstance([[maybe_unused]] RE::NiAVObject* pRoot, [[maybe_unused]] bool releaseModel)
 {
-	/*if (auto instanceIt = instances.find(pRoot); instanceIt != instances.end()) {
+	if (auto instanceIt = instances.find(pRoot); instanceIt != instances.end()) {
 		auto& instance = instanceIt->second;
 
 		logger::debug("[RT] RemoveInstance - \"{}\", \"{}\"", pRoot->name, instance.filename);
@@ -2128,8 +2108,10 @@ bool Raytracing::RemoveInstance([[maybe_unused]] RE::NiAVObject* pRoot, [[maybe_
 
 		instances.erase(instanceIt);
 
+		clusterQueue.emplace_back(false, pRoot);
+
 		return true;
-	}*/
+	}
 
 	return false;
 }
@@ -2138,13 +2120,13 @@ bool Raytracing::RemoveInstance([[maybe_unused]] RE::FormID formID, [[maybe_unus
 {
 	bool removed = false;
 
-	/*if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
+	if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
 		for (auto& rootNode : nodesIt->second) {
 			removed = RemoveInstance(rootNode, releaseModel);
 		}
 
 		formIDNodes.erase(nodesIt);
-	}*/
+	}
 
 	return removed;
 }
@@ -2228,6 +2210,8 @@ eastl::shared_ptr<Allocation> Raytracing::GetTextureRegister(ID3D11Texture2D* dx
 		it->second = eastl::make_unique<TextureReference>(std::move(dx12Texture), eastl::shared_ptr<Allocation>(textureRegisters.Allocate(), AllocationDeleter()));
 
 		d3d12Device->CreateShaderResourceView(it->second->resource.get(), &texSrvDesc, giHeap->CPUHandle(GIHeap::Slot::Textures, it->second->allocation->GetIndex()));
+
+		DX::ThrowIfFailed(it->second->resource->SetName(L"Shared Texture"));
 
 		return it->second->allocation;
 	} else {
@@ -2323,6 +2307,8 @@ eastl::shared_ptr<Allocation> Raytracing::GetMSNormalMapRegister([[maybe_unused]
 			return defaultTexture;
 		}
 
+		DX::ThrowIfFailed(dx12Texture->SetName(L"Converted MSN Textured"));
+
 		D3D12_RESOURCE_DESC texResDesc = dx12Texture->GetDesc();
 
 		D3D12_SHADER_RESOURCE_VIEW_DESC texSrvDesc = {};
@@ -2358,6 +2344,8 @@ void Raytracing::AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::
 				} else {
 					formIDNodes.try_emplace(formID, eastl::vector<RE::NiAVObject*>{ pNiNode });
 				}
+
+				clusterQueue.emplace_back(true, pNiNode);
 
 				modelIt->second->AddRef();
 			}
@@ -2400,17 +2388,65 @@ static RE::NiCamera* FindNiCamera(RE::NiAVObject* object)
 	return nullptr;
 }
 
+void Raytracing::UpdateClusters()
+{
+	/*if (debugCluster)
+	{
+		auto clusterStart = Util::GetNowSecs();
+
+		ClusteringProcess::ClusterBVH(instances);
+
+		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
+	}*/
+
+	while (!clusterQueue.empty()) {
+		auto& queuedInstance = clusterQueue.front();
+
+		if (queuedInstance.Added) {
+			auto instanceCluster = InstanceCluster();
+			instanceCluster.instances.push_back(queuedInstance.Instance);
+			instanceCluster.Commit(commandList.get());
+
+			instanceClusters.push_back(instanceCluster);
+		} else {
+			for (auto instanceCluster = instanceClusters.begin(); instanceCluster != instanceClusters.end();) {
+
+				// Erase instance from cluster
+				if (instanceCluster->instances.erase_first(queuedInstance.Instance)) {
+
+					// If no instances left, erase cluster
+					if (instanceCluster->instances.empty()) {
+						instanceCluster = instanceClusters.erase(instanceCluster);
+						continue;
+					}
+
+					// Update if a instance was removed
+					instanceCluster->Update(commandList.get());
+				}
+
+				// Advance iterator
+				++instanceCluster;
+			}
+		}
+
+		clusterQueue.pop_front();
+	}
+}
+
 void Raytracing::UpdateInstances()
 {
+	if (!debugInstanceUpdate)
+		return;
+
 	blasInstances.clear();
 
 	uint shapeCount = 0;
 	uint instanceCount = 0;
 
-	for (auto& modelCluster : modelClusters) {
+	for (auto& instanceCluster : instanceClusters) {
 		uint firstShape = shapeCount;
 
-		modelCluster.ForEachShape([&](Shape* shape) {
+		instanceCluster.ForEachShape([&](Shape* shape) {
 			shapeData[shapeCount] = shape->GetData();
 			shapeCount++;
 		});	
@@ -2419,15 +2455,15 @@ void Raytracing::UpdateInstances()
 		blasInstance.InstanceID = 0;
 		blasInstance.InstanceMask = 1;
 		blasInstance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-		blasInstance.AccelerationStructure = modelCluster.blas->GetResource()->GetGPUVirtualAddress();
+		blasInstance.AccelerationStructure = instanceCluster.blas->GetResource()->GetGPUVirtualAddress();
 
 		// Copy transform matrix from Instance to DX12 BLAS instance
-		memcpy(blasInstance.Transform, modelCluster.transform.m, sizeof(blasInstance.Transform));
+		memcpy(blasInstance.Transform, instanceCluster.transform.m, sizeof(blasInstance.Transform));
 
 		blasInstances.push_back(blasInstance);
 
 		instanceData[instanceCount] = {
-			modelCluster.transform,
+			instanceCluster.transform,
 			LightData(), // GatherInstanceLights(node)
 			firstShape
 		};
@@ -2646,14 +2682,7 @@ void Raytracing::DrawRTGI()
 		//}
 	}
 
-	/*if (debugCluster)
-	{
-		auto clusterStart = Util::GetNowSecs();
-
-		ClusteringProcess::ClusterBVH(instances);
-
-		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
-	}*/
+	UpdateClusters();
 
 	UpdateInstances();
 
@@ -3425,12 +3454,12 @@ void Raytracing::InitD3D12(ID3D11Device* ppDevice, ID3D11DeviceContext* pImmedia
 		queueDesc.NodeMask = 0;
 
 		DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+		DX::ThrowIfFailed(commandQueue->SetName(L"Command Queue"));
 
 		DX::ThrowIfFailed(d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator)));
-		DX::ThrowIfFailed(d3d12Device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&commandList)));
-
-		DX::ThrowIfFailed(commandQueue->SetName(L"Command Queue"));
 		DX::ThrowIfFailed(commandAllocator->SetName(L"Command Allocator"));
+
+		DX::ThrowIfFailed(d3d12Device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&commandList)));
 		DX::ThrowIfFailed(commandList->SetName(L"Command List"));
 
 		DX::ThrowIfFailed(commandAllocator->Reset());
