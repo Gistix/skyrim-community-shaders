@@ -30,7 +30,7 @@ struct Model
 		}
 	}
 
-	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> GeometryDescs() const;
+	//eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> GeometryDescs(float4x4 transform) const;
 
 	static std::string KeySuffix(RE::NiAVObject* root)
 	{

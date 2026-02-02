@@ -13,16 +13,52 @@ eastl::unordered_map<RE::NiAVObject*, Instance>& InstanceCluster::Instances() co
 	return globals::features::raytracing.instances;
 }
 
-void InstanceCluster::Commit(ID3D12GraphicsCommandList4* commandList)
+eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> InstanceCluster::GeometryDescs(uint& updateIndex)
+{
+	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
+
+	auto& rt = globals::features::raytracing;
+
+	for (auto& root : instances) {
+		// There are a lot of layers..
+		auto instanceIt = rt.instances.find(root);
+		if (instanceIt == rt.instances.end())
+			continue;
+
+		auto& instance = instanceIt->second;
+
+		auto world = GetXMFromNiTransform(instance.root->world);
+
+		auto modelIt = rt.models.find(instance.filename);
+		if (modelIt == rt.models.end())
+			continue;
+
+		for (auto& shape : modelIt->second->shapes) {
+			auto offset = sizeof(float3x4) * static_cast<uint64_t>(updateIndex);
+
+			float3x4 transform;
+			XMStoreFloat3x4(&transform, XMMatrixMultiply(XMLoadFloat3x4(&shape->transform) ,world));
+
+			rt.transformBuffer->UpdateAt(&transform, updateIndex);
+			rt.transformBuffer->UploadRegion(rt.commandList.get(), sizeof(float3x4), offset);
+			D3D12_GPU_VIRTUAL_ADDRESS transformVirtualAddress = rt.transformBuffer->resource->GetGPUVirtualAddress() + offset;
+
+			geometryDescs.push_back(shape->GeometryDesc(transformVirtualAddress));
+
+			logger::info("[RT] GeometryDescs - {}", updateIndex);
+
+			updateIndex++;
+		}
+	}
+
+	return geometryDescs;
+}
+
+void InstanceCluster::Commit(ID3D12GraphicsCommandList4* commandList, uint& updateIndex)
 {
 	auto& rt = globals::features::raytracing;
 
-	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
-
-	ForEachModel([&](Model* model) {
-		auto modelGeometryDescs = model->GeometryDescs();
-		geometryDescs.insert(geometryDescs.end(), modelGeometryDescs.begin(), modelGeometryDescs.end());
-	});
+	auto geometryDescs = GeometryDescs(updateIndex);
 
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {
 		.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
@@ -73,7 +109,7 @@ void InstanceCluster::Commit(ID3D12GraphicsCommandList4* commandList)
 	commandList->ResourceBarrier(1, &asBarrier);
 }
 
-void InstanceCluster::Update(ID3D12GraphicsCommandList4* commandList)
+void InstanceCluster::Update(ID3D12GraphicsCommandList4* commandList, uint& updateIndex)
 {
 	auto gpuVirtualAddr = blas->GetResource()->GetGPUVirtualAddress();
 
@@ -82,12 +118,7 @@ void InstanceCluster::Update(ID3D12GraphicsCommandList4* commandList)
 	if (rt.destASFrame.find(gpuVirtualAddr) != rt.destASFrame.end())
 		return;
 
-	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
-
-	ForEachModel([&](Model* model) {
-		auto modelGeometryDescs = model->GeometryDescs();
-		geometryDescs.insert(geometryDescs.end(), modelGeometryDescs.begin(), modelGeometryDescs.end());
-	});
+	auto geometryDescs = GeometryDescs(updateIndex);
 
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {
 		.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,

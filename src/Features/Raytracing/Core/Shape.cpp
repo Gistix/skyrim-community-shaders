@@ -886,11 +886,11 @@ void Shape::CalculateVectors(bool calculateNormal)
 	}
 }
 
-D3D12_GPU_VIRTUAL_ADDRESS Shape::TransformBuffer() const
+/*D3D12_GPU_VIRTUAL_ADDRESS Shape::TransformBuffer() const
 {
 	auto offset = allocation->GetIndex() * sizeof(float3x4);
 	return globals::features::raytracing.transformBuffer->resource->GetGPUVirtualAddress() + offset;
-}
+}*/
 
 // Updates Dynamic Vertex position (and Bitangent.x) buffer
 // TODO: Test performance and stability of using a upload heap buffer and keeping it mapped to dynamicData
@@ -966,7 +966,7 @@ ShapeData Shape::GetData() const
 	};
 }
 
-D3D12_RAYTRACING_GEOMETRY_DESC Shape::GeometryDesc() const
+D3D12_RAYTRACING_GEOMETRY_DESC Shape::GeometryDesc(D3D12_GPU_VIRTUAL_ADDRESS transform3X4) const
 {
 	bool hasAlphaTesting = flags & Shape::Flags::AlphaTesting;
 	bool isBlend = (flags & Shape::Flags::AlphaBlending) && (material.Feature == RE::BSShaderMaterial::Feature::kHairTint || material.Feature == RE::BSShaderMaterial::Feature::kFaceGen || material.Feature == RE::BSShaderMaterial::Feature::kFaceGenRGBTint || material.Feature == RE::BSShaderMaterial::Feature::kEye);
@@ -978,7 +978,7 @@ D3D12_RAYTRACING_GEOMETRY_DESC Shape::GeometryDesc() const
 		.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
 		.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE | D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION,
 		.Triangles = {
-			.Transform3x4 = TransformBuffer(),
+			.Transform3x4 = transform3X4,
 			.IndexFormat = DXGI_FORMAT_R16_UINT,
 			.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT,
 			.IndexCount = triangleCount * 3,

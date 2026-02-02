@@ -125,7 +125,7 @@ void Model::ConvertMSN()
 	}
 }
 
-eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> Model::GeometryDescs() const
+/*eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> Model::GeometryDescs(float4x4 transform) const
 {
 	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometryDescs;
 	geometryDescs.reserve(shapes.size());
@@ -135,4 +135,4 @@ eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> Model::GeometryDescs() const
 	}
 
 	return geometryDescs;
-}
+}*/

@@ -88,9 +88,9 @@ public:
 		allocation({ allocation, AllocationDeleter() }), geometry(geometry), transform(transform), flags(flags), layer(layer)
 	{ }
 
-	D3D12_GPU_VIRTUAL_ADDRESS TransformBuffer() const;
+	//D3D12_GPU_VIRTUAL_ADDRESS TransformBuffer() const;
 
-	D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc() const;
+	D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc(D3D12_GPU_VIRTUAL_ADDRESS transform3X4) const;
 
 	void BuildMesh(RE::BSGraphics::TriShape* rendererData, const uint32_t& vertexCountIn, const uint32_t& triangleCountIn, const uint16_t& bonesPerVertex);
 

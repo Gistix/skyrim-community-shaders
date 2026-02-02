@@ -26,18 +26,45 @@ struct InstanceCluster
 	winrt::com_ptr<D3D12MA::Allocation> blas = nullptr;
 	winrt::com_ptr<D3D12MA::Allocation> scratch = nullptr;
 
-	float3x4 transform;
+	//float3x4 transform;
 
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>>& Models() const;
 	eastl::unordered_map<RE::NiAVObject*, Instance>& Instances() const;
 
 	InstanceCluster()
 	{
-		transform = float3x4(
+		/*transform = float3x4(
+			1.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f);*/
+	}
+
+	float3x4 Transform() const
+	{
+		return float3x4(
 			1.0f, 0.0f, 0.0f, 0.0f,
 			0.0f, 1.0f, 0.0f, 0.0f,
 			0.0f, 0.0f, 1.0f, 0.0f);
 	}
+
+	/*template <typename Func>
+	void ForEachModel(Func&& func)
+	{
+		for (auto& root : instances) {
+			// There are a lot of layers..
+			auto instanceIt = Instances().find(root);
+			if (instanceIt == Instances().end())
+				continue;
+
+			auto& instance = instanceIt->second;
+
+			auto modelIt = Models().find(instance.filename);
+			if (modelIt == Models().end())
+				continue;
+
+			func(modelIt->second.get());
+		}
+	}*/
 
 	template <typename Func>
 	void ForEachModel(Func&& func)
@@ -68,6 +95,8 @@ struct InstanceCluster
 		});
 	}
 
-	void Commit(ID3D12GraphicsCommandList4* commandList);
-	void Update(ID3D12GraphicsCommandList4* commandList);
+	eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> GeometryDescs(uint& updateIndex);
+
+	void Commit(ID3D12GraphicsCommandList4* commandList, uint& updateIndex);
+	void Update(ID3D12GraphicsCommandList4* commandList, uint& updateIndex);
 };

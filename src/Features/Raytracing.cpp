@@ -2004,7 +2004,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 			layer = Shape::Layer::Static;
 
 		float3x4 transform;
-		XMStoreFloat3x4(&transform, GetXMFromNiTransform(layer == Shape::Layer::Static ? pGeometry->world : rootWorldInverse * pGeometry->world));
+		XMStoreFloat3x4(&transform, GetXMFromNiTransform(rootWorldInverse * pGeometry->world));
 
 		if (auto* triShapeRD = geometryRuntimeData.rendererData) {  // Non-Skinned
 			auto* pTriShape = netimmerse_cast<RE::BSTriShape*>(pGeometry);
@@ -2349,7 +2349,7 @@ void Raytracing::AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::
 
 	if (auto instanceIt = instances.find(pNiNode); instanceIt == instances.end()) {
 		if (auto modelIt = models.find(path); modelIt != models.end()) {
-			auto [it, emplaced] = instances.try_emplace(pNiNode, Instance(formID, path));
+			auto [it, emplaced] = instances.try_emplace(pNiNode, Instance(formID, path, pNiNode));
 
 			if (emplaced) {
 				if (auto nodesIt = formIDNodes.find(formID); nodesIt != formIDNodes.end()) {
@@ -2412,6 +2412,8 @@ void Raytracing::UpdateClusters()
 		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
 	}*/
 
+	uint updateIndex = 0;
+
 	while (!clusterQueue.empty()) {
 		auto& queuedInstance = clusterQueue.front();
 
@@ -2421,7 +2423,7 @@ void Raytracing::UpdateClusters()
 			logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance.Instance), queuedInstance.Instance->name);
 
 			instanceCluster.instances.push_back(queuedInstance.Instance);
-			instanceCluster.Commit(commandList.get());
+			instanceCluster.Commit(commandList.get(), updateIndex);
 
 			instanceClusters.push_back(instanceCluster);
 		} else {
@@ -2440,7 +2442,7 @@ void Raytracing::UpdateClusters()
 						logger::info("[RT] Cluster Erased");
 					} else {
 						// Update if a instance was removed
-						instanceCluster.Update(commandList.get());
+						instanceCluster.Update(commandList.get(), updateIndex);
 
 						logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
 					}
@@ -2479,12 +2481,12 @@ void Raytracing::UpdateInstances()
 		blasInstance.AccelerationStructure = instanceCluster.blas->GetResource()->GetGPUVirtualAddress();
 
 		// Copy transform matrix from Instance to DX12 BLAS instance
-		memcpy(blasInstance.Transform, instanceCluster.transform.m, sizeof(blasInstance.Transform));
+		memcpy(blasInstance.Transform, instanceCluster.Transform().m, sizeof(blasInstance.Transform));
 
 		blasInstances.push_back(blasInstance);
 
 		instanceData[instanceCount] = {
-			instanceCluster.transform,
+			instanceCluster.Transform(),
 			LightData(), // GatherInstanceLights(node)
 			firstShape
 		};

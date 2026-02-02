@@ -17,8 +17,8 @@ struct Instance
 		Detached = 1 << 1
 	};
 
-	Instance(RE::FormID formID, eastl::string filename) :
-		formID(formID), filename(filename) {};
+	Instance(RE::FormID formID, eastl::string filename, RE::NiAVObject* root) :
+		formID(formID), filename(filename), root(root) {};
 
 	void SetDetached(bool detach);
 
@@ -51,6 +51,8 @@ struct Instance
 
 	// What model this instance references
 	eastl::string filename;
+
+	RE::NiAVObject* root;
 
 	// Used for BLAS instance
 	float3x4 transform;
