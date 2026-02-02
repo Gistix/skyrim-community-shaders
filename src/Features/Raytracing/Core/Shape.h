@@ -61,10 +61,8 @@ public:
 	eastl::vector<Triangle> triangles;
 
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<float4>> dynamicPositionBuffer = nullptr;
-
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Vertex>> vertexBuffer = nullptr;
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Vertex>> vertexCopyBuffer = nullptr;
-
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Skinning>> skinningBuffer = nullptr;
 	eastl::unique_ptr<DX12::StructuredBufferUploadMA<Triangle>> triangleBuffer = nullptr;
 
@@ -83,6 +81,9 @@ public:
 	float boundRadius;
 
 	float3x4 transform;
+
+	// Implement when shape is split between ShapeInstance and Shape
+	//float4x4 instanceTransform;
 
 	Shape(Allocation* allocation, RE::BSGeometry* geometry, float3x4 transform, Flags flags, Layer layer) :
 		allocation({ allocation, AllocationDeleter() }), geometry(geometry), transform(transform), flags(flags), layer(layer)
@@ -111,7 +112,7 @@ public:
 	// For PBR shader flags we need to copy exactly what TruePBR does
 	static stl::enumeration<PBRShaderFlags, uint32_t> GetPBRShaderFlags(const BSLightingShaderMaterialPBR* pbrMaterial);
 
-	ShapeData GetData() const;
+	ShapeData GetData(uint instanceIndex) const;
 };
 
 DEFINE_ENUM_FLAG_OPERATORS(Shape::Flags);

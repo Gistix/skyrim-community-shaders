@@ -8,7 +8,8 @@ struct ShapeData
 {
     MaterialData Material;
     uint GeometryIdx;
-    uint2 Pad0;
+    uint InstanceIdx;
+    uint Pad0;
 	float3x4 Transform;
 };
 
@@ -19,7 +20,8 @@ struct Shape
 {
     Material Material;   
     uint GeometryIdx;
-    uint2 Pad0;
+    uint InstanceIdx;
+    uint Pad0;
     row_major float3x4 Transform;
 };
 #endif

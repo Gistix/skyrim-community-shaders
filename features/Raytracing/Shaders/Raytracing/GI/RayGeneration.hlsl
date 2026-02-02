@@ -74,7 +74,7 @@ void main()
     sourcePayload.hitDistance = -1.0f;
     sourcePayload.primitiveIndex = 0;
     sourcePayload.PackBarycentrics(float2(0.0f, 0.0f));
-    sourcePayload.PackInstanceGeometryIndex(0, 0);
+    sourcePayload.shapeIndex = 0;
     sourcePayload.randomSeed = randomSeed;
 
     TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, sourceRay, sourcePayload);
@@ -102,10 +102,10 @@ void main()
 
     float3 sourcePosition = Frame.Position.xyz + sourceDirection * sourcePayload.hitDistance;
 
-    Instance sourceInstance;
+    LightData sourceLightData;
     Material sourceMaterial;
 
-    Surface sourceSurface = Surface(sourcePosition, sourcePayload, sourceDirection, sourceRayCone, sourceInstance, sourceMaterial);
+    Surface sourceSurface = Surface(sourcePosition, sourcePayload, sourceDirection, sourceRayCone, sourceLightData, sourceMaterial);
     BRDFContext sourceBRDFContext = BRDFContext(sourceSurface, -sourceDirection);
     if ((sourceMaterial.ShaderFlags & ShaderFlags::kTwoSided) != 0 && dot(sourceSurface.FaceNormal, sourceBRDFContext.ViewDirection) < 0.0f) sourceSurface.FlipNormal();
 
@@ -114,7 +114,7 @@ void main()
     AdjustShadingNormal(sourceSurface, sourceBRDFContext, true, false);
 
     // Direct Light for PT
-    float3 direct = EvaluateDirectRadiance(sourceSurface, sourceBRDFContext, sourceInstance, sourceBSDF, randomSeed) + sourceSurface.Emissive;
+    float3 direct = EvaluateDirectRadiance(sourceSurface, sourceBRDFContext, sourceLightData, sourceBSDF, randomSeed) + sourceSurface.Emissive;
 #else
     const float2 uv = float2(idx + 0.5f) / size;
 
@@ -241,7 +241,7 @@ void main()
     RayDesc ray;
     Payload payload;
 
-    Instance instance;
+    LightData lightData;
     Material material;
 
     Surface surface;
@@ -273,7 +273,7 @@ void main()
         rayCone = sourceRayCone;        
 #if defined(PATH_TRACING)
         material = sourceMaterial;
-        instance = sourceInstance;
+        lightData = sourceLightData;
         payload = sourcePayload;
 #endif
 
@@ -389,7 +389,7 @@ void main()
             payload.hitDistance = -1.0f;
             payload.primitiveIndex = 0;
             payload.PackBarycentrics(float2(0.0f, 0.0f));
-            payload.PackInstanceGeometryIndex(0, 0);
+            payload.shapeIndex = 0;
             payload.randomSeed = randomSeed;
 
             if (!bsdfSample.isLobe(LobeType::Delta))
@@ -421,7 +421,7 @@ void main()
 
             float3 localPosition = ray.Origin + direction * payload.hitDistance;
 
-            surface = Surface(localPosition, payload, direction, rayCone, instance, material);
+            surface = Surface(localPosition, payload, direction, rayCone, lightData, material);
 
 #if defined(SHARC)
             sharcHitData.positionWorld = surface.Position;
@@ -462,7 +462,7 @@ void main()
             AdjustShadingNormal(surface, brdfContext, true, false);  // Adjusts the normal of the supplied shading frame to reduce black pixels due to back-facing view direction.
             bsdf = StandardBSDF::make(surface, isEnter);
 
-            float3 directRadiance = EvaluateDirectRadiance(surface, brdfContext, instance, bsdf, randomSeed);
+            float3 directRadiance = EvaluateDirectRadiance(surface, brdfContext, lightData, bsdf, randomSeed);
             sampleRadiance += directRadiance * throughput;
 
 #if defined(SHARC) && defined(SHARC_UPDATE)

@@ -2463,19 +2463,28 @@ void Raytracing::UpdateInstances()
 
 	blasInstances.clear();
 
-	uint shapeCount = 0;
-	uint instanceCount = 0;
+	uint shapeIndex = 0;
+	uint instanceIndex = 0;
 
 	for (auto& instanceCluster : instanceClusters) {
-		uint firstShape = shapeCount;
+		uint firstShape = shapeIndex;
 
-		instanceCluster.ForEachShape([&](Shape* shape) {
-			shapeData[shapeCount] = shape->GetData();
-			shapeCount++;
-		});	
+		instanceCluster.ForEachInstanceModel([&](Instance& instance, Model* model) {
+			for (auto& shape : model->shapes) {
+				shapeData[shapeIndex] = shape->GetData(instanceIndex);
+				shapeIndex++;				
+			}
+
+			InstanceData instData{};
+			XMStoreFloat3x4(&instData.Transform, GetXMFromNiTransform(instance.root->world));
+			instData.LightData = LightData(GatherInstanceLights(instance.root));
+
+			instanceData[instanceIndex] = instData;
+			instanceIndex++;
+		});
 
 		D3D12_RAYTRACING_INSTANCE_DESC blasInstance{};
-		blasInstance.InstanceID = 0;
+		blasInstance.InstanceID = firstShape;
 		blasInstance.InstanceMask = 1;
 		blasInstance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
 		blasInstance.AccelerationStructure = instanceCluster.blas->GetResource()->GetGPUVirtualAddress();
@@ -2484,14 +2493,6 @@ void Raytracing::UpdateInstances()
 		memcpy(blasInstance.Transform, instanceCluster.Transform().m, sizeof(blasInstance.Transform));
 
 		blasInstances.push_back(blasInstance);
-
-		instanceData[instanceCount] = {
-			instanceCluster.Transform(),
-			LightData(), // GatherInstanceLights(node)
-			firstShape
-		};
-
-		instanceCount++;
 	}
 
 	shapeBuffer->Upload(commandList.get(), 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2499,7 +2500,7 @@ void Raytracing::UpdateInstances()
 	blasInstanceBuffer->UpdateList(blasInstances.data(), std::min(blasInstances.size(), (size_t)RTConstants::MAX_INSTANCES));
 	blasInstanceBuffer->Upload(commandList.get());
 
-	instanceBuffer->UpdateList(instanceData.data(), std::min(instanceCount, RTConstants::MAX_INSTANCES));
+	instanceBuffer->UpdateList(instanceData.data(), std::min(instanceIndex, RTConstants::MAX_INSTANCES));
 	instanceBuffer->Upload(commandList.get(), 0, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 

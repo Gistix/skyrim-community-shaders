@@ -401,14 +401,17 @@ struct Surface
         );
     }
 
-    Surface(float3 position, Payload payload, float3 rayDir, RayCone rayCone, out Instance instance, out Material material)
+    Surface(float3 position, Payload payload, float3 rayDir, RayCone rayCone, out LightData lightData, out Material material)
     {
         Surface surface;
 
         surface.Position = position;
 
-        Shape shape = GetShape(payload, instance);
-
+        Shape shape = GetShape(payload.shapeIndex);
+        Instance instance = GetInstance(shape);        
+        
+        lightData = instance.LightData;
+        
         // Loads all geometry releated data
         Vertex v0, v1, v2;
         GetVertices(shape.GeometryIdx, payload.primitiveIndex, v0, v1, v2);

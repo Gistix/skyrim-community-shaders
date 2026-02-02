@@ -27,11 +27,11 @@ eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> InstanceCluster::GeometryDescs(uin
 
 		auto& instance = instanceIt->second;
 
-		auto world = GetXMFromNiTransform(instance.root->world);
-
 		auto modelIt = rt.models.find(instance.filename);
 		if (modelIt == rt.models.end())
 			continue;
+
+		auto world = GetXMFromNiTransform(instance.root->world);
 
 		for (auto& shape : modelIt->second->shapes) {
 			auto offset = sizeof(float3x4) * static_cast<uint64_t>(updateIndex);
@@ -44,8 +44,6 @@ eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> InstanceCluster::GeometryDescs(uin
 			D3D12_GPU_VIRTUAL_ADDRESS transformVirtualAddress = rt.transformBuffer->resource->GetGPUVirtualAddress() + offset;
 
 			geometryDescs.push_back(shape->GeometryDesc(transformVirtualAddress));
-
-			logger::info("[RT] GeometryDescs - {}", updateIndex);
 
 			updateIndex++;
 		}

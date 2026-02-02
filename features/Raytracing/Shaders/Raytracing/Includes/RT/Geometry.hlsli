@@ -38,21 +38,14 @@ inline float4 Interpolate(half4 u, half4 v, half4 w, float3 uvw)
     return u * uvw.x + v * uvw.y + w * uvw.z;
 }
 
-Instance GetInstance(uint instanceIdx)
+Instance GetInstance(Shape shape)
 {
-    return Instances[instanceIdx];
+    return Instances[shape.InstanceIdx];
 }
 
-Shape GetShape(in uint instanceIndex, in uint geometryIndex)
+Shape GetShape(in uint shapeIndex)
 {
-    Instance instance = GetInstance(instanceIndex);
-    return Shapes[instance.FirstGeometryID + geometryIndex];
-}
-
-Shape GetShape(in Payload payload, out Instance instance)
-{
-    instance = GetInstance(payload.InstanceIndex());
-    return Shapes[instance.FirstGeometryID + payload.GeometryIndex()];
+    return Shapes[shapeIndex];
 }
 
 Triangle GetTriangle(in uint shapeIdx, in uint primitiveIdx)

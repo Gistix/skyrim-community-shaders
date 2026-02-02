@@ -204,10 +204,10 @@ float EvalSkyOcclusion(float3 dir)
     return lerp(1.0f, 1.0f - SkyHemisphere.SampleLevel(BaseSampler, uv, 0.0f).a, Frame.CloudOpacity);
 }
 
-float3 EvaluateDirectRadiance(in Surface surface, in BRDFContext brdfContext, in Instance instance, in StandardBSDF bsdf, inout uint randomSeed)
+float3 EvaluateDirectRadiance(in Surface surface, in BRDFContext brdfContext, in LightData lightData, in StandardBSDF bsdf, inout uint randomSeed)
 {
     float3 radiance = EvalDirectionalLight(surface, brdfContext, Frame.Directional, bsdf, randomSeed) * EvalSkyOcclusion(Frame.Directional.Vector);
-    radiance += EvalPointLight(surface, brdfContext, instance.LightData, bsdf, randomSeed);
+    radiance += EvalPointLight(surface, brdfContext, lightData, bsdf, randomSeed);
 
     return radiance;
 }

@@ -9,7 +9,7 @@
 [shader("anyhit")]
 void main(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
-    Shape shape = GetShape(InstanceIndex(), GeometryIndex());
+    Shape shape = GetShape(InstanceID());
 
     Vertex v0, v1, v2;
     GetVertices(shape.GeometryIdx, PrimitiveIndex(), v0, v1, v2);
@@ -79,7 +79,7 @@ void main(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttributes 
             F0 = material.SpecularLevel() * specular;
         }
 
-        Instance instance = GetInstance(InstanceIndex());
+        Instance instance = GetInstance(shape);
         float3x3 objectToWorld3x3 = mul((float3x3) instance.Transform, (float3x3) shape.Transform);
 
         float3 normalWS = normalize(mul(objectToWorld3x3, Interpolate(v0.Normal, v1.Normal, v2.Normal, uvw)));

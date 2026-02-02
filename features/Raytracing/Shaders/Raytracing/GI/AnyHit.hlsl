@@ -9,7 +9,7 @@
 [shader("anyhit")]
 void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attribs)
 {
-    Shape shape = GetShape(InstanceIndex(), GeometryIndex());
+    Shape shape = GetShape(InstanceID());
 
     Vertex v0, v1, v2;
     GetVertices(shape.GeometryIdx, PrimitiveIndex(), v0, v1, v2);

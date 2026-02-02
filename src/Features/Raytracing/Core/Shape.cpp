@@ -956,12 +956,13 @@ bool Shape::UpdateSkinning()
 	return true;
 }
 
-ShapeData Shape::GetData() const
+ShapeData Shape::GetData(uint instanceIndex) const
 {
 	return ShapeData{ 
 		material.GetData(),
 		allocation->GetIndex(),
-		{0, 0},
+		instanceIndex,
+		0,
 		transform
 	};
 }

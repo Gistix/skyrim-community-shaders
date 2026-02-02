@@ -67,7 +67,7 @@ struct InstanceCluster
 	}*/
 
 	template <typename Func>
-	void ForEachModel(Func&& func)
+	void ForEachInstance(Func&& func)
 	{
 		for (auto& root : instances) {
 			// There are a lot of layers..
@@ -75,14 +75,32 @@ struct InstanceCluster
 			if (instanceIt == Instances().end())
 				continue;
 
-			auto& instance = instanceIt->second;
+			func(instanceIt->second);
+		}
+	}
 
+	template <typename Func>
+	void ForEachInstanceModel(Func&& func)
+	{
+		ForEachInstance([&](Instance& instance) {
 			auto modelIt = Models().find(instance.filename);
 			if (modelIt == Models().end())
-				continue;
+				return;
+
+			func(instance, modelIt->second.get());
+		});
+	}
+
+	template <typename Func>
+	void ForEachModel(Func&& func)
+	{
+		ForEachInstance([&](Instance& instance) {
+			auto modelIt = Models().find(instance.filename);
+			if (modelIt == Models().end())
+				return;
 
 			func(modelIt->second.get());
-		}
+		});
 	}
 
 	template <typename Func>
@@ -91,6 +109,16 @@ struct InstanceCluster
 		ForEachModel([&](Model* model) {
 			for (auto& shape : model->shapes) {
 				func(shape.get());
+			}
+		});
+	}
+
+	template <typename Func>
+	void ForEachInstanceShape(Func&& func)
+	{
+		ForEachInstanceModel([&](Instance& instance, Model* model) {
+			for (auto& shape : model->shapes) {
+				func(instance, shape.get());
 			}
 		});
 	}
