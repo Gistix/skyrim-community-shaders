@@ -77,7 +77,7 @@ void main()
     sourcePayload.shapeIndex = 0;
     sourcePayload.randomSeed = randomSeed;
 
-    TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, sourceRay, sourcePayload);
+    TraceRay(Scene, RAY_FLAG_NONE, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, sourceRay, sourcePayload);
     randomSeed = sourcePayload.randomSeed;
 
     RayCone sourceRayCone = RayCone::make(Frame.PixelConeSpreadAngle * sourcePayload.hitDistance, Frame.PixelConeSpreadAngle);    
@@ -395,7 +395,7 @@ void main()
             if (!bsdfSample.isLobe(LobeType::Delta))
                 rayCone = RayCone::make(rayCone.getWidth(), min(rayCone.getSpreadAngle() + ComputeRayConeSpreadAngleExpansionByScatterPDF(bsdfSample.pdf), 2.0 * K_PI));
 
-            TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, ray, payload);
+            TraceRay(Scene, RAY_FLAG_NONE, 0xFF, DIFFUSE_RAY_HITGROUP_IDX, 0, DIFFUSE_RAY_MISS_IDX, ray, payload);
             randomSeed = payload.randomSeed;
             rayCone = rayCone.propagateDistance(payload.hitDistance);
 

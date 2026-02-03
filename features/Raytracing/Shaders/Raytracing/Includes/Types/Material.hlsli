@@ -34,6 +34,7 @@ namespace ShaderFlags
     static const uint kHairTint = (1 << 15);
 	static const uint kTwoSided = (1 << 16);
 	static const uint kAssumeShadowmask = (1 << 17);
+	static const uint kTreeAnim = (1 << 18);	
 }
 
 namespace Feature
@@ -59,11 +60,11 @@ namespace Feature
 	static const uint16_t kMultiTexLandLODBlend = 19;
 }
 
-namespace AlphaFlags
+namespace AlphaMode
 {
 	static const uint16_t kOpaque = 0;
-	static const uint16_t kAlphaBlend = (1 << 0);
-	static const uint16_t kAlphaTest = (1 << 1);
+	static const uint16_t kAlphaBlend = 1;
+	static const uint16_t kAlphaTest = 2;
 }
 #endif
 
@@ -86,8 +87,6 @@ struct Material
 	half Scalar1;
 	half Scalar2;
 	half Scalar3; // For padding
-	
-	uint16_t AlphaFlags;
 
 	// Textures
 	uint16_t Texture0;
@@ -114,6 +113,7 @@ struct Material
 	uint16_t Texture18;
 	uint16_t Texture19;
 
+	uint16_t AlphaMode;	
     uint16_t ShaderType;
     uint16_t Feature;
     uint16_t PBRFlags;

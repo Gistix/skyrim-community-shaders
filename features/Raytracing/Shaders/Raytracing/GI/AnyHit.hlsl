@@ -17,20 +17,27 @@ void main(inout Payload payload, in BuiltInTriangleIntersectionAttributes attrib
     float3 uvw = GetBary(attribs.barycentrics);
 
     Material material = shape.Material;
-
+    
     float2 texCoord = material.TexCoord(Interpolate(v0.Texcoord0, v1.Texcoord0, v2.Texcoord0, uvw));
 
     float alpha = Textures[NonUniformResourceIndex(material.BaseTexture())].SampleLevel(BaseSampler, texCoord, 0).a;
 
+    alpha *= material.BaseColor().a;   
+    
+    if ((material.ShaderFlags & ShaderFlags::kVertexAlpha) && !(material.ShaderFlags & ShaderFlags::kTreeAnim))
+    {
+        alpha *= Interpolate(v0.Color.unpack().a, v1.Color.unpack().a, v2.Color.unpack().a, uvw);
+    }
+    
     [branch]
-    if (material.AlphaFlags == AlphaFlags::kAlphaTest)
+    if (material.AlphaMode == AlphaMode::kAlphaTest)
     {
         if (alpha < 0.5f)
         {
             IgnoreHit();
         }
     }
-    else if (material.AlphaFlags == AlphaFlags::kAlphaBlend)
+    else if (material.AlphaMode == AlphaMode::kAlphaBlend)
     {
         float rnd = Random(payload.randomSeed);
         if (rnd > alpha)

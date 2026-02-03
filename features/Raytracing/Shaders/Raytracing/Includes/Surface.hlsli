@@ -247,11 +247,11 @@ struct Surface
         }
 
         [branch]
-        if (material.AlphaFlags == AlphaFlags::kAlphaBlend && !((material.Feature == Feature::kHairTint || material.Feature == Feature::kFaceGen || material.Feature == Feature::kFaceGenRGBTint || material.Feature == Feature::kEye))) {
+        if (material.AlphaMode == AlphaMode::kAlphaBlend && !((material.Feature == Feature::kHairTint || material.Feature == Feature::kFaceGen || material.Feature == Feature::kFaceGenRGBTint || material.Feature == Feature::kEye))) {
             float alpha = baseTexture.SampleLevel(BaseSampler, texCoord0, MipLevel).a * material.BaseColor().a;
 
             [branch]
-            if (material.ShaderFlags & ShaderFlags::kVertexAlpha) {
+            if ((material.ShaderFlags & ShaderFlags::kVertexAlpha) && !(material.ShaderFlags & ShaderFlags::kTreeAnim)) {
                 alpha *= vertexColor.a;
             }
 

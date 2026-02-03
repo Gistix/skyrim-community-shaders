@@ -360,7 +360,7 @@ void Shape::BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryR
 		float4(0.0f, 0.0f, 1.0f, 1.0f)
 	};
 
-	uint16_t alphaFlags = 0u;
+	uint16_t alphaMode = 0u;
 
 	eastl::array<eastl::shared_ptr<Allocation>, 20> textures;
 	textures.fill(blackTexture);
@@ -374,36 +374,32 @@ void Shape::BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryR
 		auto* property = geometryRuntimeData.properties[State::kProperty].get();
 
 		if (property && property->GetType() == RE::NiProperty::Type::kAlpha) {
-			flags |= Flags::AlphaBlending;
+			if (RE::NiAlphaProperty* alphaProperty = netimmerse_cast<RE::NiAlphaProperty*>(property)) {
+				if (alphaProperty->GetAlphaBlending()) {
+					flags |= Flags::AlphaBlending;
+					alphaMode = Material::AlphaMode::kAlphaBlend;
+				} else if (alphaProperty->GetAlphaTesting()) {
+					flags |= Flags::AlphaTesting;
+					alphaMode = Material::AlphaMode::kAlphaTest;
+
+					float alphaScale = 0.5f / (alphaProperty->alphaThreshold / 255.0f);
+					colors[0].w *= alphaScale;
+				}
+			}
 		}
 
 		auto* effect = geometryRuntimeData.properties[State::kEffect].get();
 
 		if (effect) {
-			if (RE::BSShaderProperty* shaderProp = netimmerse_cast<RE::BSShaderProperty*>(effect))
+			if (RE::BSShaderProperty* shaderProp = netimmerse_cast<RE::BSShaderProperty*>(effect)) {
 				shaderFlags = shaderProp->flags.get();
+				colors[0].w *= shaderProp->alpha;
+			}
 
 			if (RE::BSLightingShaderProperty* lightingShaderProp = skyrim_cast<RE::BSLightingShaderProperty*>(effect)) {
 				shaderType = RE::BSShader::Type::Lighting;
 
 				logger::debug("[RT] BuildMaterial - BSLightingShaderProperty [0x{:08X}] Flags: {}", reinterpret_cast<uintptr_t>(lightingShaderProp), GetFlagsString<EShaderPropertyFlag>(lightingShaderProp->flags.underlying()));
-
-				// Set alpha flags
-				if (flags & Flags::AlphaBlending) {
-					auto alphaProperty = property->GetRTTI() == globals::rtti::NiAlphaPropertyRTTI.get() ? static_cast<RE::NiAlphaProperty*>(property) : nullptr;
-					if (lightingShaderProp->alpha < 0.999f || (alphaProperty && alphaProperty->GetAlphaBlending())) {
-						flags |= Flags::AlphaBlending;
-						colors[0].w = lightingShaderProp->alpha;
-						alphaFlags = Material::AlphaFlags::kAlphaBlend;
-					} else if (alphaProperty && alphaProperty->GetAlphaTesting()) {
-						flags &= ~Flags::AlphaBlending;
-						flags |= Flags::AlphaTesting;
-						alphaFlags = Material::AlphaFlags::kAlphaTest;
-					} else {
-						flags &= ~Flags::AlphaBlending;
-						flags &= ~Flags::AlphaTesting;
-					}
-				}
 
 				colors[1] = {
 					lightingShaderProp->emissiveColor->red,
@@ -581,7 +577,7 @@ void Shape::BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryR
 		shaderType,
 		feature,
 		pbrFlags,
-		alphaFlags,
+		alphaMode,
 		colors,
 		scalars,
 		texCoordOffsetScales,
@@ -977,7 +973,7 @@ D3D12_RAYTRACING_GEOMETRY_DESC Shape::GeometryDesc(D3D12_GPU_VIRTUAL_ADDRESS tra
 
 	return { 
 		.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
-		.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE | D3D12_RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANYHIT_INVOCATION,
+		.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE,
 		.Triangles = {
 			.Transform3x4 = transform3X4,
 			.IndexFormat = DXGI_FORMAT_R16_UINT,

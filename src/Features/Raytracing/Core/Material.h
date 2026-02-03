@@ -70,14 +70,15 @@ struct Material
 		kEyeReflect = 1 << 14,
 		kHairTint = 1 << 15,
 		kTwoSided = 1 << 16,
-		kAssumeShadowmask = 1 << 17
+		kAssumeShadowmask = 1 << 17,
+		kTreeAnim = 1 << 18
 	};
 
-	enum AlphaFlags : uint16_t
+	enum AlphaMode : uint16_t
 	{
 		kOpaque = 0,
-		kAlphaBlend = 1 << 0,
-		kAlphaTest = 1 << 1
+		kAlphaBlend = 1,
+		kAlphaTest = 2
 	};
 
 	ShaderFlags GetShaderFlags() const
@@ -170,6 +171,10 @@ struct Material
 			shaderFlagsLocal |= ShaderFlags::kAssumeShadowmask;
 		}
 
+		if (shaderFlags.any(EShaderPropertyFlag::kTreeAnim)) {
+			shaderFlagsLocal |= ShaderFlags::kTreeAnim;
+		}
+
 		return shaderFlagsLocal;
 	}
 
@@ -178,7 +183,7 @@ struct Material
 	RE::BSShaderMaterial::Feature Feature;
 	stl::enumeration<PBRShaderFlags, uint16_t> PBRFlags;
 
-	uint16_t AlphaFlags;
+	uint16_t AlphaMode;
 
 	eastl::array<half4, 3> Colors;
 	eastl::array<half, 3> Scalars;
@@ -193,7 +198,6 @@ struct Material
 			TexCoordOffsetScale[0], TexCoordOffsetScale[1],
 			Colors[0], Colors[1], Colors[2],
 			Scalars[0], Scalars[1], Scalars[2], 0,
-			AlphaFlags,
 			Textures[0]->GetIndex(),
 			Textures[1]->GetIndex(),
 			Textures[2]->GetIndex(),
@@ -214,6 +218,7 @@ struct Material
 			Textures[17]->GetIndex(),
 			Textures[18]->GetIndex(),
 			Textures[19]->GetIndex(),
+			AlphaMode,
 			GetShaderType(),
 			static_cast<uint16_t>(Feature),
 			PBRFlags.underlying(),

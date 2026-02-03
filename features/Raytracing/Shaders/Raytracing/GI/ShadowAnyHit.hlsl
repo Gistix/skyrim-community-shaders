@@ -22,8 +22,15 @@ void main(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttributes 
 
     float alpha = Textures[NonUniformResourceIndex(material.BaseTexture())].SampleLevel(BaseSampler, texCoord, 0).a;
 
+    alpha *= material.BaseColor().a;
+    
+    if ((material.ShaderFlags & ShaderFlags::kVertexAlpha) && !(material.ShaderFlags & ShaderFlags::kTreeAnim))
+    {
+        alpha *= Interpolate(v0.Color.unpack().a, v1.Color.unpack().a, v2.Color.unpack().a, uvw);
+    }    
+    
     [branch]
-    if (material.AlphaFlags == AlphaFlags::kAlphaTest)
+    if (material.AlphaMode == AlphaMode::kAlphaTest)
     {
         if (alpha < 0.5f)
         {
@@ -34,7 +41,7 @@ void main(inout ShadowPayload payload, in BuiltInTriangleIntersectionAttributes 
             AcceptHitAndEndSearch();
         }
     }
-    else if (material.AlphaFlags == AlphaFlags::kAlphaBlend)
+    else if (material.AlphaMode == AlphaMode::kAlphaBlend)
     {
         float rnd = Random(payload.randomSeed);
         if (rnd > alpha)
