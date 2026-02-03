@@ -373,21 +373,6 @@ void Shape::BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryR
 	{
 		auto* property = geometryRuntimeData.properties[State::kProperty].get();
 
-		if (property && property->GetType() == RE::NiProperty::Type::kAlpha) {
-			if (RE::NiAlphaProperty* alphaProperty = netimmerse_cast<RE::NiAlphaProperty*>(property)) {
-				if (alphaProperty->GetAlphaBlending()) {
-					flags |= Flags::AlphaBlending;
-					alphaMode = Material::AlphaMode::kAlphaBlend;
-				} else if (alphaProperty->GetAlphaTesting()) {
-					flags |= Flags::AlphaTesting;
-					alphaMode = Material::AlphaMode::kAlphaTest;
-
-					float alphaScale = 0.5f / (alphaProperty->alphaThreshold / 255.0f);
-					colors[0].w *= alphaScale;
-				}
-			}
-		}
-
 		auto* effect = geometryRuntimeData.properties[State::kEffect].get();
 
 		if (effect) {
@@ -400,6 +385,22 @@ void Shape::BuildMaterial(const RE::BSGeometry::GEOMETRY_RUNTIME_DATA& geometryR
 				shaderType = RE::BSShader::Type::Lighting;
 
 				logger::debug("[RT] BuildMaterial - BSLightingShaderProperty [0x{:08X}] Flags: {}", reinterpret_cast<uintptr_t>(lightingShaderProp), GetFlagsString<EShaderPropertyFlag>(lightingShaderProp->flags.underlying()));
+
+				// Set alpha flags
+				if (property && property->GetType() == RE::NiProperty::Type::kAlpha) {
+					auto alphaProperty = property->GetRTTI() == globals::rtti::NiAlphaPropertyRTTI.get() ? reinterpret_cast<RE::NiAlphaProperty*>(property) : nullptr;
+
+					if (alphaProperty && alphaProperty->GetAlphaBlending()) {
+						flags |= Flags::AlphaBlending;
+						alphaMode = Material::AlphaMode::kAlphaBlend;
+					} else if (alphaProperty && alphaProperty->GetAlphaTesting()) {
+						flags |= Flags::AlphaTesting;
+						alphaMode = Material::AlphaMode::kAlphaTest;
+
+						float alphaScale = (1.0f - (alphaProperty->alphaThreshold / 255.0f)) * 2.0f;
+						colors[0].w *= alphaScale;
+					}
+				}
 
 				colors[1] = {
 					lightingShaderProp->emissiveColor->red,
