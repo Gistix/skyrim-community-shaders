@@ -25,7 +25,7 @@
 #include "Features/Raytracing/Core/Instance.h"
 #include "Features/Raytracing/Core/InstanceCluster.h"
 
-//#include "Features/Raytracing/Core/Clustering/ClusteringProcess.h"
+#include "Features/Raytracing/Core/Clustering/ClusteringProcess.h"
 
 #include "Features/Raytracing/Helpers/ModelSpaceToTangent.h"
 
@@ -244,6 +244,7 @@ struct Raytracing : public OverlayFeature
 
 	void UpdateInstances();
 
+	//void CollectMergeCandidates(const AABB& aabb, eastl::vector<size_t>& outClusters) const;
 	void UpdateClusters();
 
 	void DeviceRemovedHandler();
@@ -657,7 +658,8 @@ struct Raytracing : public OverlayFeature
 
 	eastl::unordered_map<eastl::string, eastl::unique_ptr<Model>> models;
 
-	eastl::deque<ClusterAction> clusterQueue;
+	eastl::deque<RE::NiAVObject*> clusterAddQueue;
+	eastl::deque<RE::NiAVObject*> clusterRemoveQueue;
 
 	eastl::vector<InstanceCluster> instanceClusters;
 

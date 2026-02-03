@@ -2121,7 +2121,7 @@ bool Raytracing::RemoveInstance([[maybe_unused]] RE::NiAVObject* pRoot, [[maybe_
 
 		instances.erase(instanceIt);
 
-		clusterQueue.emplace_back(false, pRoot);
+		clusterRemoveQueue.push_back(pRoot);
 
 		return true;
 	}
@@ -2358,7 +2358,7 @@ void Raytracing::AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::
 					formIDNodes.try_emplace(formID, eastl::vector<RE::NiAVObject*>{ pNiNode });
 				}
 
-				clusterQueue.emplace_back(true, pNiNode);
+				clusterAddQueue.push_back(pNiNode);
 
 				modelIt->second->AddRef();
 			}
@@ -2403,58 +2403,316 @@ static RE::NiCamera* FindNiCamera(RE::NiAVObject* object)
 
 void Raytracing::UpdateClusters()
 {
-	/*if (debugCluster)
-	{
-		auto clusterStart = Util::GetNowSecs();
+	uint updateIndex = 0;
 
+	// Removes Instances from Clusters
+	while (!clusterRemoveQueue.empty()) {
+		auto& queuedInstance = clusterRemoveQueue.front();
+
+		for (size_t i = 0; i < instanceClusters.size(); i++) {
+			auto& instanceCluster = instanceClusters[i];
+
+			// Erase instance from cluster
+			if (eastl::erase(instanceCluster.instances, queuedInstance) > 0) {
+				//logger::info("[RT] Instance Removed 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance), queuedInstance ? queuedInstance->name : "N/A");
+
+				if (instanceCluster.instances.empty()) {
+					// If no instances left, erase cluster
+					instanceClusters.erase(instanceClusters.begin() + i);
+
+					logger::info("[RT] Cluster Erased");
+				} else {
+					// Update if a instance was removed
+					instanceCluster.Update(commandList.get(), updateIndex);
+
+					logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
+				}
+
+				break;
+			}
+		}
+
+		clusterRemoveQueue.pop_front();
+	}
+
+	bool empty = clusterAddQueue.empty();
+
+	auto clusterStart = Util::GetNowSecs();
+
+	while (!clusterAddQueue.empty()) {
+		auto& queuedInstance = clusterAddQueue.front();
+
+		auto instanceCluster = InstanceCluster();
+
+		//logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance), queuedInstance->name);
+
+		if (auto it = instances.find(queuedInstance); it != instances.end()) {
+			it->second.UpdateAABB();
+			instanceCluster.aabb = it->second.aabb;
+		}
+
+		instanceCluster.instances.push_back(queuedInstance);
+
+		//instanceCluster.Commit(commandList.get(), updateIndex);
+
+		instanceClusters.push_back(instanceCluster);
+
+		clusterAddQueue.pop_front();
+	}
+
+	if (empty)
+		return;
+
+	//constexpr auto gapFactor = 0.1f;
+	//constexpr auto maxRatio = 10.0f;
+	
+	for (size_t i = 0; i < 10; i++) {
+		eastl::sort(instanceClusters.begin(), instanceClusters.end(), [&](const InstanceCluster& a, const InstanceCluster& b) {
+			return a.aabb.center.LengthSquared() < b.aabb.center.LengthSquared();
+		});
+
+		for (auto current = instanceClusters.begin(); current != instanceClusters.end();) {
+			auto next = eastl::next(current);
+
+			if (next == instanceClusters.end())
+				break;
+
+			auto& a = current->aabb;
+			auto& b = next->aabb;
+
+			bool intersects = a.Intersects(b);
+
+			if (!intersects) {
+				++current;
+				continue;
+			}
+
+			AABB merged = AABB::Merge(a, b);
+
+			const float expansion = merged.Volume() / (a.Volume() + b.Volume());
+			if (expansion > 1.4f) {
+				++current;
+				continue;
+			}
+
+			const float fill = (a.Volume() + b.Volume()) / merged.Volume();
+			if (fill < 0.7f) {
+				++current;
+				continue;
+			}
+
+			/*if (merged.AspectRatio() > maxRatio) {
+				++current;
+				continue;
+			}*/
+
+			// Merge B into A
+			a = merged;
+			current->instances.insert(current->instances.end(), next->instances.begin(), next->instances.end());
+
+			instanceClusters.erase(next);
+		}
+	}
+
+	clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
+
+	logger::info("Instances: {}, Final Clusters: {}, Clustering Time: {}", instances.size(), instanceClusters.size(), clusterTime);
+
+	for (auto& instanceCluster : instanceClusters) {
+		instanceCluster.Commit(commandList.get(), updateIndex);
+	}
+}
+
+/*void Raytracing::UpdateClusters()
+{
+	uint updateIndex = 0;
+
+	// Removes Instances from Clusters
+	while (!clusterRemoveQueue.empty()) {
+		auto& queuedInstance = clusterRemoveQueue.front();
+
+		for (size_t i = 0; i < instanceClusters.size(); i++) {
+			auto& instanceCluster = instanceClusters[i];
+
+			// Erase instance from cluster
+			if (eastl::erase(instanceCluster.instances, queuedInstance) > 0) {
+				logger::info("[RT] Instance Removed 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance), queuedInstance ? queuedInstance->name : "N/A");
+
+				if (instanceCluster.instances.empty()) {
+					// If no instances left, erase cluster
+					instanceClusters.erase(instanceClusters.begin() + i);
+
+					logger::info("[RT] Cluster Erased");
+				} else {
+					// Update if a instance was removed
+					instanceCluster.Update(commandList.get(), updateIndex);
+
+					logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
+				}
+
+				break;
+			}
+		}
+
+		clusterRemoveQueue.pop_front();
+	}
+
+	bool empty = clusterAddQueue.empty();
+
+	while (!clusterAddQueue.empty()) {
+		auto& queuedInstance = clusterAddQueue.front();
+
+		auto instanceCluster = InstanceCluster();
+
+		logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance), queuedInstance->name);
+
+		instanceCluster.instances.push_back(queuedInstance);
+		instanceCluster.Commit(commandList.get(), updateIndex);
+
+		instanceClusters.push_back(instanceCluster);
+
+		clusterAddQueue.pop_front();
+	}
+
+	if (!empty && clusterAddQueue.empty())
 		ClusteringProcess::ClusterBVH(instances);
+}*/
 
-		clusterTime = static_cast<float>((Util::GetNowSecs() - clusterStart) * 1000.0);
-	}*/
+/*void Raytracing::CollectMergeCandidates(const AABB& aabb, eastl::vector<size_t>& outClusters) const
+{
+	for (size_t i = 0; i < instanceClusters.size(); ++i) {
+		const AABB& c = instanceClusters[i].aabb;
+
+		// Fast reject
+		if (!c.Intersects(aabb)) {
+			float gap = c.GapDistance(aabb);
+			float maxGap = 0.1f * std::min(c.size.Length(), aabb.size.Length());
+			if (gap > maxGap)
+				continue;
+		}
+
+		outClusters.push_back(i);
+	}
+}
+
+void Raytracing::UpdateClusters()
+{
+	static constexpr size_t kMaxLocalClusters = 6;
+	static constexpr size_t kMaxLocalInstances = 64;
 
 	uint updateIndex = 0;
 
-	while (!clusterQueue.empty()) {
-		auto& queuedInstance = clusterQueue.front();
+	// Removes Instances from Clusters
+	while (!clusterRemoveQueue.empty()) {
+		auto& queuedInstance = clusterRemoveQueue.front();
 
-		if (queuedInstance.Added) {
-			auto instanceCluster = InstanceCluster();
+		for (size_t i = 0; i < instanceClusters.size(); i++) {
+			auto& instanceCluster = instanceClusters[i];
 
-			logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance.Instance), queuedInstance.Instance->name);
+			// Erase instance from cluster
+			if (eastl::erase(instanceCluster.instances, queuedInstance) > 0) {
+				logger::info("[RT] Instance Removed 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance), queuedInstance ? queuedInstance->name : "N/A");
 
-			instanceCluster.instances.push_back(queuedInstance.Instance);
-			instanceCluster.Commit(commandList.get(), updateIndex);
+				if (instanceCluster.instances.empty()) {
+					// If no instances left, erase cluster
+					instanceClusters.erase(instanceClusters.begin() + i);
 
-			instanceClusters.push_back(instanceCluster);
-		} else {
-			for (size_t i = 0; i < instanceClusters.size(); i++) {
-				auto& instanceCluster = instanceClusters[i];
+					logger::info("[RT] Cluster Erased");
+				} else {
+					// Update if a instance was removed
+					instanceCluster.Update(commandList.get(), updateIndex);
 
-				// Erase instance from cluster
-				if (eastl::erase(instanceCluster.instances, queuedInstance.Instance) > 0) {
+					logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
+				}
 
-					logger::info("[RT] Instance Removed 0x{:08X} - {}", reinterpret_cast<uintptr_t>(queuedInstance.Instance), queuedInstance.Instance ? queuedInstance.Instance->name : "N/A");
+				break;
+			}
+		}
 
-					if (instanceCluster.instances.empty()) {
-						// If no instances left, erase cluster
-						instanceClusters.erase(instanceClusters.begin() + i);
+		clusterRemoveQueue.pop_front();
+	}
 
-						logger::info("[RT] Cluster Erased");
-					} else {
-						// Update if a instance was removed
-						instanceCluster.Update(commandList.get(), updateIndex);
+	// Defer GPU work until after the loop
+	eastl::vector<InstanceCluster> pendingCommits;
 
-						logger::info("[RT] Cluster Updated - {}", instanceCluster.instances.size());
-					}
+	while (!clusterAddQueue.empty()) {
+		auto& q = clusterAddQueue.front();
 
+		logger::info("[RT] Instance Added 0x{:08X} - {}", reinterpret_cast<uintptr_t>(q), q->name);
+
+		auto instIt = instances.find(q);
+		if (instIt == instances.end()) {
+			clusterAddQueue.pop_front();
+			continue;
+		}
+
+		const Instance& newInstance = instIt->second;
+
+		// 1. Find affected clusters
+		eastl::vector<size_t> affectedClusters;
+		CollectMergeCandidates(newInstance.aabb, affectedClusters);
+
+		// Deduplicate & stabilize indices
+		eastl::sort(affectedClusters.begin(), affectedClusters.end());
+		affectedClusters.erase(
+			eastl::unique(affectedClusters.begin(), affectedClusters.end()),
+			affectedClusters.end());
+
+		// Guardrail: too much work → fallback
+		if (affectedClusters.size() > kMaxLocalClusters) {
+			InstanceCluster cluster;
+			cluster.instances.push_back(q);
+			pendingCommits.push_back(eastl::move(cluster));
+
+			clusterAddQueue.pop_front();
+			continue;
+		}
+
+		// 2. Build bounded local instance set
+		eastl::unordered_map<RE::NiAVObject*, Instance> localInstances;
+		localInstances.reserve(affectedClusters.size() * 8 + 1);
+
+		localInstances.insert(
+			eastl::make_pair(q, newInstance));
+
+		for (size_t idx : affectedClusters) {
+			for (auto* node : instanceClusters[idx].instances) {
+				if (localInstances.size() >= kMaxLocalInstances)
 					break;
+
+				auto it = instances.find(node);
+				if (it != instances.end()) {
+					localInstances.insert(
+						eastl::make_pair(node, it->second));
 				}
 			}
 		}
 
-		clusterQueue.pop_front();
+		// 3. Remove old clusters safely (back to front)
+		for (auto it = affectedClusters.rbegin();
+			it != affectedClusters.rend(); ++it) {
+			instanceClusters.erase(instanceClusters.begin() + *it);
+		}
+
+		// 4. Reclustering (bounded)
+		auto newClusters =
+			ClusteringProcess::ClusterBVH(localInstances);
+
+		// 5. Defer commits
+		for (auto& cluster : newClusters)
+			pendingCommits.push_back(eastl::move(cluster));
+
+		clusterAddQueue.pop_front();
 	}
-}
+
+	// ============================
+	// COMMIT GPU WORK (SAFE POINT)
+	// ============================
+	for (auto& cluster : pendingCommits) {
+		cluster.Commit(commandList.get(), updateIndex);
+		instanceClusters.push_back(eastl::move(cluster));
+	}
+}*/
 
 void Raytracing::UpdateInstances()
 {

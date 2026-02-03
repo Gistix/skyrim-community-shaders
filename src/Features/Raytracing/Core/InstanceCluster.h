@@ -20,6 +20,8 @@ struct ClusterAction
 
 struct InstanceCluster
 {
+	AABB aabb;
+
 	eastl::vector<RE::NiAVObject*> instances;
 	//eastl::hash_set<RE::NiAVObject*> instancesMap;
 

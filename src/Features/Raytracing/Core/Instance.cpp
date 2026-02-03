@@ -34,6 +34,48 @@ bool Instance::ShouldUpdate(RE::NiAVObject* node, RE::NiPoint3 cameraPosition)
 	return false;
 }
 
+void Instance::UpdateAABB()
+{
+	aabb = AABB(Float3(root->worldBound.center), float3::One * root->worldBound.radius * 2.0f);
+}
+
+/*void Instance::UpdateAABB()
+{
+	auto dataName = RE::AABB::DataName();
+	auto extraData = Raytracing::GetExtraDataByName(root, &dataName);
+
+	if (extraData) {
+		auto aabbData = reinterpret_cast<RE::AABB*>(extraData);
+
+		auto world = GetXMFromNiTransform(root->world);
+
+		auto center = Float3(aabbData->center);
+		auto extents = Float3(aabbData->extents);
+
+		DirectX::XMVECTOR centerLS = XMLoadFloat3(&center);
+		DirectX::XMVECTOR centerWS = XMVector3TransformCoord(centerLS, world);
+
+		DirectX::XMVECTOR extentsLS = XMLoadFloat3(&extents);
+
+		DirectX::XMVECTOR r0 = DirectX::XMVectorAbs(world.r[0]);
+		DirectX::XMVECTOR r1 = DirectX::XMVectorAbs(world.r[1]);
+		DirectX::XMVECTOR r2 = DirectX::XMVectorAbs(world.r[2]);
+
+		DirectX::XMVECTOR worldExtents =
+			DirectX::XMVectorAdd(
+				DirectX::XMVectorAdd(
+					DirectX::XMVectorMultiply(r0, DirectX::XMVectorSplatX(extentsLS)),
+					DirectX::XMVectorMultiply(r1, DirectX::XMVectorSplatY(extentsLS))),
+				DirectX::XMVectorMultiply(r2, DirectX::XMVectorSplatZ(extentsLS)));
+
+		DirectX::XMFLOAT3 min, max;
+		XMStoreFloat3(&min, DirectX::XMVectorSubtract(centerWS, worldExtents));
+		XMStoreFloat3(&max, DirectX::XMVectorAdd(centerWS, worldExtents));
+
+		aabb = AABB::FromMinMax(min, max);
+	}
+}*/
+
 // Checks for skinned and dynamic trishapes update
 void Instance::Update(RE::NiAVObject* node, RE::NiPoint3 cameraPosition, const eastl::pair<eastl::string, Model*>& modelPair, SkinningPipeline* skinningPipeline)
 {

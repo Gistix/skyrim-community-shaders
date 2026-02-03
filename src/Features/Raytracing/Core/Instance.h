@@ -43,6 +43,8 @@ struct Instance
 
 	bool ShouldUpdate(RE::NiAVObject* node, RE::NiPoint3 cameraPosition);
 
+	void UpdateAABB();
+
 	// Checks for skinned and dynamic trishapes update
 	void Update(RE::NiAVObject* node, RE::NiPoint3 cameraPosition, const eastl::pair<eastl::string, Model*>& modelPair, SkinningPipeline* skinningPipeline);
 

@@ -37,7 +37,7 @@ eastl::vector<D3D12_RAYTRACING_GEOMETRY_DESC> InstanceCluster::GeometryDescs(uin
 			auto offset = sizeof(float3x4) * static_cast<uint64_t>(updateIndex);
 
 			float3x4 transform;
-			XMStoreFloat3x4(&transform, XMMatrixMultiply(XMLoadFloat3x4(&shape->transform) ,world));
+			XMStoreFloat3x4(&transform, XMMatrixMultiply(XMLoadFloat3x4(&shape->transform), world));
 
 			rt.transformBuffer->UpdateAt(&transform, updateIndex);
 			rt.transformBuffer->UploadRegion(rt.commandList.get(), sizeof(float3x4), offset);

@@ -224,25 +224,52 @@ struct AABB
 		return AABB((min + max) * 0.5f, size, size * 0.5f, min, max);
 	}
 
-	float Overlap(const AABB& b) const
+	float Volume() const
 	{
-		const float3 overlapMin = float3::Max(min, b.min);
-		const float3 overlapMax = float3::Min(max, b.max);
+		return size.x * size.y * size.z;
+	}
 
-		const float3 overlapSize = float3::Max(overlapMax - overlapMin, float3::Zero);
+	float3 Dimensions() const
+	{
+		return max - min;
+	}
 
-		const float overlapVolume = overlapSize.x * overlapSize.y * overlapSize.z;
+	float ExpansionRatio(const AABB& b) const
+	{
+		AABB m = Merge(*this, b);
+		const float vMerged = m.Volume();
+		const float vSum = Volume() + b.Volume();
 
-		const float volumeA = size.x * size.y * size.z;
+		if (vSum <= 0.0f)
+			return FLT_MAX;
 
-		const float volumeB = b.size.x * b.size.y * b.size.z;
+		return vMerged / vSum;
+	}
 
-		const float minVolume = std::min(volumeA, volumeB);
-
-		if (minVolume <= 0.0f)
+	float FillRatio(const AABB& b) const
+	{
+		AABB m = Merge(*this, b);
+		const float vMerged = m.Volume();
+		if (vMerged <= 0.0f)
 			return 0.0f;
 
-		return std::clamp(overlapVolume / minVolume, 0.0f, 1.0f);
+		return (Volume() + b.Volume()) / vMerged;
+	}
+
+	float GapDistance(const AABB& b) const
+	{
+		float3 d = float3::Max(
+			float3::Zero,
+			float3::Max(min - b.max, b.min - max));
+		return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+	}
+
+	float AspectRatio() const
+	{
+		float3 d = max - min;
+		float maxDim = std::max({ d.x, d.y, d.z });
+		float minDim = std::max(std::min({ d.x, d.y, d.z }), 1e-5f);
+		return maxDim / minDim;
 	}
 
     EA_FORCE_INLINE bool Intersects(const AABB& b) const
