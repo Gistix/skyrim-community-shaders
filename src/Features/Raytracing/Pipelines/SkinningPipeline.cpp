@@ -81,7 +81,7 @@ void SkinningPipeline::SetupResources(ID3D12Device5* device)
 
 		vertexUpdateBuffer->CreateSRV(heap->CPUHandle(SkinningHeap::Slot::UpdateData));
 
-		DX::ThrowIfFailed(vertexUpdateBuffer->UploadResource()->Map(0, nullptr, reinterpret_cast<void**>(&vertexUpdateData)));
+		DX::ThrowIfFailed(vertexUpdateBuffer->UploadResource()->Map(0, nullptr, reinterpret_cast<void**>(&vertexUpdatePtr)));
 	}
 
 	{
@@ -91,7 +91,7 @@ void SkinningPipeline::SetupResources(ID3D12Device5* device)
 
 		boneMatricesBuffer->CreateSRV(heap->CPUHandle(SkinningHeap::Slot::BoneMatrices));
 
-		DX::ThrowIfFailed(boneMatricesBuffer->UploadResource()->Map(0, nullptr, reinterpret_cast<void**>(&boneMatricesData)));
+		DX::ThrowIfFailed(boneMatricesBuffer->UploadResource()->Map(0, nullptr, reinterpret_cast<void**>(&boneMatricesPtr)));
 	}
 }
 
@@ -145,7 +145,7 @@ bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList,
 		if (queuedShape.updateFlags & Shape::Flags::Skinned) {
 			const auto numBoneMatrices = static_cast<uint>(shape->boneMatrices.size());
 
-			std::memcpy(boneMatricesData + boneMatrixIndex, shape->boneMatrices.data(), sizeof(float3x4) * numBoneMatrices);
+			std::memcpy(boneMatricesData.data() + boneMatrixIndex, shape->boneMatrices.data(), sizeof(float3x4) * numBoneMatrices);
 			boneMatrixIndex += numBoneMatrices;
 		}
 
@@ -159,8 +159,10 @@ bool SkinningPipeline::PrepareResources(ID3D12GraphicsCommandList4* commandList,
 	if (barrierCount > 0)
 		commandList->ResourceBarrier(barrierCount, barriers.data());
 
+	std::memcpy(vertexUpdatePtr, vertexUpdateData.data(), sizeof(VertexUpdateData) * shapeIndex);
 	vertexUpdateBuffer->UploadRegion(commandList, sizeof(VertexUpdateData) * shapeIndex, 0);
 
+	std::memcpy(boneMatricesPtr, boneMatricesData.data(), sizeof(float3x4) * boneMatrixIndex);
 	boneMatricesBuffer->UploadRegion(commandList, sizeof(float3x4) * boneMatrixIndex, 0);
 
 	count = shapeIndex;

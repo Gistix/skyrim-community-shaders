@@ -68,10 +68,12 @@ struct SkinningPipeline : ComputePipeline<SkinningHeap>
 	eastl::unordered_map<Shape*, QueuedShape> queuedShapes;
 
 	eastl::unique_ptr<DX12::StructuredBufferUpload<VertexUpdateData>> vertexUpdateBuffer = nullptr;
-	eastl::unique_ptr<DX12::StructuredBufferUpload<float3x4>> boneMatricesBuffer = nullptr;
+	eastl::array<VertexUpdateData, MAX_GEOMETRY> vertexUpdateData;
+	VertexUpdateData* vertexUpdatePtr = nullptr;
 
-	VertexUpdateData* vertexUpdateData = nullptr;
-	float3x4* boneMatricesData = nullptr;
+	eastl::unique_ptr<DX12::StructuredBufferUpload<float3x4>> boneMatricesBuffer = nullptr;
+	eastl::array<float3x4, MAX_BONE_MATRICES> boneMatricesData;
+	float3x4* boneMatricesPtr = nullptr;
 
 	//eastl::vector<VertexUpdateData> vertexUpdateData;
 	//eastl::vector<float3x4> boneMatricesData;
