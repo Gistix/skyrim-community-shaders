@@ -18,6 +18,7 @@
 #include "TruePBR.h"
 #include "Utils/FileSystem.h"
 #include "WeatherManager.h"
+#include "WeatherVariableRegistry.h"
 
 void State::Draw()
 {
@@ -343,6 +344,9 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 							logger::warn("Invalid override settings for {}, keeping original settings.", feature->GetName());
 						}
 					}
+
+					// Capture current values as user settings baseline for weather overrides
+					WeatherVariables::GlobalWeatherRegistry::GetSingleton()->CaptureFeatureUserSettings(featureName);
 				} else {
 					logger::info("Feature '{}' is disabled at boot.", featureName);
 				}
@@ -402,12 +406,6 @@ void State::SaveToJson(nlohmann::json& settings)
 	auto& upscaling = globals::features::upscaling;
 	auto& upscalingJson = settings[upscaling.GetShortName()];
 	upscaling.SaveSettings(upscalingJson);
-
-	json originalShaders;
-	ForEachShaderTypeWithIndex([&](auto type, int classIndex) {
-		originalShaders[magic_enum::enum_name(type)] = enabledClasses[classIndex];
-	});
-	settings["Replace Original Shaders"] = originalShaders;
 
 	json disabledFeaturesJson;
 	for (const auto& [featureName, isDisabled] : disabledFeatures) {
@@ -473,18 +471,6 @@ void State::LoadFromJson(nlohmann::json& settings)
 			shaderCache->SetDiskCache(general["Enable Disk Cache"]);
 		if (general.contains("Enable Async") && general["Enable Async"].is_boolean())
 			shaderCache->SetAsync(general["Enable Async"]);
-	}
-
-	if (settings.contains("Replace Original Shaders") && settings["Replace Original Shaders"].is_object()) {
-		json& originalShaders = settings["Replace Original Shaders"];
-		ForEachShaderTypeWithIndex([&](auto type, int classIndex) {
-			auto name = magic_enum::enum_name(type);
-			if (originalShaders.contains(name) && originalShaders[name].is_boolean()) {
-				enabledClasses[classIndex] = originalShaders[name];
-			} else {
-				logger::warn("Invalid entry for shader class '{}', using current value", name);
-			}
-		});
 	}
 
 	// Load feature settings (only for already-loaded features)
@@ -828,9 +814,7 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			auto upscaleMethod = upscaling.GetUpscaleMethod();
 			if (temporal && upscaleMethod != Upscaling::UpscaleMethod::kTAA) {
 				auto renderSize = Util::ConvertToDynamic(screenSize, true);
-				data.MipBias = std::log2f(renderSize.x / screenSize.x);
-				if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS)
-					data.MipBias -= 1.0f;
+				data.MipBias = std::log2f(renderSize.x / screenSize.x) - 1.0f;
 			} else {
 				data.MipBias = 0;
 			}
