@@ -562,7 +562,9 @@ struct Raytracing : public OverlayFeature
 	std::string debugDefines = "";
 	bool debugDisableTriShapesUpdate = false;
 	bool debugDisableTextureSharing = false;
-	uint debugNormalMap = 0;
+	bool debugNormalMap = false;
+	uint debugNormalMapIndex = 0;
+	bool debugSkyHemi = false;
 
 	enum class RecompileReason : uint32_t
 	{
@@ -695,6 +697,8 @@ struct Raytracing : public OverlayFeature
 
 	eastl::array<InstanceData, RTConstants::MAX_INSTANCES> instanceData;
 	eastl::unique_ptr<DX12::StructuredBufferUpload<InstanceData>> instanceBuffer = nullptr;
+
+	eastl::deque<eastl::string> modelReleaseQueue;
 
 	Util::FrameChecker frameChecker;
 	uint64_t frameIndex;
@@ -856,6 +860,7 @@ struct Raytracing : public OverlayFeature
 	eastl::unique_ptr<WrappedResource> accumulationTextureCopy = nullptr;
 
 	std::shared_mutex modelMutex;
+	std::shared_mutex modelReleaseMutex;
 	std::shared_mutex landDetachMutex;
 	std::shared_mutex bufferMutex;
 	std::shared_mutex renderMutex;
@@ -964,6 +969,9 @@ struct Raytracing : public OverlayFeature
 
 							// I imagine this isn't fast but I'll keep this in until I'm sure everything has been fixed
 							for (auto& [key, model] : rt.models) {
+								if (model->flags & Model::Flags::Released)
+									continue;
+
 								for (auto& shape : model->shapes) {
 									auto& material = shape->material;
 
@@ -1167,7 +1175,7 @@ struct Raytracing : public OverlayFeature
 				if (!loadedData || !loadedData->mesh)
 					return;
 
-				logger::trace("[RT] TESObjectLAND_Attach3D - {}", std::format("Landscape_{}_{}", exteriorData->cellX, exteriorData->cellY).c_str());
+				logger::debug("[RT] TESObjectLAND_Attach3D - {}", std::format("Landscape_{}_{}", exteriorData->cellX, exteriorData->cellY).c_str());
 
 				for (uint i = 0; i < 4; i++) {
 					auto mesh = loadedData->mesh[i];
@@ -1198,7 +1206,7 @@ struct Raytracing : public OverlayFeature
 
 					auto* exteriorData = runtimeData.cellData.exterior;
 
-					logger::info("[RT] TESObjectLAND::Detach3D - {}", std::format("Landscape_{}_{}", exteriorData->cellX, exteriorData->cellY).c_str());
+					logger::debug("[RT] TESObjectLAND::Detach3D - {}", std::format("Landscape_{}_{}", exteriorData->cellX, exteriorData->cellY).c_str());
 				}
 
 				func(oThis);
@@ -1400,8 +1408,7 @@ struct Raytracing : public OverlayFeature
 
 				if (auto it = dismemberReferences.find(oThis); it != dismemberReferences.end()) {
 					for (auto& shape : it->second) {
-						if (a_slot == shape->slot) {
-							logger::info("[RT] BSDismemberSkinInstance::UpdateDismemberPartion {} {} - 0x{:08X} 0x{:08X}", a_slot, a_enable, reinterpret_cast<uintptr_t>(oThis), reinterpret_cast<uintptr_t>(shape));
+						if (a_slot == shape->slot) {							
 							shape->UpdateDismember(a_enable);
 							break;
 						}
@@ -1461,10 +1468,9 @@ struct Raytracing : public OverlayFeature
 			stl::detour_thunk<CreateTextureFromDDS>(REL::RelocationID(69334, 70716));
 
 			stl::detour_thunk<TESObjectLAND_Attach3D>(REL::RelocationID(18334, 18750));
+			stl::detour_thunk<TESObjectLAND_Detach3D>(REL::RelocationID(18333, 18749));  // sub_1402A8A80
 
 			//stl::detour_thunk<TESObjectLAND_Destructor>(REL::RelocationID(18394, 18823));
-
-			stl::detour_thunk<TESObjectLAND_Detach3D>(REL::RelocationID(18333, 18749)); // sub_1402A8A80
 			//stl::detour_thunk<TESObjectLAND_Detach3D2>(REL::RelocationID(18334, 18750));  // sub_1402A8B00
 
 			//stl::write_vfunc<0x6, AttachDistant3DTask_Attach>(RE::VTABLE_AttachDistant3DTask[0]);

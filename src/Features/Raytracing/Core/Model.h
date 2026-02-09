@@ -20,7 +20,8 @@ struct Model
 {
 	enum Flags : uint8_t {
 		BLASUpdate = 1 << 0,
-		BLASRebuild	= 1 << 1	
+		BLASRebuild	= 1 << 1,
+		Released = 1 << 2
 	};
 
 	eastl::vector<eastl::unique_ptr<Shape>> shapes;

@@ -689,59 +689,63 @@ void Raytracing::DrawDebugSettings()
 		ImGui::TreePop();
 	}
 
-	// Debug Draw Original and Converted Normal Maps
-//#if defined(DEBUG_MSNCONVERSION)
-	if (normalMaps.empty()) {
-		ImGui::Text("No normal maps converted.");
-	} else {
-		eastl::vector<std::pair<ID3D11Resource*, ConvertedNormalMap*>> normalMapVector;
+	ImGui::Checkbox("MSN Visualization", &debugNormalMap);
 
-		for (auto& [msNormal, convertedNormal] : normalMaps) {
-			normalMapVector.emplace_back(msNormal, convertedNormal.get());
-		}
+	if (debugNormalMap) {
+		if (normalMaps.empty()) {
+			ImGui::Text("No normal maps converted.");
+		} else {
+			eastl::vector<std::pair<ID3D11Resource*, ConvertedNormalMap*>> normalMapVector;
 
-		auto normalMapsCount = static_cast<uint>(normalMapVector.size());
-		debugNormalMap = std::min(debugNormalMap, normalMapsCount);
-
-		if (ImGui::BeginCombo("NormalMap", std::to_string(debugNormalMap).c_str())) {
-			for (uint i = 0; i < normalMapsCount; i++) {
-				bool isSelected = debugNormalMap == i;
-
-				auto& [msNormal, convertedNormal] = normalMapVector.at(i);
-
-				if (!convertedNormal->OriginalSRV)
-					continue;
-
-				if (!convertedNormal)
-					continue;
-
-				if (!convertedNormal->converted)
-					continue;
-
-				if (!convertedNormal->Texture || !convertedNormal->Texture->srv || !convertedNormal->Texture->srv.get())
-					continue;
-
-				if (ImGui::Selectable(std::to_string(i).c_str(), isSelected))
-					debugNormalMap = i;
-
-				if (isSelected)
-					ImGui::SetItemDefaultFocus();
+			for (auto& [msNormal, convertedNormal] : normalMaps) {
+				normalMapVector.emplace_back(msNormal, convertedNormal.get());
 			}
 
-			ImGui::EndCombo();
-		}
+			auto normalMapsCount = static_cast<uint>(normalMapVector.size());
+			debugNormalMapIndex = std::min(debugNormalMapIndex, normalMapsCount);
 
-		auto& [msNormal, convertedNormal] = normalMapVector.at(debugNormalMap);
+			if (ImGui::BeginCombo("NormalMap", std::to_string(debugNormalMapIndex).c_str())) {
+				for (uint i = 0; i < normalMapsCount; i++) {
+					bool isSelected = debugNormalMapIndex == i;
 
-		if (convertedNormal && convertedNormal->converted && convertedNormal->OriginalSRV && convertedNormal->Texture && convertedNormal->Texture->srv && convertedNormal->Texture->srv.get()) {
-			ImGui::Image(convertedNormal->OriginalSRV, ImVec2(256, 256));
-			ImGui::SameLine();
-			ImGui::Image(convertedNormal->Texture->srv.get(), ImVec2(256, 256));
+					auto& [msNormal, convertedNormal] = normalMapVector.at(i);
+
+					if (!convertedNormal->OriginalSRV)
+						continue;
+
+					if (!convertedNormal)
+						continue;
+
+					if (!convertedNormal->converted)
+						continue;
+
+					if (!convertedNormal->Texture || !convertedNormal->Texture->srv || !convertedNormal->Texture->srv.get())
+						continue;
+
+					if (ImGui::Selectable(std::to_string(i).c_str(), isSelected))
+						debugNormalMapIndex = i;
+
+					if (isSelected)
+						ImGui::SetItemDefaultFocus();
+				}
+
+				ImGui::EndCombo();
+			}
+
+			auto& [msNormal, convertedNormal] = normalMapVector.at(debugNormalMapIndex);
+
+			if (convertedNormal && convertedNormal->converted && convertedNormal->OriginalSRV && convertedNormal->Texture && convertedNormal->Texture->srv && convertedNormal->Texture->srv.get()) {
+				ImGui::Image(convertedNormal->OriginalSRV, ImVec2(256, 256));
+				ImGui::SameLine();
+				ImGui::Image(convertedNormal->Texture->srv.get(), ImVec2(256, 256));
+			}
 		}
 	}
-//#endif
 
-	ImGui::Image(skyHemisphere->srv, ImVec2(512, 512));
+	ImGui::Checkbox("Sky Hemisphere Visualization", &debugSkyHemi);
+
+	if (debugSkyHemi)
+		ImGui::Image(skyHemisphere->srv, ImVec2(512, 512));
 
 	ImGui::PopID();
 
@@ -1944,10 +1948,10 @@ void Raytracing::CreateModel(RE::TESForm* form, const char* model, RE::NiAVObjec
 
 void Raytracing::CreateActorModel([[maybe_unused]] RE::Actor* actor, [[maybe_unused]] const char* name, RE::NiAVObject* root)
 {
-	logger::info("[RT] CreateActorModel - {}", name);
+	logger::debug("[RT] CreateActorModel - {}", name);
 
 	TraverseScenegraphFadeNodes(root, [&]([[maybe_unused]] RE::BSFadeNode* fadeNode) -> RE::BSVisit::BSVisitControl {
-		logger::info("\t[RT] CreateActorModel::TraverseScenegraphFadeNodes {} - {}, Child Index: {}, Parent: {}", typeid(*fadeNode).name(), fadeNode->name, fadeNode->parentIndex, fadeNode->parent->name);
+		logger::debug("\t[RT] CreateActorModel::TraverseScenegraphFadeNodes {} - {}, Child Index: {}, Parent: {}", typeid(*fadeNode).name(), fadeNode->name, fadeNode->parentIndex, fadeNode->parent ? fadeNode->parent->name : "");
 
 		const bool isRoot = (fadeNode == root);
 
@@ -1965,7 +1969,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 		return;
 	}
 
-	logger::trace("[RT] CreateModel \"{}\"", typeid(*pRoot).name());
+	logger::debug("[RT] CreateModel \"{}\"", typeid(*pRoot).name());
 
 	if (!path) {
 		logger::debug("[RT] CreateModel \"{}\" - Invalid Path", pRoot->name);
@@ -1994,9 +1998,13 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 	auto formID = form->GetFormID();
 
 	// We only need one buffer per model
-	if (models.find(path) != models.end()) {
-		AddInstance(formID, pRoot, path);
-		return;
+	{
+		std::lock_guard lock{ modelReleaseMutex };
+
+		if (models.find(path) != models.end()) {
+			AddInstance(formID, pRoot, path);
+			return;
+		}
 	}
 
 	logger::debug("[RT] CreateModel - Path: {}, FormID [0x{:08X}], NiNode [0x{:08X}]: {}", path, formID, reinterpret_cast<uintptr_t>(pRoot), pRoot->name);
@@ -2013,7 +2021,7 @@ void Raytracing::CreateModelInternal(RE::TESForm* form, const char* path, RE::Ni
 	TraverseScenegraphRTGeometries(pRoot, validFadeNode, [&](RE::BSGeometry * pGeometry)->RE::BSVisit::BSVisitControl {
 		const char* name = pGeometry->name.c_str();
 
-		logger::info("\t\t[RT] CreateModel::TraverseScenegraphGeometries - {}", name);
+		logger::trace("\t\t[RT] CreateModel::TraverseScenegraphGeometries - {}", name);
 
 		const auto& geometryType = pGeometry->GetType();
 
@@ -2197,13 +2205,12 @@ bool Raytracing::RemoveInstance(RE::NiAVObject* pRoot, bool releaseModel)
 
 			logger::debug("[RT] RemoveInstance - RefCount: {}", refCount);
 
-			// If this is the last Instance of the model, remove it
+			// If this is the last Instance of the model, queue its removal
 			if (refCount <= 0 && releaseModel) {
-				// Not sure if its necesary to mutex here, but when the model goes out of scope the buffers are destroyed so I assume it is
-				std::lock_guard lock{ renderMutex };
+				logger::debug("[RT] RemoveInstance - No refs, erase queued");
 
-				logger::debug("[RT] RemoveInstance - No refs, erasing from collection");
-				models.erase(modelIt);
+				model->flags |= Model::Flags::Released;
+				modelReleaseQueue.push_back(instance.filename);
 			}
 		}
 
@@ -2431,6 +2438,13 @@ void Raytracing::AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::
 
 	if (auto instanceIt = instances.find(pNiNode); instanceIt == instances.end()) {
 		if (auto modelIt = models.find(path); modelIt != models.end()) {
+			auto& model = modelIt->second;
+
+			if (model->flags & Model::Flags::Released) {
+				model->flags &= ~Model::Flags::Released;
+				logger::debug("[RT] AddInstance - Model is Released.");
+			}
+
 			auto [it, emplaced] = instances.try_emplace(pNiNode, Instance(formID, path));
 
 			if (emplaced) {
@@ -2440,7 +2454,7 @@ void Raytracing::AddInstance(RE::FormID formID, RE::NiAVObject* pNiNode, eastl::
 					formIDNodes.try_emplace(formID, eastl::vector<RE::NiAVObject*>{ pNiNode });
 				}
 
-				modelIt->second->AddRef();
+				model->AddRef();
 			}
 		}
 	}
@@ -2894,6 +2908,23 @@ void Raytracing::PostRaytraceCleanup()
 {
 	while (!tempGPUData.empty() && tempGPUData.front().fenceValue <= fenceValue) {
 		tempGPUData.pop_front();
+	}
+
+	{
+		std::lock_guard lock{ modelReleaseMutex };
+
+		while (!modelReleaseQueue.empty()) {
+			auto& modelPath = modelReleaseQueue.front();
+
+			if (auto modelIt = models.find(modelPath); modelIt != models.end()) {
+				if (modelIt->second->flags & Model::Flags::Released) {
+					logger::debug("[RT] PostRaytraceCleanup - Releasing: {}", modelPath);
+					models.erase(modelIt);
+				}
+			}
+
+			modelReleaseQueue.pop_front();
+		}
 	}
 }
 

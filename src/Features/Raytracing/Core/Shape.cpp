@@ -1018,7 +1018,7 @@ bool Shape::UpdateSkinning()
 		return false;
 
 	// Only update if the game has updated the matrices
-	if (frameID == skinInstance->frameID)
+	if (skinFrameID == skinInstance->frameID)
 		return false;
 
 	// UBE crash fix
@@ -1038,11 +1038,11 @@ bool Shape::UpdateSkinning()
 
 	//logger::info("[RT] Shape::UpdateSkinning {} - {}, {}", geometry->name, rootParent->name, skinInstance->frameID);
 
-	auto delta = skinInstance->frameID - frameID;
+	auto delta = skinInstance->frameID - skinFrameID;
 
 	auto skinRootInverse = GetXMFromNiTransform(delta > 1 ? rootParent->previousWorld.Invert() : rootParent->world.Invert());
 
-	frameID = skinInstance->frameID;
+	skinFrameID = skinInstance->frameID;
 
 	for (uint i = 0; i < skinInstance->numMatrices; i++) {
 		XMStoreFloat3x4(&boneMatrices[i], XMMatrixMultiply(XMLoadFloat3x4(&boneMatricesArray[i]), skinRootInverse));

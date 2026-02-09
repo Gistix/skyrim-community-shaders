@@ -29,7 +29,8 @@ public:
 		Skinned = 1 << 3,
 		Landscape = 1 << 4,
 		Static = 1 << 5,
-		DoubleSidedGeom = 1 << 6
+		UpdateLocalToRoot = 1 << 6,
+		DoubleSidedGeom = 1 << 7
 	};
 
 	enum class State : uint8_t
@@ -75,7 +76,9 @@ public:
 
 	uint16_t slot;
 
-	uint32_t frameID;
+	uint32_t updateFrameID;
+
+	uint32_t skinFrameID;
 
 	Shape(Flags flags, Allocation* allocation, RE::BSGeometry* geometry, float3x4 localToRoot, bool dismemberVisible = true, uint16_t slot = 0) :
 		flags(flags), allocation({ allocation, AllocationDeleter() }), geometry(geometry), localToRoot(localToRoot), slot(slot)
