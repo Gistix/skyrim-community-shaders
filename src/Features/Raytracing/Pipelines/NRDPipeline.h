@@ -27,7 +27,7 @@
 #	define SIGMA_VARIANT nrd::Denoiser::SIGMA_SHADOW
 #endif
 
-struct NDRSubPipeline : IPipeline
+struct NRDSubPipeline : IPipeline
 {
 	winrt::com_ptr<ID3D12RootSignature> rootSignature = nullptr;
 	winrt::com_ptr<ID3D12PipelineState> pipelineState = nullptr;
@@ -35,6 +35,8 @@ struct NDRSubPipeline : IPipeline
 
 struct NRDPipeline : IPipeline
 {
+	eastl::unique_ptr<DX12::ResourceUpload> constantBuffer = nullptr;
+
     // NRD
 	nrd::CommonSettings commonSettings = {};
 
@@ -42,7 +44,7 @@ struct NRDPipeline : IPipeline
 	nrd::ReferenceSettings m_ReferenceSettings = {};
 
 	//eastl::unordered_map<nrd::Denoiser, nrd::Identifier> denoisers;
-	eastl::vector<eastl::unique_ptr<IPipeline>> pipelines;
+	eastl::vector<eastl::unique_ptr<NRDSubPipeline>> pipelines;
 
 	nrd::Instance* instance = nullptr;
 

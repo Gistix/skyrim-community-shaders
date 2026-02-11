@@ -76,6 +76,9 @@ void NRDPipeline::SetupResources(ID3D12Device5* device)
 
 	const nrd::InstanceDesc* instanceDesc = nrd::GetInstanceDesc(*instance);
 
+	constantBuffer = eastl::make_unique<DX12::ResourceUpload>(device, instanceDesc->constantBufferMaxDataSize);
+	constantBuffer->SetName(L"NrdConstantBuffer");
+
 	eastl::vector<CD3DX12_STATIC_SAMPLER_DESC> samplers;
 	for (uint32_t samplerIndex = 0; samplerIndex < instanceDesc->samplersNum; samplerIndex++) {
 		const nrd::Sampler& samplerMode = instanceDesc->samplers[samplerIndex];
@@ -118,7 +121,7 @@ void NRDPipeline::SetupResources(ID3D12Device5* device)
 		const nrd::PipelineDesc& nrdPipelineDesc = instanceDesc->pipelines[pipelineIndex];
 		const nrd::ComputeShaderDesc& nrdComputeShader = nrdPipelineDesc.computeShaderDXIL;
 
-		eastl::unique_ptr<NDRSubPipeline> pipeline = eastl::make_unique<NDRSubPipeline>();
+		eastl::unique_ptr<NRDSubPipeline> pipeline = eastl::make_unique<NRDSubPipeline>();
 
 		// Root Signature
 		eastl::vector<CD3DX12_DESCRIPTOR_RANGE1> srvRanges;
@@ -285,7 +288,7 @@ void NRDPipeline::Denoise([[maybe_unused]]ID3D12GraphicsCommandList4* commandLis
 	uint32_t dispatchDescNum = 0;
 	nrd::GetComputeDispatches(*instance, &identifier, 1, dispatchDescs, dispatchDescNum);
 
-	//const nrd::InstanceDesc* instanceDesc = nrd::GetInstanceDesc(*instance);
+	const nrd::InstanceDesc* instanceDesc = nrd::GetInstanceDesc(*instance);
 
     for (uint32_t dispatchIndex = 0; dispatchIndex < dispatchDescNum; dispatchIndex++) {
 		const nrd::DispatchDesc& dispatchDesc = dispatchDescs[dispatchIndex];
@@ -293,6 +296,107 @@ void NRDPipeline::Denoise([[maybe_unused]]ID3D12GraphicsCommandList4* commandLis
 		if (dispatchDesc.name) {
 			logger::info("[RT] NRDPipeline::Denoise: {}", dispatchDesc.name);
 		}
+
+		constantBuffer->Update(dispatchDesc.constantBufferData, dispatchDesc.constantBufferDataSize);
+		constantBuffer->Upload(commandList);
+
+		commandList->SetComputeRootConstantBufferView(instanceDesc->constantBufferRegisterIndex, constantBuffer->resource->GetGPUVirtualAddress());
+
+        /*for (uint32_t samplerIndex = 0; samplerIndex < instanceDesc->samplersNum; samplerIndex++) {
+			commandList->SetComputeRootDescriptorTable(instanceDesc->samplersBaseRegisterIndex + samplerIndex, heap->TableGPUHandle(SHaRCHeap::Table::UAV));
+		}*/
+
+        const nrd::PipelineDesc& nrdPipelineDesc = instanceDesc->pipelines[dispatchDesc.pipelineIndex];
+		uint32_t resourceIndex = 0;
+
+		for (uint32_t descriptorRangeIndex = 0; descriptorRangeIndex < nrdPipelineDesc.resourceRangesNum; descriptorRangeIndex++) {
+			const nrd::ResourceRangeDesc& nrdDescriptorRange = nrdPipelineDesc.resourceRanges[descriptorRangeIndex];
+
+			for (uint32_t descriptorOffset = 0; descriptorOffset < nrdDescriptorRange.descriptorsNum; descriptorOffset++) {
+				assert(resourceIndex < dispatchDesc.resourcesNum);
+				const nrd::ResourceDesc& resource = dispatchDesc.resources[resourceIndex];
+
+				ID3D12Resource* texture = nullptr;
+
+                switch (resource.type) {
+				case nrd::ResourceType::IN_MV:
+					texture = renderTargets.DenoiserMotionVectors;
+					break;
+				case nrd::ResourceType::IN_NORMAL_ROUGHNESS:
+					texture = renderTargets.DenoiserNormalRoughness;
+					break;
+				case nrd::ResourceType::IN_VIEWZ:
+					texture = renderTargets.DenoiserViewspaceZ;
+					break;
+				case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST:
+					texture = renderTargets.DenoiserSpecRadianceHitDist;
+					break;
+				case nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST:
+					texture = renderTargets.DenoiserDiffRadianceHitDist;
+					break;
+				case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
+					texture = renderTargets.DenoiserOutSpecRadianceHitDist[pass];
+					break;
+				case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:
+					texture = renderTargets.DenoiserOutDiffRadianceHitDist[pass];
+					break;
+				case nrd::ResourceType::OUT_VALIDATION:
+					texture = renderTargets.DenoiserOutValidation;
+					break;
+				//case nrd::ResourceType::IN_DIFF_HIT:
+				//    texture = renderTargets.DiffuseLighting;
+				//    break;
+				//case nrd::ResourceType::IN_SPEC_HIT:
+				//    texture = renderTargets.SpecularLighting;
+				//    break;
+				//case nrd::ResourceType::OUT_DIFF_HIT:
+				//    texture = renderTargets.DenoisedDiffuseLighting;
+				//    break;
+				//case nrd::ResourceType::OUT_SPEC_HIT:
+				//    texture = renderTargets.DenoisedSpecularLighting;
+				//    break;
+				case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
+					texture = renderTargets.DenoiserDisocclusionThresholdMix;
+					break;
+				case nrd::ResourceType::TRANSIENT_POOL:
+					texture = m_transientTextures[resource.indexInPool];
+					break;
+				case nrd::ResourceType::PERMANENT_POOL:
+					texture = m_permanentTextures[resource.indexInPool];
+					break;
+				default:
+					assert(!"Unavailable resource type");
+					break;
+				}
+
+                nvrhi::TextureSubresourceSet subresources = nvrhi::AllSubresources;
+
+				nvrhi::BindingSetItem setItem = nvrhi::BindingSetItem::None();
+				setItem.resourceHandle = texture;
+				setItem.slot = instanceDesc.resourcesBaseRegisterIndex + descriptorOffset;
+				setItem.subresources = subresources;
+				setItem.type = (nrdDescriptorRange.descriptorType == nrd::DescriptorType::TEXTURE) ? nvrhi::ResourceType::Texture_SRV : nvrhi::ResourceType::Texture_UAV;
+
+				resourcesSetDesc.bindings.push_back(setItem);
+
+				resourceIndex++;
+			}
+		}
+
+		auto& pipeline = pipelines[dispatchDesc.pipelineIndex];
+
+		commandList->SetPipelineState(pipeline->pipelineState.get());
+		commandList->SetComputeRootSignature(pipeline->rootSignature.get());
+
+		nvrhi::BindingSetHandle resourcesBindingSet = m_bindingCache.GetOrCreateBindingSet(resourcesSetDesc, pipeline.ResourcesBindingLayout);
+		nvrhi::BindingSetHandle constantsAndSamplersBindingSet = m_bindingCache.GetOrCreateBindingSet(constantsAndSampelrsSetDesc, pipeline.ConstantsAndSamplersBindingLayout);
+
+		nvrhi::ComputeState state;
+		state.bindings = { resourcesBindingSet, constantsAndSamplersBindingSet };
+		state.pipeline = pipeline.Pipeline;
+		commandList->setComputeState(state);
+
+		commandList->Dispatch(dispatchDesc.gridWidth, dispatchDesc.gridHeight);
 	}
 
 	frameIndex++;
