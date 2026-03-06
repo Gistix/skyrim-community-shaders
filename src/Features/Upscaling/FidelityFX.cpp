@@ -98,7 +98,7 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 
 	static uint64_t frameID = 0;
 	configParameters.frameID = frameID;
-	configParameters.swapChain = swapChain.swapChain;
+	configParameters.swapChain = swapChain.swapChain.get();
 	configParameters.onlyPresentGenerated = false;
 	configParameters.flags = 0;
 	configParameters.allowAsyncWorkloads = true;

@@ -62,11 +62,12 @@ class DX12SwapChain
 {
 public:
 	winrt::com_ptr<ID3D12Device5> d3d12Device;
+	winrt::com_ptr<ID3D12Device5> nativeD3D12Device;
 	winrt::com_ptr<ID3D12CommandQueue> commandQueue;
 	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[2];
 	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[2];
 
-	IDXGISwapChain4* swapChain;
+	winrt::com_ptr<IDXGISwapChain4> swapChain;
 
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
 
@@ -84,6 +85,8 @@ public:
 	winrt::com_ptr<ID3D12Fence> d3d12Fence;
 
 	winrt::com_ptr<ID3D12Resource> swapChainBuffers[2];
+	winrt::com_ptr<ID3D12DescriptorHeap> srvHeap;
+	winrt::com_ptr<ID3D12DescriptorHeap> rtvHeap;
 
 	UINT frameIndex = 0;
 	UINT64 fenceValue = 0;
@@ -93,6 +96,9 @@ public:
 	double refreshRate = 0;
 
 	DXGISwapChainProxy* swapChainProxy = nullptr;
+
+	winrt::com_ptr<ID3D12RootSignature> uiBlendRS;
+	winrt::com_ptr<ID3D12PipelineState> uiBlendPS;
 
 	// Returns the current frame time (in seconds) for accurate FPS calculation when frame generation is active
 	float GetFrameTime() const;

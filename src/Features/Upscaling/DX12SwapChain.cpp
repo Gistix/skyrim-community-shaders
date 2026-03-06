@@ -6,10 +6,35 @@
 #include "../Upscaling.h"
 #include "FidelityFX.h"
 #include "Streamline.h"
+#include "Features/Raytracing.h"
 
 void DX12SwapChain::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
-	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
+	/*winrt::com_ptr<ID3D12Debug3> debugController;
+	if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+		debugController->EnableDebugLayer();
+		debugController->SetEnableGPUBasedValidation(TRUE);
+	} else {
+		logger::critical("[RT] Debug layer creation failed.");
+	}*/
+
+	globals::features::raytracing.InitializePIX();
+	auto& upscaling = globals::features::upscaling;
+
+	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&nativeD3D12Device)));
+
+	ID3D12Device5* device = nativeD3D12Device.get();
+	upscaling.UpgradeBackendInterface((void**)&device);
+	d3d12Device.attach(device);
+
+	/*winrt::com_ptr<ID3D12InfoQueue> infoQueue;
+	if (SUCCEEDED(d3d12Device->QueryInterface(IID_PPV_ARGS(&infoQueue)))) {
+		infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+		infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+		infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE);
+	} else {
+		logger::critical("[RT] Debug break creation failed.");
+	}*/
 
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -33,6 +58,9 @@ void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC 
 	IDXGIFactory4* dxgiFactory;
 	DX::ThrowIfFailed(adapter->GetParent(IID_PPV_ARGS(&dxgiFactory)));
 
+	auto& upscaling = globals::features::upscaling;
+	upscaling.UpgradeBackendInterface((void**)&dxgiFactory);
+
 	swapChainDesc = {};
 	swapChainDesc.Width = a_swapChainDesc.BufferDesc.Width;
 	swapChainDesc.Height = a_swapChainDesc.BufferDesc.Height;
@@ -43,27 +71,69 @@ void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC 
 	swapChainDesc.SwapEffect = a_swapChainDesc.SwapEffect;
 	swapChainDesc.Flags = a_swapChainDesc.Flags;
 
-	ffx::CreateContextDescFrameGenerationSwapChainForHwndDX12 ffxSwapChainDesc{};
+	if (upscaling.HasFrameGenModule()) {
+		ffx::CreateContextDescFrameGenerationSwapChainForHwndDX12 ffxSwapChainDesc{};
 
-	ffxSwapChainDesc.desc = &swapChainDesc;
-	ffxSwapChainDesc.dxgiFactory = dxgiFactory;
-	ffxSwapChainDesc.fullscreenDesc = nullptr;
-	ffxSwapChainDesc.gameQueue = commandQueue.get();
-	ffxSwapChainDesc.hwnd = a_swapChainDesc.OutputWindow;
-	ffxSwapChainDesc.swapchain = &swapChain;
+		ffxSwapChainDesc.desc = &swapChainDesc;
+		ffxSwapChainDesc.dxgiFactory = dxgiFactory;
+		ffxSwapChainDesc.fullscreenDesc = nullptr;
+		ffxSwapChainDesc.gameQueue = commandQueue.get();
+		ffxSwapChainDesc.hwnd = a_swapChainDesc.OutputWindow;
+		ffxSwapChainDesc.swapchain = swapChain.put();
 
-	auto& fidelityFX = globals::features::upscaling.fidelityFX;
+		if (ffx::CreateContext(globals::features::upscaling.fidelityFX.swapChainContext, nullptr, ffxSwapChainDesc) != ffx::ReturnCode::Ok) {
+			logger::critical("[FidelityFX] Failed to create swap chain context!");
+		}
+	} else {
+		winrt::com_ptr<IDXGISwapChain1> swapChain1;
 
-	if (ffx::CreateContext(fidelityFX.swapChainContext, nullptr, ffxSwapChainDesc) != ffx::ReturnCode::Ok) {
-		logger::critical("[FidelityFX] Failed to create swap chain context!");
+		dxgiFactory->CreateSwapChainForHwnd(
+			commandQueue.get(),
+			a_swapChainDesc.OutputWindow,
+			&swapChainDesc,
+			nullptr,
+			nullptr,
+			swapChain1.put());
+
+		swapChain = swapChain1.try_as<IDXGISwapChain4>();
 	}
 
-	DX::ThrowIfFailed(swapChain->GetBuffer(0, IID_PPV_ARGS(&swapChainBuffers[0])));
-	DX::ThrowIfFailed(swapChain->GetBuffer(1, IID_PPV_ARGS(&swapChainBuffers[1])));
+	// SRV Heap
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.NumDescriptors = 1;
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+		DX::ThrowIfFailed(d3d12Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&srvHeap)));
+	}
+
+	// RTV Heap
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.NumDescriptors = swapChainDesc.BufferCount;
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+		DX::ThrowIfFailed(d3d12Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap)));
+
+		D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+		UINT rtvDescriptorSize = d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+		for (uint i = 0; i < swapChainDesc.BufferCount; i++) {
+			DX::ThrowIfFailed(swapChain->GetBuffer(i, IID_PPV_ARGS(&swapChainBuffers[i])));
+
+			d3d12Device->CreateRenderTargetView(swapChainBuffers[i].get(), nullptr, rtvHandle);
+
+			rtvHandle.ptr += rtvDescriptorSize;
+		}
+	}
 
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
 
-	fidelityFX.SetupFrameGeneration();
+	if (upscaling.HasFrameGenModule()) {
+		globals::features::upscaling.fidelityFX.SetupFrameGeneration();
+	}
 }
 
 void DX12SwapChain::CreateInterop()
@@ -74,7 +144,7 @@ void DX12SwapChain::CreateInterop()
 	DX::ThrowIfFailed(d3d11Device->OpenSharedFence(sharedFenceHandle, IID_PPV_ARGS(&d3d11Fence)));
 	CloseHandle(sharedFenceHandle);
 
-	swapChainProxy = new DXGISwapChainProxy(swapChain);
+	swapChainProxy = new DXGISwapChainProxy(swapChain.get());
 
 	D3D11_TEXTURE2D_DESC texDesc11{};
 	texDesc11.Width = swapChainDesc.Width;
@@ -84,12 +154,107 @@ void DX12SwapChain::CreateInterop()
 	texDesc11.Format = swapChainDesc.Format;
 	texDesc11.SampleDesc.Count = 1;
 	texDesc11.SampleDesc.Quality = 0;
-	texDesc11.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+	// UAV is necessary for DLSS output
+	texDesc11.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
 
 	swapChainBufferWrapped = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+	swapChainBufferWrapped->resource->SetName(L"Wrapped SwapChain");
 
 	texDesc11.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	uiBufferWrapped = new WrappedResource(texDesc11, d3d11Device.get(), d3d12Device.get());
+	uiBufferWrapped->resource->SetName(L"Wrapped UI");
+
+	// SRV Heap
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.NumDescriptors = swapChainDesc.BufferCount;
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = texDesc11.Format;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture2D.MipLevels = 1;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.PlaneSlice = 0;
+		srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+		d3d12Device->CreateShaderResourceView(uiBufferWrapped->resource.get(), &srvDesc, srvHeap->GetCPUDescriptorHandleForHeapStart());
+	}
+
+	// Root Descriptor
+	{
+		CD3DX12_DESCRIPTOR_RANGE srvRange;
+		srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+		CD3DX12_ROOT_PARAMETER param;
+		param.InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+
+		CD3DX12_STATIC_SAMPLER_DESC sampler(0,D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+
+		CD3DX12_ROOT_SIGNATURE_DESC desc;
+		desc.Init(1, &param, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+		winrt::com_ptr<ID3DBlob> serializedRootSig;
+		winrt::com_ptr<ID3DBlob> errorBlob;
+
+		DX::ThrowIfFailed(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, serializedRootSig.put(), errorBlob.put()));
+
+		DX::ThrowIfFailed(d3d12Device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&uiBlendRS)));
+	}
+
+	// Pipeline State
+	{
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+		psoDesc.pRootSignature = uiBlendRS.get();
+
+		winrt::com_ptr<ID3DBlob> vsBlob;
+		vsBlob.attach(Util::CompileShaderBlob(L"Data/Shaders/Upscaling/UpscaleVS.hlsl", {}, "vs_5_0"));
+
+		winrt::com_ptr<ID3DBlob> psBlob;
+		psBlob.attach(Util::CompileShaderBlob(L"Data/Shaders/Upscaling/CopyRGBAPS.hlsl", {}, "ps_5_0"));
+
+		psoDesc.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
+		psoDesc.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };	
+
+		psoDesc.InputLayout = { nullptr, 0 };
+
+		psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+		psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+		{
+			psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
+			auto& rt = psoDesc.BlendState.RenderTarget[0];
+			rt.BlendEnable = TRUE;
+
+			rt.SrcBlend = D3D12_BLEND_ONE; // D3D12_BLEND_SRC_ALPHA
+			rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+			rt.BlendOp = D3D12_BLEND_OP_ADD;
+
+			rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+			rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+			rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+
+			rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		}
+
+		psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+		psoDesc.DepthStencilState.DepthEnable = FALSE;
+		psoDesc.DepthStencilState.StencilEnable = FALSE;
+
+		psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+		psoDesc.NumRenderTargets = 1;
+		psoDesc.RTVFormats[0] = swapChainDesc.Format;
+
+		psoDesc.SampleDesc.Count = 1;
+		psoDesc.SampleMask = UINT_MAX;
+
+		DX::ThrowIfFailed(d3d12Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&uiBlendPS)));
+	}
 }
 
 DXGISwapChainProxy* DX12SwapChain::GetSwapChainProxy()
@@ -117,6 +282,12 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
 	auto& upscaling = globals::features::upscaling;
 
+	const auto upscaleMethod = upscaling.GetUpscaleMethod();
+
+	bool frameGeneration = upscaleMethod == Upscaling::UpscaleMethod::kFSR && upscaling.IsFrameGenerationActive();
+
+	const auto& commandList = commandLists[frameIndex];
+
 	// Wait for D3D11 to finish
 	DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
 	DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
@@ -124,34 +295,120 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	// New frame, reset
 	DX::ThrowIfFailed(commandAllocators[frameIndex]->Reset());
-	DX::ThrowIfFailed(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr));
+	DX::ThrowIfFailed(commandList->Reset(commandAllocators[frameIndex].get(), nullptr));
 
-	// Copy shared texture to swap chain buffer
-	{
-		auto fakeSwapChain = swapChainBufferWrapped->resource.get();
-		auto realSwapChain = swapChainBuffers[frameIndex].get();
+	auto fsrSwapChain = swapChainBuffers[frameIndex].get();
+	auto wrappedSwapChain = swapChainBufferWrapped->resource.get();
+
+	/*auto getName = [](ID3D12Resource* resource) {
+		// 1. Get the size of the data first
+		UINT dataSize = 0;
+		resource->GetPrivateData(WKPDID_D3DDebugObjectNameW, &dataSize, nullptr);
+
+		// 2. Allocate buffer and get the data
+		std::wstring name(dataSize / sizeof(WCHAR), L'\0');
+		resource->GetPrivateData(WKPDID_D3DDebugObjectNameW, &dataSize, &name[0]);
+
+		return name;
+	};
+
+	logger::info("DX12SwapChain::Present [{}] - {}", frameIndex, Util::WStringToString(getName(fsrSwapChain)));
+	logger::info("DX12SwapChain::Present - {}", Util::WStringToString(getName(wrappedSwapChain)));*/
+
+	if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS) {
 		{
-			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
-			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			D3D12_RESOURCE_BARRIER barriers[] = {
+				CD3DX12_RESOURCE_BARRIER::Transition(wrappedSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+			};
+			commandList->ResourceBarrier(_countof(barriers), barriers);
 		}
 
-		commandLists[frameIndex]->CopyResource(realSwapChain, fakeSwapChain);
+		upscaling.streamline.Upscale(commandList.get(), wrappedSwapChain, wrappedSwapChain, depthBufferShared12->resource.get(), motionVectorBufferShared12->resource.get());
 
 		{
-			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
-			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			D3D12_RESOURCE_BARRIER barriers[] = {
+				CD3DX12_RESOURCE_BARRIER::Transition(wrappedSwapChain, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON),
+			};
+			commandList->ResourceBarrier(_countof(barriers), barriers);
 		}
 	}
 
-	globals::features::upscaling.fidelityFX.Present(upscaling.settings.frameGenerationMode && !globals::game::ui->GameIsPaused());
+	// Copy shared texture to swap chain buffer
+	{
+		D3D12_RESOURCE_BARRIER barriers[] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(wrappedSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE),
+			CD3DX12_RESOURCE_BARRIER::Transition(fsrSwapChain, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST)
+		};
+		commandList->ResourceBarrier(_countof(barriers), barriers);
+	}
 
-	DX::ThrowIfFailed(commandLists[frameIndex]->Close());
+	commandList->CopyResource(fsrSwapChain, wrappedSwapChain);
 
-	ID3D12CommandList* commandListsToExecute[] = { commandLists[frameIndex].get() };
+	{
+		D3D12_RESOURCE_BARRIER barriers[] = {
+			CD3DX12_RESOURCE_BARRIER::Transition(wrappedSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
+			CD3DX12_RESOURCE_BARRIER::Transition(fsrSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, frameGeneration ? D3D12_RESOURCE_STATE_PRESENT : D3D12_RESOURCE_STATE_RENDER_TARGET)
+		};
+		commandList->ResourceBarrier(_countof(barriers), barriers);
+	}	
+
+	/*else if (upscaleMethod == Upscaling::UpscaleMethod::kDLSS_RR)
+		upscaling.streamline.DenoiseUpscale(commandList.get(), wrappedSwapChain, depthBufferShared12->resource.get(), motionVectorBufferShared12->resource.get());*/
+
+	if (frameGeneration) {
+		upscaling.fidelityFX.Present(upscaling.settings.frameGenerationMode && !globals::game::ui->GameIsPaused());
+	} else {		 
+		// Blend UI
+		{
+			auto rtvHandle = CD3DX12_CPU_DESCRIPTOR_HANDLE(rtvHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex,
+				d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
+
+			commandList->SetPipelineState(uiBlendPS.get());
+			commandList->SetGraphicsRootSignature(uiBlendRS.get());
+
+			ID3D12DescriptorHeap* heaps[] = { srvHeap.get() };
+			commandList->SetDescriptorHeaps(1, heaps);
+
+			commandList->SetGraphicsRootDescriptorTable(0, srvHeap->GetGPUDescriptorHandleForHeapStart());
+
+			commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+			auto desc = fsrSwapChain->GetDesc();
+
+			D3D12_VIEWPORT viewport = {};
+			viewport.TopLeftX = 0;
+			viewport.TopLeftY = 0;
+			viewport.Width = static_cast<float>(desc.Width);
+			viewport.Height = static_cast<float>(desc.Height);
+			viewport.MinDepth = 0.0f;
+			viewport.MaxDepth = 1.0f;
+
+			commandList->RSSetViewports(1, &viewport);
+
+			D3D12_RECT scissorRect = {};
+			scissorRect.left = 0;
+			scissorRect.top = 0;
+			scissorRect.right = static_cast<LONG>(desc.Width);
+			scissorRect.bottom = static_cast<LONG>(desc.Height);
+
+			commandList->RSSetScissorRects(1, &scissorRect);
+
+			commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+			commandList->DrawInstanced(3, 1, 0, 0);
+
+			{
+				D3D12_RESOURCE_BARRIER barriers[] = {
+					CD3DX12_RESOURCE_BARRIER::Transition(fsrSwapChain, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT),		
+				};
+				commandList->ResourceBarrier(_countof(barriers), barriers);
+			}
+		}
+	}
+
+	DX::ThrowIfFailed(commandList->Close());
+
+	ID3D12CommandList* commandListsToExecute[] = { commandList.get() };
 	commandQueue->ExecuteCommandLists(1, commandListsToExecute);
 
 	// Present the frame
