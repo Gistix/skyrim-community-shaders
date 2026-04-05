@@ -311,114 +311,41 @@ void Deferred::DeferredPasses()
 		}
 	}
 
-	auto specular = renderer->GetRuntimeData().renderTargets[SPECULAR];
 	auto albedo = renderer->GetRuntimeData().renderTargets[ALBEDO];
 	auto normalRoughness = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
-	auto masks = renderer->GetRuntimeData().renderTargets[MASKS];
+	auto emissive = renderer->GetRuntimeData().renderTargets[EMISSIVE];
 
 	auto main = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[0]];
-	auto normals = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[2]];
 	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	auto reflectance = renderer->GetRuntimeData().renderTargets[EMISSIVE];
-
-	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-
-	bool interior = Util::IsInterior();
-
-	auto& skylighting = globals::features::skylighting;
-
-	auto& ssgi = globals::features::screenSpaceGI;
-	if (ssgi.loaded)
-		ssgi.DrawSSGI();
-	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec] = ssgi.GetOutputTextures();
-	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
 
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 
-	auto& sss = globals::features::subsurfaceScattering;
-	if (sss.loaded)
-		sss.DrawSSS();
-
-	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
-	if (dynamicCubemaps.loaded)
-		dynamicCubemaps.UpdateCubemap();
-
-	auto& ibl = globals::features::ibl;
-
 	// Deferred Composite
 	{
-		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
+		TracyD3D11Zone(globals::state->tracyCtx, "Directional Lighting");
 
-		ID3D11ShaderResourceView* srvs[16]{
-			specular.SRV,
+		ID3D11ShaderResourceView* srvs[]{
 			albedo.SRV,
 			normalRoughness.SRV,
-			masks.SRV,
-			dynamicCubemaps.loaded || REL::Module::IsVR() ? Util::GetCurrentSceneDepthSRV(true) : nullptr,
-			dynamicCubemaps.loaded ? reflectance.SRV : nullptr,
-			dynamicCubemaps.loaded ? dynamicCubemaps.envTexture->srv.get() : nullptr,
-			dynamicCubemaps.loaded ? dynamicCubemaps.envReflectionsTexture->srv.get() : nullptr,
-			dynamicCubemaps.loaded && skylighting.loaded ? skylighting.texProbeArray->srv.get() : nullptr,
-			dynamicCubemaps.loaded && skylighting.loaded ? skylighting.stbn_vec3_2Dx1D_128x128x64.get() : nullptr,
-			ssgi_ao,
-			ssgi_hq_spec ? nullptr : ssgi_y,
-			ssgi_hq_spec ? nullptr : ssgi_cocg,
-			ssgi_hq_spec ? ssgi_gi_spec : nullptr,
-			ibl.loaded ? ibl.envIBLTexture->srv.get() : nullptr,
-			ibl.loaded ? ibl.skyIBLTexture->srv.get() : nullptr,
+			emissive.SRV
 		};
-
-		if (dynamicCubemaps.loaded)
-			context->CSSetSamplers(0, 1, &linearSampler);
 
 		context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
-		// Bind VRStereoOptimizations mode texture for Eye 1 skip.
-		// Bind null when disabled so stale mode data doesn't cause incorrect early-exits
-		// in DeferredCompositeCS (null SRV reads return 0 = MODE_DISOCCLUDED, all pixels composite normally).
-		auto& vrStereoOpt = globals::features::vr.stereoOpt;
-		if (vrStereoOpt.loaded) {
-			bool stereoActive = vrStereoOpt.settings.stereoMode != VRStereoOptimizations::StereoMode::Off;
-			ID3D11ShaderResourceView* modeSRV = stereoActive ? vrStereoOpt.GetModeTextureSRV() : nullptr;
-			context->CSSetShaderResources(16, 1, &modeSRV);
-		}
-
-		ID3D11UnorderedAccessView* uavs[3]{ main.UAV, normals.UAV, motionVectors.UAV };
+		ID3D11UnorderedAccessView* uavs[]{ main.UAV };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-		auto shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite();
-		context->CSSetShader(shader, nullptr, 0);
+		context->CSSetShader(GetComputeDirectLighting(), nullptr, 0);
 
 		context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-
-		// Unbind mode texture SRV
-		if (vrStereoOpt.loaded) {
-			ID3D11ShaderResourceView* nullSRV = nullptr;
-			context->CSSetShaderResources(16, 1, &nullSRV);
-		}
-	}
-
-	// VR: Deactivate stencil culling now that geometry rendering is complete.
-	// Must happen before StereoBlend so the blend pass itself isn't stencil-blocked.
-	if (globals::game::isVR) {
-		auto& stereoOpt = globals::features::vr.stereoOpt;
-		if (stereoOpt.IsStencilActive()) {
-			stereoOpt.DeactivateStencil();
-		}
-	}
-
-	// VR: Stereo reprojection fills Eye 1 holes here (after DeferredComposite, before SSR/water/sky)
-	// so that ISReflectionsRayTracing sees valid pixels in both eyes.
-	if (globals::game::isVR) {
-		globals::features::vr.DrawStereoBlend();
 	}
 
 	// Clear
 	{
-		ID3D11ShaderResourceView* views[16]{ nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+		ID3D11ShaderResourceView* views[]{ nullptr, nullptr, nullptr };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
-		ID3D11UnorderedAccessView* uavs[3]{ nullptr, nullptr, nullptr };
+		ID3D11UnorderedAccessView* uavs[]{ nullptr };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 		ID3D11Buffer* buffers[1] = { nullptr };
@@ -426,9 +353,6 @@ void Deferred::DeferredPasses()
 
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
-
-	if (dynamicCubemaps.loaded)
-		dynamicCubemaps.PostDeferred();
 }
 
 void Deferred::EndDeferred()
@@ -566,6 +490,10 @@ void Deferred::ClearShaderCache()
 		mainCompositeInteriorCS->Release();
 		mainCompositeInteriorCS = nullptr;
 	}
+	if (directLightingCS) {
+		directLightingCS->Release();
+		directLightingCS = nullptr;
+	}
 }
 
 ID3D11ComputeShader* Deferred::GetComputeMainComposite()
@@ -624,6 +552,14 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 		mainCompositeInteriorCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}
 	return mainCompositeInteriorCS;
+}
+
+ID3D11ComputeShader* Deferred::GetComputeDirectLighting()
+{
+	if (!directLightingCS) {
+		directLightingCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Deferred\\DirectLightingCS.hlsl", {}, "cs_5_0"));
+	}
+	return directLightingCS;
 }
 
 void Deferred::Hooks::Main_RenderShadowMaps::thunk()
