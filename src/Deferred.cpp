@@ -100,13 +100,14 @@ void Deferred::SetupResources()
 		// TEMPORAL_AA_WATER_2
 
 		// Albedo
-		SetupRenderTarget(ALBEDO, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Specular
-		SetupRenderTarget(SPECULAR, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Reflectance
-		SetupRenderTarget(REFLECTANCE, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		SetupRenderTarget(ALBEDO, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Normal + Roughness
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Emissive
+		SetupRenderTarget(EMISSIVE, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+
+		// Specular
+		SetupRenderTarget(SPECULAR, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 
@@ -238,17 +239,17 @@ void Deferred::StartDeferred()
 	}
 
 	RE::RENDER_TARGET targets[8]{
-		RE::RENDER_TARGET::kMAIN,
+		ALBEDO,
 		RE::RENDER_TARGET::kMOTION_VECTOR,
 		NORMALROUGHNESS,
-		ALBEDO,
-		SPECULAR,
-		REFLECTANCE,
-		MASKS,
+		EMISSIVE,
+		RE::RENDER_TARGET::kNONE,
+		RE::RENDER_TARGET::kNONE,
+		RE::RENDER_TARGET::kNONE,
 		RE::RENDER_TARGET::kNONE
 	};
 
-	for (uint i = 2; i < 8; i++) {
+	for (uint i = 0; i < 8; i++) {
 		renderTargets[i] = targets[i];                                             // We must use unused targets to be indexable
 		setRenderTargetMode[i] = RE::BSGraphics::SetRenderTargetMode::SRTM_CLEAR;  // Dirty from last frame, this calls ClearRenderTargetView once
 	}
@@ -318,7 +319,7 @@ void Deferred::DeferredPasses()
 	auto main = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[0]];
 	auto normals = renderer->GetRuntimeData().renderTargets[forwardRenderTargets[2]];
 	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
+	auto reflectance = renderer->GetRuntimeData().renderTargets[EMISSIVE];
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
@@ -509,7 +510,7 @@ void Deferred::OverrideBlendStates()
 								blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 							}
 
-							// RT[5] = REFLECTANCE: enable alpha writes for POM depth data
+							// RT[5] = EMISSIVE: enable alpha writes for POM depth data
 							// stored in Reflectance.w, used by StereoBlendCS for depth-aware reprojection
 							blendDesc.RenderTarget[5].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 

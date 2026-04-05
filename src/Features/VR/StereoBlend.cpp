@@ -128,8 +128,8 @@ void VR::DrawStereoBlend()
 		ID3D11ShaderResourceView* modeSRV = globals::features::vr.stereoOpt.GetModeTextureSRV();
 		context->CSSetShaderResources(2, 1, &modeSRV);
 
-		// Bind REFLECTANCE SRV for POM depth offset (stored in .w by Lighting pass)
-		auto& reflectanceRT = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
+		// Bind EMISSIVE SRV for POM depth offset (stored in .w by Lighting pass)
+		auto& reflectanceRT = renderer->GetRuntimeData().renderTargets[EMISSIVE];
 		context->CSSetShaderResources(3, 1, &reflectanceRT.SRV);
 
 		ID3D11UnorderedAccessView* uavs[2]{ main.UAV, motionVectors.UAV };
