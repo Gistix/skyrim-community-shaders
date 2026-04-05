@@ -336,16 +336,10 @@ typedef VS_OUTPUT PS_INPUT;
 #if defined(DEFERRED)
 struct PS_OUTPUT
 {
-	float4 Diffuse: SV_Target0;
+	float4 Albedo: SV_Target0;
 	float4 MotionVectors: SV_Target1;
-	float4 NormalGlossiness: SV_Target2;
-	float4 Albedo: SV_Target3;
-	float4 Specular: SV_Target4;
-	float4 Reflectance: SV_Target5;
-	float4 Masks: SV_Target6;
-#	if defined(SNOW)
-	float4 Parameters: SV_Target7;
-#	endif
+	float4 NormalRoughness: SV_Target2;
+	float4 Emissive: SV_Target3;
 };
 #else
 struct PS_OUTPUT
@@ -3049,10 +3043,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	color.xyz = 0;
 #	endif
 
+float alpha = 0;
+
 #	if defined(LANDSCAPE) && !defined(LOD_LAND_BLEND)
-	psout.Diffuse.w = 0;
+	alpha = 0;
 #	else
-	float alpha = baseColor.w;
+	alpha = baseColor.w;
 #		if defined(EMAT) && !defined(LANDSCAPE)
 #			if defined(PARALLAX)
 	alpha = TexColorSampler.SampleBias(SampColorSampler, uvOriginal, SharedData::MipBias).w;
@@ -3153,44 +3149,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 	}
 #		endif  // ANISOTROPIC_ALPHA
-
-	psout.Diffuse.w = alpha;
 #	endif
 
-#	if defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
-	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {
-		if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 0) {
-			psout.Diffuse.xyz = Color::TurboColormap(LightLimitFix::NumStrictLights >= 7.0);
-		} else if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 1) {
-			psout.Diffuse.xyz = Color::TurboColormap((float)LightLimitFix::NumStrictLights / 15.0);
-		} else if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 2) {
-			psout.Diffuse.xyz = Color::TurboColormap((float)numClusteredLights / MAX_CLUSTER_LIGHTS);
-		} else {
-			psout.Diffuse.xyz = shadowColor.xyz;
-		}
-		baseColor.xyz = 0.0;
-	} else {
-		psout.Diffuse.xyz = color.xyz;
-	}
-#	else
-	psout.Diffuse.xyz = color.xyz;
-#	endif  // defined(LIGHT_LIMIT_FIX)
-
 	psout.MotionVectors.xy = screenMotionVector.xy;
-	psout.MotionVectors.zw = float2(0, psout.Diffuse.w);
+	psout.MotionVectors.zw = float2(0, alpha);
 
 #	if defined(DEFERRED)
+	psout.Albedo = float4(outputAlbedo, alpha);
 
 #		if defined(TERRAIN_BLENDING)
 	[flatten] if (SharedData::terrainBlendingSettings.Enabled)
 	{
-		psout.Diffuse.w = blendFactorTerrain;
+		psout.Albedo.w = blendFactorTerrain;
 	}
 #		endif
 
-	psout.MotionVectors.zw = float2(0.0, psout.Diffuse.w);
-	psout.Specular = float4(specularColor, psout.Diffuse.w);
-	psout.Albedo = float4(outputAlbedo, psout.Diffuse.w);
+	psout.MotionVectors.zw = float2(0.0, psout.Albedo.w);
 
 #		if defined(WETNESS_EFFECTS)
 	indirectLobeWeights.specular += wetnessReflectance;
@@ -3204,36 +3178,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// VR: store POM parallax amount for stereo reprojection depth correction.
 	// Read by StereoBlendCS to adjust Eye 1 (right eye) reprojection depth
 	// at POM-displaced surfaces. Not consumed on flat (SE/AE).
-	psout.Reflectance = float4(indirectLobeWeights.specular,
+	psout.Emissive = float4(indirectLobeWeights.specular,
 		(pixelOffset > 0.0) ? saturate(pixelOffset) : 0.0);
 #		else
-	psout.Reflectance = float4(indirectLobeWeights.specular, 0.0);
+	psout.Emissive = float4(indirectLobeWeights.specular, 0.0);
 #		endif
-	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(screenSpaceNormal), saturate(1.0 - material.Roughness), psout.Diffuse.w);
+	psout.NormalRoughness = float4(GBuffer::EncodeNormal(screenSpaceNormal), material.Roughness, psout.Albedo.w);
 
-#		if defined(SNOW)
-#			if defined(TRUE_PBR)
-	psout.Parameters.x = Color::RGBToLuminanceAlternative(specularColor);
-	psout.Parameters.y = 0;
-#			else
-	psout.Parameters.x = Color::RGBToLuminanceAlternative(lightsSpecularColor);
-#			endif
-	psout.Parameters.w = psout.Diffuse.w;
-#		endif
-
-#		if defined(SSS) && defined(SKIN)
-	psout.Masks = float4(saturate(baseColor.a), !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsBeastRace), Color::RGBToYCoCg(directionalAmbientColor).x, psout.Diffuse.w);
-#		else
-	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, psout.Diffuse.w);
-#		endif
-
-	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
-	psout.NormalGlossiness.w = stochasticBlend;
-#	endif
+	float stochasticBlend = (screenNoise * screenNoise) < psout.Albedo.w ? 1.0 : 0.0;
+	psout.NormalRoughness.w = stochasticBlend;
+#	else
+	psout.Diffuse.xyz = float4(color.xyz, alpha);
 
 	if ((!inWorld && !inReflection) && SharedData::linearLightingSettings.enableLinearLighting && !(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {
 		psout.Diffuse.xyz = Color::LinearToSrgb(psout.Diffuse.xyz);
 	}
+#	endif // DEFERRED
 
 	return psout;
 }
