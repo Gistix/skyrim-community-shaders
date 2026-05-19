@@ -34,6 +34,8 @@ public:
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
+	bool Active() const;
+
 	virtual void SetupResources() override;
 
 	ID3D11VertexShader* GetTerrainVertexShader();

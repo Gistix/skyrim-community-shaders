@@ -1,5 +1,7 @@
 #include "TerrainBlending.h"
 
+#include "Raytracing.h"
+
 #include "Deferred.h"
 #include "Globals.h"
 #include "ShaderCache.h"
@@ -227,7 +229,7 @@ namespace
 
 	bool IsEngineHookFeatureGateSatisfied(const TerrainBlending& a_singleton)
 	{
-		if (!globals::game::isVR || !a_singleton.loaded || !a_singleton.settings.Enabled) {
+		if (!globals::game::isVR || !a_singleton.loaded || !a_singleton.Active()) {
 			return false;
 		}
 
@@ -644,6 +646,22 @@ ID3D11ComputeShader* TerrainBlending::GetDepthBlendShader()
 	return depthBlendShader;
 }
 
+
+bool TerrainBlending::Active() const
+{
+	if (!loaded)
+		return false;
+
+	if (!settings.Enabled)
+		return false;
+
+	auto& rt = globals::features::raytracing;
+	if (rt.Active() && rt.IsPathTracing())
+		return false;
+
+	return true;
+}
+
 void TerrainBlending::SetupResources()
 {
 	auto renderer = globals::game::renderer;
@@ -844,7 +862,7 @@ void TerrainBlending::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 
 	singleton.averageEyePosition = Util::GetAverageEyePosition();
 
-	const bool tbActive = shaderCache->IsEnabled() && singleton.settings.Enabled;
+	const bool tbActive = shaderCache->IsEnabled() && singleton.Active();
 	const bool useBlendedDepthSRV = tbActive && ShouldUseBlendedDepthSRV();
 
 	if (tbActive) {
@@ -882,7 +900,7 @@ void TerrainBlending::Hooks::BSBatchRenderer__RenderPassImmediately::thunk(RE::B
 	auto& singleton = globals::features::terrainBlending;
 	auto shaderCache = globals::shaderCache;
 
-	if (shaderCache->IsEnabled() && singleton.settings.Enabled) {
+	if (shaderCache->IsEnabled() && singleton.Active()) {
 		if (singleton.renderDepth) {
 			// Entering or exiting terrain depth section
 			bool inTerrain = a_pass->shaderProperty && a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape);
@@ -967,7 +985,7 @@ void TerrainBlending::RenderTerrainBlendingPasses()
 {
 	ZoneScoped;
 
-	if (!settings.Enabled) {
+	if (!Active()) {
 		renderDepth = false;
 		renderTerrainDepth = false;
 		renderAltTerrain = false;
