@@ -153,10 +153,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 			}
 		}
 
-		upscaling.fidelityFX.Present(commandList, upscaling.ShouldUseFrameGenerationThisFrame(), isHDR); }, [&]() {
+		upscaling.fidelityFX.Present(commandList, upscaling.ShouldUseFrameGenerationThisFrame(), isHDR); 
+	}, [&]() {
 		// Present the frame
-		DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags)); });
-
+		DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags)); 
+	});
 
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
