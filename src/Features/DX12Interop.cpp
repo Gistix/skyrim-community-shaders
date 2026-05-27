@@ -207,24 +207,23 @@ void DX12Interop::SetupResources()
 	D3D11_TEXTURE2D_DESC mainDesc{};
 	main.texture->GetDesc(&mainDesc);
 
-	// Create depth buffer
-	auto texDesc = mainDesc;
-	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
-	sharedResources.depth = new WrappedResource(texDesc, d3d11Device.get(), d3d12Device.get());
-
-	// Create motion vector buffer
-	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	motionVector.texture->GetDesc(&texDesc);
-	mainDesc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
-	sharedResources.motionVector = new WrappedResource(texDesc, d3d11Device.get(), d3d12Device.get());
-
-	// 
+	// Main render target
 	mainDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
 	sharedResources.main = new WrappedResource(mainDesc, d3d11Device.get(), d3d12Device.get());
 
+	// Depth
+	mainDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	mainDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
+	sharedResources.depth = new WrappedResource(mainDesc, d3d11Device.get(), d3d12Device.get());
+
+	// Motion vector
+	mainDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+	mainDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
+	sharedResources.motionVector = new WrappedResource(mainDesc, d3d11Device.get(), d3d12Device.get());
+
 	// Upscaler reactive mask
-	mainDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 	mainDesc.Format = DXGI_FORMAT_R8_UNORM;
+	mainDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 	sharedResources.reactiveMask = new WrappedResource(mainDesc, d3d11Device.get(), d3d12Device.get());
 }
 
