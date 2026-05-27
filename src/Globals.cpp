@@ -2,6 +2,7 @@
 
 #include "Deferred.h"
 #include "Features/CloudShadows.h"
+#include "Features/DX12Interop.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
@@ -89,6 +90,7 @@ namespace globals
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
+		DX12Interop dx12Interop{};
 
 		namespace llf
 		{

@@ -36,6 +36,7 @@ struct WeatherEditor;
 struct ExponentialHeightFog;
 struct HDRDisplay;
 struct ScreenshotFeature;
+struct DX12Interop;
 
 class State;
 class Deferred;
@@ -96,6 +97,7 @@ namespace globals
 		extern WeatherEditor weatherEditor;
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
+		extern DX12Interop dx12Interop;
 
 		namespace llf
 		{

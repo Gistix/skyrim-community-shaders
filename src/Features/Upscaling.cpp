@@ -4,6 +4,7 @@
 #include "HDRDisplay.h"
 #include "Hooks.h"
 #include "State.h"
+#include "DX12Interop.h"
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
 #include "Upscaling/Streamline.h"
@@ -60,6 +61,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	DXGI_ADAPTER_DESC adapterDesc;
 	pAdapter->GetDesc(&adapterDesc);
 	globals::state->SetAdapterDescription(adapterDesc.Description);
+
+	auto& dx12Interop = globals::features::dx12Interop;
 
 	auto& upscaling = globals::features::upscaling;
 	upscaling.LoadUpscalingSDKs();
@@ -122,8 +125,9 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				pFeatureLevel,
 				ppImmediateContext));
 
-			upscaling.SetProxyD3D11Device(*ppDevice);
-			upscaling.SetProxyD3D11DeviceContext(*ppImmediateContext);
+			if (dx12Interop.loaded)
+				dx12Interop.Init(*ppDevice, *ppImmediateContext, pAdapter);
+
 			upscaling.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
 			upscaling.CreateProxyInterop();
 
@@ -1342,9 +1346,6 @@ void Upscaling::SetupResources()
 
 	rcas.Initialize();
 
-	if (d3d12SwapChainActive)
-		dx12SwapChain.CreateSharedResources();
-
 	copyDepthToSharedBufferPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\Upscaling\\CopyDepthToSharedBufferPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
 
 	// Setup HDR resources only when the HDR Display feature is loaded
@@ -1374,8 +1375,10 @@ void Upscaling::CopySharedD3D12Resources()
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
 
+	auto& sharedResources = globals::features::dx12Interop.sharedResources;
+
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	context->CopyResource(dx12SwapChain.motionVectorBufferShared12->resource11, motionVector.texture);
+	context->CopyResource(sharedResources.motionVector->resource11, motionVector.texture);
 
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
@@ -1410,7 +1413,7 @@ void Upscaling::CopySharedD3D12Resources()
 		context->PSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		// Set render target view for pixel shader output
-		ID3D11RenderTargetView* rtvs[1] = { dx12SwapChain.depthBufferShared12->rtv };
+		ID3D11RenderTargetView* rtvs[1] = { sharedResources.depth->rtv };
 		context->OMSetRenderTargets(ARRAYSIZE(rtvs), rtvs, nullptr);
 
 		context->PSSetShader(copyDepthToSharedBufferPS.get(), nullptr, 0);
@@ -1659,17 +1662,6 @@ void Upscaling::PostBackendDevice()
 bool Upscaling::HasFrameGenModule() const
 {
 	return fidelityFX.featureFSR3FG;
-}
-
-// Proxy interface methods
-void Upscaling::SetProxyD3D11Device(ID3D11Device* device)
-{
-	dx12SwapChain.SetD3D11Device(device);
-}
-
-void Upscaling::SetProxyD3D11DeviceContext(ID3D11DeviceContext* context)
-{
-	dx12SwapChain.SetD3D11DeviceContext(context);
 }
 
 void Upscaling::CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc)

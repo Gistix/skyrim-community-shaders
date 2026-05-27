@@ -50,11 +50,6 @@ public:
 class DX12SwapChain
 {
 public:
-	winrt::com_ptr<ID3D12Device> d3d12Device;
-	winrt::com_ptr<ID3D12CommandQueue> commandQueue;
-	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[2];
-	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[2];
-
 	IDXGISwapChain4* swapChain;
 
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
@@ -62,20 +57,9 @@ public:
 	WrappedResource* swapChainBufferWrapped;
 	WrappedResource* uiBufferWrapped;
 
-	// D3D12 interop resources for frame generation
-	WrappedResource* depthBufferShared12 = nullptr;
-	WrappedResource* motionVectorBufferShared12 = nullptr;
-
-	winrt::com_ptr<ID3D11Device5> d3d11Device;
-	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
-
-	winrt::com_ptr<ID3D11Fence> d3d11Fence;
-	winrt::com_ptr<ID3D12Fence> d3d12Fence;
-
 	winrt::com_ptr<ID3D12Resource> swapChainBuffers[2];
 
 	UINT frameIndex = 0;
-	UINT64 fenceValue = 0;
 
 	LARGE_INTEGER qpf;
 
@@ -86,14 +70,11 @@ public:
 	// Returns the current frame time (in seconds) for accurate FPS calculation when frame generation is active
 	float GetFrameTime() const;
 
-	void CreateD3D12Device(IDXGIAdapter* a_adapter);
 	void CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
 
 	void CreateInterop();
 
 	DXGISwapChainProxy* GetSwapChainProxy();
-	void SetD3D11Device(ID3D11Device* a_d3d11Device);
-	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);
 
 	HRESULT GetBuffer(void** ppSurface);
 	HRESULT Present(UINT SyncInterval, UINT Flags);
@@ -114,7 +95,4 @@ public:
 
 	// Get all resources needed for background blur in one call
 	BlurResources GetBlurResources() const;
-
-	// D3D12 interop resource management
-	void CreateSharedResources();
 };
