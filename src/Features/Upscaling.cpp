@@ -125,8 +125,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				pFeatureLevel,
 				ppImmediateContext));
 
-			if (dx12Interop.loaded)
-				dx12Interop.Init(*ppDevice, *ppImmediateContext, pAdapter);
+			dx12Interop.Init(*ppDevice, *ppImmediateContext, pAdapter);
 
 			upscaling.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
 			upscaling.CreateProxyInterop();
@@ -296,7 +295,10 @@ void Upscaling::DrawSettings()
 			}
 
 			if (fidelityFXMissing) {
-				Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
+				if (globals::features::dx12Interop.loaded)
+					Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
+				else
+					Util::Text::Warning("Warning: FidelityFX is disabled since DX12 Interop feature is disabled at launch.");
 
 				onlyRequiresRestart = false;
 			}
@@ -1619,7 +1621,11 @@ void Upscaling::LoadUpscalingSDKs()
 	// Initialize upscaling SDK components during plugin startup
 	// This ensures all SDKs are available before any D3D device creation
 	streamline.LoadInterposer();
-	fidelityFX.LoadFFX();  // Only for frame generation now
+
+	if (globals::features::dx12Interop.loaded)
+		fidelityFX.LoadFFX();  // Only for frame generation now
+	else
+		logger::warn("[Upscaling] Skipping FidelityFX initialization since DX12 Interop is not loaded; frame generation will be unavailable");
 }
 
 HANDLE Upscaling::GetFrameLatencyWaitableObject() const

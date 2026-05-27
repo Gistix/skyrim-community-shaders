@@ -107,7 +107,7 @@ void DX12Interop::InitializePIX()
 bool DX12Interop::D3D12Mode()
 {
 	auto& upscaling = globals::features::upscaling;
-	if (upscaling.loaded && upscaling.settings.frameGenerationMode)
+	if (upscaling.loaded && upscaling.HasFrameGenModule())
 		return true;
 
 	return false;
