@@ -78,10 +78,6 @@ static std::wstring GetLatestWinPixGpuCapturerPath()
 		}
 	}
 
-	if (newestVersionFound.empty()) {
-		// TODO: Error, no PIX installation found
-	}
-
 	return pixInstallationPath / newestVersionFound / L"WinPixGpuCapturer.dll";
 }
 
@@ -90,19 +86,22 @@ void DX12Interop::InitializePIX()
 	if (!settings.EnablePIXCapture)
 		return;
 
+	HMODULE handle = GetModuleHandle(L"WinPixGpuCapturer.dll");
+
 	// Check to see if a copy of WinPixGpuCapturer.dll has already been injected into the application.
 	// This may happen if the application is launched through the PIX UI.
-	if (GetModuleHandle(L"WinPixGpuCapturer.dll") == 0) {
+	if (handle == 0) {
 		auto pixGPUCapturerPath = GetLatestWinPixGpuCapturerPath();
 
 		if (pixGPUCapturerPath.empty()) {
-			logger::warn("[RT] PIX capture is enabled but binaries where not found.");
+			logger::warn("[DX12Interop] PIX capture is enabled but binaries where not found.");
 		} else {
-			LoadLibrary(pixGPUCapturerPath.c_str());
+			handle = LoadLibrary(pixGPUCapturerPath.c_str());
 		}
 	}
 
-	DX::ThrowIfFailed(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&ga)));
+	if (handle)
+		DX::ThrowIfFailed(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&ga)));
 }
 
 bool DX12Interop::D3D12Mode()
