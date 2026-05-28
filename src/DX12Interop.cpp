@@ -12,20 +12,6 @@ DX12Interop::~DX12Interop()
 	}
 }
 
-bool DX12Interop::Active() const
-{
-	return active;
-}
-
-bool DX12Interop::D3D12Mode()
-{
-	auto& upscaling = globals::features::upscaling;
-	if (upscaling.loaded && upscaling.HasFrameGenModule())
-		return true;
-
-	return false;
-}
-
 void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immediateContext, IDXGIAdapter* a_adapter)
 {
 	if (!D3D12Mode())
@@ -41,6 +27,21 @@ void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immed
 	CreateInterop();
 }
 
+
+bool DX12Interop::Active() const
+{
+	return active;
+}
+
+bool DX12Interop::D3D12Mode()
+{
+	auto& upscaling = globals::features::upscaling;
+	if (upscaling.loaded && upscaling.HasFrameGenModule())
+		return true;
+
+	return false;
+}
+
 void DX12Interop::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
 	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
@@ -52,12 +53,6 @@ void DX12Interop::CreateD3D12Device(IDXGIAdapter* a_adapter)
 	queueDesc.NodeMask = 0;
 
 	DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
-
-	for (size_t i = 0; i < kMaxFramesInFlight; i++) {
-		DX::ThrowIfFailed(d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frameContexts[i].commandAllocator)));
-		DX::ThrowIfFailed(d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, frameContexts[i].commandAllocator.get(), nullptr, IID_PPV_ARGS(&frameContexts[i].commandList)));
-		frameContexts[i].commandList->Close();
-	}
 }
 
 void DX12Interop::CreateInterop()
