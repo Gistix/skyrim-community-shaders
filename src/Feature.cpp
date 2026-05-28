@@ -3,7 +3,6 @@
 #include "FeatureIssues.h"
 #include "FeatureVersions.h"
 #include "Features/CloudShadows.h"
-#include "Features/DX12Interop.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
@@ -246,8 +245,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::linearLighting,
 		&globals::features::unifiedWater,
 		&globals::features::exponentialHeightFog,
-		&globals::features::hdrDisplay,
-		&globals::features::dx12Interop
+		&globals::features::hdrDisplay
 	};
 
 	if (REL::Module::IsVR()) {

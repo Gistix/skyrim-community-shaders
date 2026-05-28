@@ -11,7 +11,7 @@
 
 #include <directx/d3dx12.h>
 
-#include "Features/DX12Interop/WrappedResource.h"
+#include "DX12Interop/WrappedResource.h"
 
 struct DXGISwapChainProxy : IDXGISwapChain
 {

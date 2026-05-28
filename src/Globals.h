@@ -97,7 +97,6 @@ namespace globals
 		extern WeatherEditor weatherEditor;
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
-		extern DX12Interop dx12Interop;
 
 		namespace llf
 		{
@@ -263,6 +262,7 @@ namespace globals
 	extern Deferred* deferred;
 	extern Menu* menu;
 	extern SIE::ShaderCache* shaderCache;
+	extern DX12Interop* dx12Interop;
 
 	void OnInit();
 	void ReInit();

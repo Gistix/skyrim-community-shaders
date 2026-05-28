@@ -62,7 +62,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	pAdapter->GetDesc(&adapterDesc);
 	globals::state->SetAdapterDescription(adapterDesc.Description);
 
-	auto& dx12Interop = globals::features::dx12Interop;
+	auto dx12Interop = globals::dx12Interop;
 
 	auto& upscaling = globals::features::upscaling;
 	upscaling.LoadUpscalingSDKs();
@@ -125,7 +125,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				pFeatureLevel,
 				ppImmediateContext));
 
-			dx12Interop.Init(*ppDevice, *ppImmediateContext, pAdapter);
+			dx12Interop->Init(*ppDevice, *ppImmediateContext, pAdapter);
 
 			upscaling.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
 			upscaling.CreateProxyInterop();
@@ -295,10 +295,7 @@ void Upscaling::DrawSettings()
 			}
 
 			if (fidelityFXMissing) {
-				if (globals::features::dx12Interop.loaded)
-					Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
-				else
-					Util::Text::Warning("Warning: FidelityFX is disabled since DX12 Interop feature is disabled at launch.");
+				Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
 
 				onlyRequiresRestart = false;
 			}
@@ -1377,7 +1374,7 @@ void Upscaling::CopySharedD3D12Resources()
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
 
-	auto& sharedResources = globals::features::dx12Interop.sharedResources;
+	auto& sharedResources = globals::dx12Interop->sharedResources;
 
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	context->CopyResource(sharedResources.motionVector->resource11, motionVector.texture);
@@ -1621,11 +1618,7 @@ void Upscaling::LoadUpscalingSDKs()
 	// Initialize upscaling SDK components during plugin startup
 	// This ensures all SDKs are available before any D3D device creation
 	streamline.LoadInterposer();
-
-	if (globals::features::dx12Interop.loaded)
-		fidelityFX.LoadFFX();  // Only for frame generation now
-	else
-		logger::warn("[Upscaling] Skipping FidelityFX initialization since DX12 Interop is not loaded; frame generation will be unavailable");
+	fidelityFX.LoadFFX();  // Only for frame generation now
 }
 
 HANDLE Upscaling::GetFrameLatencyWaitableObject() const

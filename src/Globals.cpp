@@ -1,8 +1,8 @@
 #include "Globals.h"
 
 #include "Deferred.h"
+#include "DX12Interop.h"
 #include "Features/CloudShadows.h"
-#include "Features/DX12Interop.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
@@ -90,7 +90,6 @@ namespace globals
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
-		DX12Interop dx12Interop{};
 
 		namespace llf
 		{
@@ -156,6 +155,7 @@ namespace globals
 	Deferred* deferred = nullptr;
 	Menu* menu = nullptr;
 	SIE::ShaderCache* shaderCache = nullptr;
+	DX12Interop* dx12Interop = nullptr;
 
 	void OnInit()
 	{
@@ -163,6 +163,7 @@ namespace globals
 		state = State::GetSingleton();
 		menu = Menu::GetSingleton();
 		deferred = Deferred::GetSingleton();
+		dx12Interop = DX12Interop::GetSingleton();
 	}
 
 	void ReInit()

@@ -4,19 +4,6 @@
 
 #include "Features/Upscaling.h"
 
-// Microsoft Pix
-#include <filesystem>
-#include <shlobj.h>
-#include <windows.h>
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	DX12Interop::Settings,
-	EnablePIXCapture,
-	EnableDebugDevice,
-	DebugBreakCorruption,
-	DebugBreakError,
-	DebugBreakWarning)
-
 DX12Interop::~DX12Interop()
 {
 	if (fenceEvent) {
@@ -28,80 +15,6 @@ DX12Interop::~DX12Interop()
 bool DX12Interop::Active() const
 {
 	return active;
-}
-
-void DX12Interop::RestoreDefaultSettings()
-{
-	settings = {};
-}
-
-void DX12Interop::LoadSettings(json& o_json)
-{
-	settings = o_json;
-}
-
-void DX12Interop::SaveSettings(json& o_json)
-{
-	o_json = settings;
-}
-
-
-void DX12Interop::DrawSettings()
-{
-	ImGui::Checkbox("Enable PIX Capture", &settings.EnablePIXCapture);
-
-	ImGui::Checkbox("Enable Debug Device", &settings.EnableDebugDevice);
-
-	if (settings.EnableDebugDevice) {
-		ImGui::Checkbox("Break on corruption", &settings.DebugBreakCorruption);
-		ImGui::Checkbox("Break on error", &settings.DebugBreakError);
-		ImGui::Checkbox("Break on warning", &settings.DebugBreakWarning);
-
-	}
-}
-
-static std::wstring GetLatestWinPixGpuCapturerPath()
-{
-	LPWSTR programFilesPath = nullptr;
-	SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, NULL, &programFilesPath);
-
-	std::filesystem::path pixInstallationPath = programFilesPath;
-	pixInstallationPath /= "Microsoft PIX";
-
-	std::wstring newestVersionFound;
-
-	for (auto const& directory_entry : std::filesystem::directory_iterator(pixInstallationPath)) {
-		if (directory_entry.is_directory()) {
-			if (newestVersionFound.empty() || newestVersionFound < directory_entry.path().filename().c_str()) {
-				newestVersionFound = directory_entry.path().filename().c_str();
-			}
-		}
-	}
-
-	return pixInstallationPath / newestVersionFound / L"WinPixGpuCapturer.dll";
-}
-
-void DX12Interop::InitializePIX()
-{
-	if (!settings.EnablePIXCapture)
-		return;
-
-	HMODULE handle = GetModuleHandle(L"WinPixGpuCapturer.dll");
-
-	// Check to see if a copy of WinPixGpuCapturer.dll has already been injected into the application.
-	// This may happen if the application is launched through the PIX UI.
-	if (handle == 0) {
-		auto pixGPUCapturerPath = GetLatestWinPixGpuCapturerPath();
-
-		if (pixGPUCapturerPath.empty()) {
-			logger::warn("[DX12Interop] PIX capture is enabled but binaries where not found.");
-		} else {
-			handle = LoadLibrary(pixGPUCapturerPath.c_str());
-		}
-	}
-
-	if (handle)
-		DX::ThrowIfFailed(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&ga)));
 }
 
 bool DX12Interop::D3D12Mode()
@@ -123,8 +36,6 @@ void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immed
 	SetD3D11Device(a_d3d11Device);
 	SetD3D11DeviceContext(a_immediateContext);
 
-	InitializePIX();
-
 	CreateD3D12Device(a_adapter);
 
 	CreateInterop();
@@ -132,28 +43,7 @@ void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immed
 
 void DX12Interop::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
-	if (settings.EnableDebugDevice) {
-		winrt::com_ptr<ID3D12Debug3> debugController;
-		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-			debugController->EnableDebugLayer();
-			debugController->SetEnableGPUBasedValidation(FALSE);
-		} else {
-			logger::critical("[DX12Interop] Debug layer creation failed.");
-		}		
-	}
-
 	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
-
-	if (settings.EnableDebugDevice) {
-		winrt::com_ptr<ID3D12InfoQueue> infoQueue;
-		if (SUCCEEDED(d3d12Device->QueryInterface(IID_PPV_ARGS(&infoQueue)))) {
-			infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, settings.DebugBreakCorruption ? TRUE : FALSE);
-			infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, settings.DebugBreakError ? TRUE : FALSE);
-			infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, settings.DebugBreakWarning ? TRUE : FALSE);
-		} else {
-			logger::critical("[DX12Interop] Debug break creation failed.");
-		}
-	}
 
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -162,12 +52,6 @@ void DX12Interop::CreateD3D12Device(IDXGIAdapter* a_adapter)
 	queueDesc.NodeMask = 0;
 
 	DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
-
-	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-	DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&computeCommandQueue)));
-
-	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-	DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&copyCommandQueue)));
 
 	for (size_t i = 0; i < kMaxFramesInFlight; i++) {
 		DX::ThrowIfFailed(d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&frameContexts[i].commandAllocator)));

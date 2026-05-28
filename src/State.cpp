@@ -5,6 +5,7 @@
 #include <pystring/pystring.h>
 
 #include "Deferred.h"
+#include "DX12Interop.h"
 #include "FeatureIssues.h"
 #include "Features/CloudShadows.h"
 #include "Features/HDRDisplay.h"
@@ -214,6 +215,7 @@ void State::Setup()
 
 	Feature::ForEachLoadedFeature("SetupResources", [](Feature* feature) { feature->SetupResources(); });
 	globals::deferred->SetupResources();
+	globals::dx12Interop->SetupResources();
 
 	// Load per-weather settings after features are setup
 	WeatherManager::GetSingleton()->LoadPerWeatherSettingsFromDisk();

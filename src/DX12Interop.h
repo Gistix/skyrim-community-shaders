@@ -9,43 +9,22 @@
 #include <d3d11_4.h>
 #include <directx/d3dx12.h>
 
-#define NTDDI_VERSION NTDDI_WINBLUE
-
-#include <DXProgrammableCapture.h>
-
-
-struct DX12Interop : public Feature
+struct DX12Interop
 {
+	static DX12Interop* GetSingleton()
+	{
+		static DX12Interop singleton;
+		return &singleton;
+	}
+
 	~DX12Interop();
 
-	virtual inline std::string GetName() override { return "DirectX 12 Interoperability"; }
-	virtual inline std::string GetShortName() override { return "DX12Interop"; }
-	virtual bool IsCore() const override { return true; }
-
-	// Settings & UI
-	virtual void RestoreDefaultSettings() override;
-	virtual void LoadSettings(json& o_json) override;
-	virtual void SaveSettings(json& o_json) override;
-	virtual void DrawSettings() override;
-
 	// Resources
-	virtual void SetupResources() override;
-
-	struct Settings
-	{
-		bool EnablePIXCapture = false;
-
-		bool EnableDebugDevice = false;
-		bool DebugBreakCorruption = true;
-		bool DebugBreakError = true;
-		bool DebugBreakWarning = false;
-	} settings;
+	void SetupResources();
 
 	winrt::com_ptr<ID3D12Device5> d3d12Device;
 
 	winrt::com_ptr<ID3D12CommandQueue> commandQueue;
-	winrt::com_ptr<ID3D12CommandQueue> computeCommandQueue;
-	winrt::com_ptr<ID3D12CommandQueue> copyCommandQueue;
 
 	struct FrameContext
 	{
@@ -73,8 +52,6 @@ struct DX12Interop : public Feature
 
 	winrt::com_ptr<ID3D11Fence> d3d11Fence;
 	winrt::com_ptr<ID3D12Fence> d3d12Fence;
-
-	winrt::com_ptr<IDXGraphicsAnalysis> ga = nullptr;
 
 	bool active = false;
 
@@ -140,7 +117,6 @@ private:
 	void CreateInterop();
 	void SetD3D11Device(ID3D11Device* a_d3d11Device);
 	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);
-	void InitializePIX();
 	void CreateD3D12Device(IDXGIAdapter* a_adapter);
 	UINT GetFrameContextIndex() const;
 };
