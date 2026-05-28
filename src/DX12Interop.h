@@ -53,8 +53,6 @@ struct DX12Interop
 	winrt::com_ptr<ID3D11Fence> d3d11Fence;
 	winrt::com_ptr<ID3D12Fence> d3d12Fence;
 
-	bool active = false;
-
 	void Init(ID3D11Device* d3d11Device, ID3D11DeviceContext* a_immediateContext, IDXGIAdapter* a_adapter);
 
 	// Fences the GPU, waits for D3D11 to be idle, executes D3D12 commands in the provided function, then waits for D3D12 to be idle before returning.
@@ -114,6 +112,8 @@ struct DX12Interop
 	static bool D3D12Mode();
 
 private:
+	bool active = false;
+
 	void CreateInterop();
 	void SetD3D11Device(ID3D11Device* a_d3d11Device);
 	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);

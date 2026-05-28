@@ -85,6 +85,9 @@ void DX12Interop::SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context)
 
 void DX12Interop::SetupResources()
 {
+	if (!active)
+		return;
+
 	auto renderer = globals::game::renderer;
 
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
