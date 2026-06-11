@@ -5,12 +5,58 @@
 #include "Features/Upscaling.h"
 #include "Features/Raytracing.h"
 
+// Microsoft Pix
+#include <filesystem>
+#include <shlobj.h>
+#include <windows.h>
+
 DX12Interop::~DX12Interop()
 {
 	if (fenceEvent) {
 		CloseHandle(fenceEvent);
 		fenceEvent = nullptr;
 	}
+}
+
+void DX12Interop::InitializePIX()
+{
+	auto getLatestWinPixGpuCapturerPath = [] {
+		LPWSTR programFilesPath = nullptr;
+		SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, NULL, &programFilesPath);
+
+		std::filesystem::path pixInstallationPath = programFilesPath;
+		pixInstallationPath /= "Microsoft PIX";
+
+		std::wstring newestVersionFound;
+
+		for (auto const& directory_entry : std::filesystem::directory_iterator(pixInstallationPath)) {
+			if (directory_entry.is_directory()) {
+				if (newestVersionFound.empty() || newestVersionFound < directory_entry.path().filename().c_str()) {
+					newestVersionFound = directory_entry.path().filename().c_str();
+				}
+			}
+		}
+
+		if (newestVersionFound.empty()) {
+			// TODO: Error, no PIX installation found
+		}
+
+		return std::wstring{ pixInstallationPath / newestVersionFound / L"WinPixGpuCapturer.dll" };
+	};
+
+	// Check to see if a copy of WinPixGpuCapturer.dll has already been injected into the application.
+	// This may happen if the application is launched through the PIX UI.
+	if (GetModuleHandleW(L"WinPixGpuCapturer.dll") == 0) {
+		auto pixGPUCapturerPath = getLatestWinPixGpuCapturerPath();
+
+		if (pixGPUCapturerPath.empty()) {
+			logger::warn("[DX12Interop] PIX capture is enabled but binaries where not found.");
+		} else {
+			LoadLibraryW(pixGPUCapturerPath.c_str());
+		}
+	}
+
+	DX::ThrowIfFailed(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&ga)));
 }
 
 void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immediateContext, IDXGIAdapter* a_adapter)
@@ -22,6 +68,8 @@ void DX12Interop::Init(ID3D11Device* a_d3d11Device, ID3D11DeviceContext* a_immed
 
 	SetD3D11Device(a_d3d11Device);
 	SetD3D11DeviceContext(a_immediateContext);
+
+	InitializePIX();
 
 	CreateD3D12Device(a_adapter);
 
