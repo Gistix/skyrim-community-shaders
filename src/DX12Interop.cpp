@@ -207,3 +207,9 @@ UINT DX12Interop::GetFrameContextIndex() const
 {
 	return globals::state->frameCount % kMaxFramesInFlight;
 }
+
+void DX12Interop::StartCapture()
+{
+	pixCapture = true;
+	pixCaptureStarted = false;
+}

@@ -1314,6 +1314,14 @@ void Raytracing::DeferredPasses()
 	// TODO: Implement double buffering to avoid stalling the CPU while waiting for GPU results
 	creationEngineRaytracing->WaitExecution();
 
+	auto dx12Interop = globals::dx12Interop;
+	if (dx12Interop->pixCapture && dx12Interop->pixCaptureStarted) {
+		dx12Interop->ga->EndCapture();
+		dx12Interop->pixCapture = false;
+		dx12Interop->pixCaptureStarted = false;
+	}
+
+
 	if (settings.PerfOverlay != OverlayMode::None)
 		creationEngineRaytracing->GetPassTimings(passTimings);
 

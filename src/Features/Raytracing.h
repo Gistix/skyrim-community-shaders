@@ -750,6 +750,12 @@ struct Raytracing : public OverlayFeature
 
 					rt.creationEngineRaytracing->UpdateCamera();
 
+					auto dx12Interop = globals::dx12Interop;
+					if (dx12Interop->pixCapture && !dx12Interop->pixCaptureStarted) {
+						dx12Interop->pixCaptureStarted = true;
+						dx12Interop->ga->BeginCapture();
+					}
+
 					// Executes the render graph for path tracing, no dependecy on any game render target so we start as early as possible
 					if (rt.Mode() == CreationEngineRaytracing::Mode::PathTracing) {
 						// Clear Depth if culling is enabled
