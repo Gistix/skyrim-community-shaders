@@ -694,9 +694,9 @@ void Raytracing::DrawDebugSettings()
 		const auto mainLabel = StableLabel(T(TKEY("debug_main"), "Main"), "Main");
 		if (ImGui::TreeNode(mainLabel.c_str())) {
 			D3D11_TEXTURE2D_DESC desc;
-			mainTexture->resource11->GetDesc(&desc);
+			mainTexture[frameIndex]->resource11->GetDesc(&desc);
 
-			ImGui::Image(mainTexture->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
+			ImGui::Image(mainTexture[frameIndex]->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
 			ImGui::TreePop();
 		}
 
@@ -712,9 +712,9 @@ void Raytracing::DrawDebugSettings()
 		const auto diffuseAlbedoLabel = StableLabel(T(TKEY("debug_diffuse_albedo"), "Diffuse Albedo"), "DiffuseAlbedo");
 		if (ImGui::TreeNode(diffuseAlbedoLabel.c_str())) {
 			D3D11_TEXTURE2D_DESC desc;
-			diffuseAlbedoTexture->resource11->GetDesc(&desc);
+			diffuseAlbedoTexture[frameIndex]->resource11->GetDesc(&desc);
 
-			ImGui::Image(diffuseAlbedoTexture->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
+			ImGui::Image(diffuseAlbedoTexture[frameIndex]->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
 			ImGui::TreePop();
 		}
 
@@ -1027,12 +1027,14 @@ void Raytracing::SetupResources()
 
 		// Diffuse Albedo Texture
 		{
-			CreationEngineRaytracing::SharedTexture main;
-			CreationEngineRaytracing::SharedTexture diffuseAlbedo;
-			creationEngineRaytracing->GetSharedTextures(main, diffuseAlbedo);
+			eastl::array<CreationEngineRaytracing::SharedTexture, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> mainTextures;
+			eastl::array<CreationEngineRaytracing::SharedTexture, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> diffuseAlbedoTextures;
+			creationEngineRaytracing->GetSharedTextures(mainTextures.data(), diffuseAlbedoTextures.data());
 
-			mainTexture = eastl::make_unique<WrappedResource>(main.native, main.shared);
-			diffuseAlbedoTexture = eastl::make_unique<WrappedResource>(diffuseAlbedo.native, diffuseAlbedo.shared);
+			for (size_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
+				mainTexture[i] = eastl::make_unique<WrappedResource>(mainTextures[i].native, mainTextures[i].shared);
+				diffuseAlbedoTexture[i] = eastl::make_unique<WrappedResource>(diffuseAlbedoTextures[i].native, diffuseAlbedoTextures[i].shared);
+			}
 		}
 	}
 
@@ -1254,7 +1256,7 @@ void Raytracing::ConvertTextures()
 
 	ID3D11UnorderedAccessView* uavs[] = {
 		normalRoughnessTexture->uav,
-		diffuseAlbedoTexture->uav
+		diffuseAlbedoTexture[frameIndex]->uav
 	};
 
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
@@ -1301,18 +1303,14 @@ void Raytracing::DeferredPasses()
 		ptMotionVectorsTexture.reset();
 	}
 
-	if (Mode() == CreationEngineRaytracing::Mode::GlobalIllumination) {
+	if (Mode() == CreationEngineRaytracing::Mode::GlobalIllumination)
 		ConvertTextures();
 
-		globals::dx12Interop->Fence([&]() {
-			// Executes the render graph for Global Illumination, depends on gbuffer render targets so we call it late
-			creationEngineRaytracing->Execute();
-		});
-	}
+	globals::dx12Interop->Fence([&]() {
+		creationEngineRaytracing->Execute();
+	});
 
-	// Waits for execution to finish (blocks CPU)
-	// TODO: Implement double buffering to avoid stalling the CPU while waiting for GPU results
-	creationEngineRaytracing->WaitExecution();
+	frameIndex = creationEngineRaytracing->WaitExecution();
 
 	if (settings.PerfOverlay != OverlayMode::None)
 		creationEngineRaytracing->GetPassTimings(passTimings);
@@ -1366,7 +1364,7 @@ void Raytracing::DeferredPasses()
 			ID3D11Buffer* cb = screenCB->CB();
 			context->CSSetConstantBuffers(0, 1, &cb);
 
-			context->CSSetShaderResources(0, 1, &mainTexture->srv);
+			context->CSSetShaderResources(0, 1, &mainTexture[frameIndex]->srv);
 
 			ID3D11UnorderedAccessView* uav = main.UAV;
 			context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
@@ -1388,7 +1386,7 @@ void Raytracing::DeferredPasses()
 			context->CSSetConstantBuffers(0, 1, &cb);
 
 			ID3D11ShaderResourceView* srvs[] = {
-				mainTexture->srv,
+				mainTexture[frameIndex]->srv,
 				ptMotionVectorsTexture->srv
 			};
 			context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
@@ -1509,7 +1507,7 @@ void Raytracing::GetRayReconstructionInputs(ID3D12Resource*& diffuseAlbedo, ID3D
 	if (Mode() != CreationEngineRaytracing::Mode::GlobalIllumination && Mode() != CreationEngineRaytracing::Mode::PathTracing)
 		return;
 
-	diffuseAlbedo = diffuseAlbedoTexture->GetResource();
+	diffuseAlbedo = diffuseAlbedoTexture[frameIndex]->GetResource();
 	normalRoughness = normalRoughnessTexture->GetResource();
 
 	creationEngineRaytracing->GetRRInput(specularAlbedo, specHitDistance);

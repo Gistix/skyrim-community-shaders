@@ -36,6 +36,8 @@
 
 struct CreationEngineRaytracing
 {
+	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
 	enum class Mode
 	{
 		None,
@@ -429,7 +431,7 @@ struct CreationEngineRaytracing
 	using InitializeFn = void (*)(Settings);
 	using UpdateCameraFn = void (*)();
 	using ExecuteFn = void (*)();
-	using WaitExecutionFn = void (*)();
+	using WaitExecutionFn = uint32_t (*)();
 	using PostExecutionFn = void (*)();
 	using GetResolutionFn = void (*)(uint32_t&, uint32_t&);
 	using SetResolutionFn = void (*)(uint32_t, uint32_t);
@@ -440,7 +442,7 @@ struct CreationEngineRaytracing
 	using UpdateSettingsFn = void (*)(Settings);
 	using GetRRInputFn = void (*)(ID3D12Resource*&, ID3D12Resource*&);
 	using SetSharedTexturesFn = void (*)(ID3D12Resource*, ID3D12Resource*, ID3D12Resource*);
-	using GetSharedTexturesFn = void (*)(SharedTexture&, SharedTexture&);
+	using GetSharedTexturesFn = void (*)(SharedTexture*, SharedTexture*);
 	using UpdateJitterFn = void (*)(float2);
 	using SetSkinDetailNormalFn = void (*)(ID3D12Resource*);
 	using SetPTOutputTargetsFn = void (*)(ID3D12Resource*, ID3D12Resource*);
@@ -693,7 +695,10 @@ struct Raytracing : public OverlayFeature
 
 	winrt::com_ptr<ID3D11SamplerState> samplerState = nullptr;
 
-	eastl::unique_ptr<WrappedResource> mainTexture = nullptr;
+	eastl::array<eastl::unique_ptr<WrappedResource>, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> mainTexture;
+	eastl::array<eastl::unique_ptr<WrappedResource>, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> diffuseAlbedoTexture;
+
+	uint32_t frameIndex;
 
 	eastl::unique_ptr<WrappedResource> ptDepthTexture = nullptr;
 	eastl::unique_ptr<WrappedResource> ptMotionVectorsTexture = nullptr;
@@ -701,8 +706,6 @@ struct Raytracing : public OverlayFeature
 	winrt::com_ptr<ID3D12Resource> albedoTexture = nullptr;
 	eastl::unique_ptr<WrappedResource> normalRoughnessTexture = nullptr;
 	winrt::com_ptr<ID3D12Resource> gnmaoTexture = nullptr;
-
-	eastl::unique_ptr<WrappedResource> diffuseAlbedoTexture = nullptr;
 
 	eastl::unique_ptr<WrappedResource> skyHemisphere = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> cubeToHemiCS = nullptr;
@@ -751,7 +754,6 @@ struct Raytracing : public OverlayFeature
 
 					rt.creationEngineRaytracing->UpdateCamera();
 
-					// Executes the render graph for path tracing, no dependecy on any game render target so we start as early as possible
 					if (rt.Mode() == CreationEngineRaytracing::Mode::PathTracing) {
 						if (rt.IsPathTracingCull()) {
 							auto renderer = globals::game::renderer;
@@ -776,8 +778,6 @@ struct Raytracing : public OverlayFeature
 								context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].RTV, clearColor);
 							}
 						}
-
-						rt.creationEngineRaytracing->Execute();
 					}
 				}
 
