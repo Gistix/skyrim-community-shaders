@@ -289,6 +289,114 @@ HRESULT WINAPI hk_CreateDXGIFactory(REFIID, void** ppFactory)
 	return ptrCreateDXGIFactory(__uuidof(IDXGIFactory4), ppFactory);
 }
 
+struct D3D11On12SwapChainHook
+{
+	static inline winrt::com_ptr<ID3D11On12Device1> d3d11On12Device;
+	static inline winrt::com_ptr<ID3D11Resource> wrappedBuffers[3];
+	static inline UINT bufferCount = 0;
+
+	using GetBufferFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, REFIID, void**);
+	using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+
+	static inline GetBufferFn origGetBuffer = nullptr;
+	static inline PresentFn origPresent = nullptr;
+	static inline bool installed = false;
+
+	static HRESULT STDMETHODCALLTYPE hkGetBuffer(IDXGISwapChain* pSwapChain, UINT Buffer, REFIID riid, void** ppSurface)
+	{
+		if (riid == __uuidof(ID3D11Texture2D)) {
+			if (Buffer >= bufferCount) {
+				return E_INVALIDARG;
+			}
+
+			if (!wrappedBuffers[Buffer]) {
+				winrt::com_ptr<ID3D12Resource> d3d12Resource;
+				HRESULT hr = origGetBuffer(pSwapChain, Buffer, IID_PPV_ARGS(d3d12Resource.put()));
+				if (FAILED(hr)) {
+					logger::error("[D3D11On12] Failed to get D3D12 back buffer {}: {:x}", Buffer, static_cast<uint32_t>(hr));
+					return hr;
+				}
+
+				D3D11_RESOURCE_FLAGS rf11 = {};
+				rf11.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+				winrt::com_ptr<ID3D11Resource> wrapped;
+				hr = d3d11On12Device->CreateWrappedResource(
+					d3d12Resource.get(),
+					&rf11,
+					D3D12_RESOURCE_STATE_RENDER_TARGET,
+					D3D12_RESOURCE_STATE_PRESENT,
+					IID_PPV_ARGS(wrapped.put()));
+
+				if (FAILED(hr)) {
+					logger::error("[D3D11On12] CreateWrappedResource failed for buffer {}: {:x}", Buffer, static_cast<uint32_t>(hr));
+					return hr;
+				}
+
+				wrappedBuffers[Buffer] = wrapped;
+
+				ID3D11Resource* resources[] = { wrapped.get() };
+				d3d11On12Device->AcquireWrappedResources(resources, 1);
+
+				logger::info("[D3D11On12] Wrapped swapchain buffer {} (D3D12 -> D3D11)", Buffer);
+			}
+
+			return wrappedBuffers[Buffer]->QueryInterface(riid, ppSurface);
+		}
+
+		return origGetBuffer(pSwapChain, Buffer, riid, ppSurface);
+	}
+
+	static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
+	{
+		ID3D11Resource* resources[3]{};
+		UINT count = 0;
+		for (UINT i = 0; i < bufferCount; i++) {
+			if (wrappedBuffers[i]) {
+				resources[count++] = wrappedBuffers[i].get();
+			}
+		}
+		if (count > 0) {
+			d3d11On12Device->ReleaseWrappedResources(resources, count);
+		}
+
+		HRESULT hr = origPresent(pSwapChain, SyncInterval, Flags);
+
+		if (count > 0) {
+			d3d11On12Device->AcquireWrappedResources(resources, count);
+		}
+
+		return hr;
+	}
+
+	static void Install(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, UINT a_bufferCount)
+	{
+		if (installed)
+			return;
+
+		HRESULT hr = pDevice->QueryInterface(IID_PPV_ARGS(d3d11On12Device.put()));
+		if (FAILED(hr)) {
+			logger::error("[D3D11On12] Failed to QI for ID3D11On12Device1: {:x}", static_cast<uint32_t>(hr));
+			return;
+		}
+
+		bufferCount = a_bufferCount;
+
+		auto vtable = *reinterpret_cast<uintptr_t**>(pSwapChain);
+		origPresent = reinterpret_cast<PresentFn>(vtable[8]);
+		origGetBuffer = reinterpret_cast<GetBufferFn>(vtable[9]);
+
+		DWORD oldProtect;
+		VirtualProtect(&vtable[8], 2 * sizeof(uintptr_t), PAGE_READWRITE, &oldProtect);
+		vtable[8] = reinterpret_cast<uintptr_t>(&hkPresent);
+		vtable[9] = reinterpret_cast<uintptr_t>(&hkGetBuffer);
+		VirtualProtect(&vtable[8], 2 * sizeof(uintptr_t), oldProtect, &oldProtect);
+
+		installed = true;
+		logger::info("[D3D11On12] Swapchain vtable hooks installed (GetBuffer + Present)");
+	}
+};
+
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
 
 HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
@@ -364,6 +472,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 	logger::info("ppDevice    = {}", fmt::ptr(*ppDevice));
 	logger::info("ppContext   = {}", fmt::ptr(*ppImmediateContext));
 	logger::info("pFeatureLvl = {}", fmt::ptr(pFeatureLevel));
+
+	D3D11On12SwapChainHook::Install(*ppSwapChain, *ppDevice, modifiedDesc.BufferCount);
 
 	/*auto ret = ptrD3D11CreateDeviceAndSwapChain(pAdapter,
 		DriverType,
