@@ -264,7 +264,11 @@ struct IDXGISwapChain_Present
 	{
 		globals::state->Reset();
 
-		HRESULT retval = globals::features::hdrDisplay.HandleSwapChainPresent(
+		D3D11On12SwapChainState::ReleaseAll();
+
+		HRESULT retval = func(This, SyncInterval, Flags);
+
+		/*HRESULT retval = globals::features::hdrDisplay.HandleSwapChainPresent(
 			This,
 			SyncInterval,
 			Flags,
@@ -272,7 +276,7 @@ struct IDXGISwapChain_Present
 				return func(swapChain, syncInterval, presentFlags);
 			});
 
-		globals::features::screenshotFeature.ProcessCaptureRequest();
+		globals::features::screenshotFeature.ProcessCaptureRequest();*/
 
 		TracyD3D11Collect(globals::state->tracyCtx);
 
@@ -338,15 +342,6 @@ struct IDXGISwapChain_GetBuffer_D3D11On12
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
-struct IDXGISwapChain_Present_D3D11On12
-{
-	static HRESULT STDMETHODCALLTYPE thunk(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
-	{
-		return func(pSwapChain, SyncInterval, Flags);
-	}
-	static inline REL::Relocation<decltype(thunk)> func;
-};
-
 struct ID3D11DeviceContext_OMSetRenderTargets_D3D11On12
 {
 	static void STDMETHODCALLTYPE thunk(
@@ -357,11 +352,8 @@ struct ID3D11DeviceContext_OMSetRenderTargets_D3D11On12
 	{
 		logger::info("[D3D11On12] OMSetRenderTargets ctx={} views={} rtv={} dsv={}", fmt::ptr(pContext), NumViews, fmt::ptr(ppRenderTargetViews[0]), fmt::ptr(pDepthStencilView));
 
-		//Release previous OM
-		D3D11On12SwapChainState::ReleaseOM();
-
-		// Acquire curent OM
-		D3D11On12SwapChainState::AcquireOM(NumViews, ppRenderTargetViews, pDepthStencilView);
+		D3D11On12SwapChainState::Acquire(NumViews, ppRenderTargetViews);
+		D3D11On12SwapChainState::Acquire(pDepthStencilView);
 
 		func(pContext, NumViews, ppRenderTargetViews, pDepthStencilView);
 	}
@@ -380,18 +372,12 @@ struct ID3D11DeviceContext_ClearRenderTargetView_D3D11On12
 
 		logger::info("[D3D11On12] ClearRenderTargetView ctx={} rtv={} res={}", fmt::ptr(pContext), fmt::ptr(pRenderTargetView), fmt::ptr(resource));
 
-		const bool acquired = D3D11On12SwapChainState::Acquired(resource);
-
-		if (!acquired)
-			D3D11On12SwapChainState::d3d11On12Device->AcquireWrappedResources(&resource, 1);
-
-		func(pContext, pRenderTargetView, a_colorRGBA);
-
-		if (!acquired)
-			D3D11On12SwapChainState::d3d11On12Device->ReleaseWrappedResources(&resource, 1);
-
 		if (resource)
 			resource->Release();
+
+		D3D11On12SwapChainState::Acquire(pRenderTargetView);
+
+		func(pContext, pRenderTargetView, a_colorRGBA);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -410,18 +396,12 @@ struct ID3D11DeviceContext_ClearDepthStencilView_D3D11On12
 
 		logger::info("[D3D11On12] ClearDepthStencilView ctx={} dsv={} res={}", fmt::ptr(pContext), fmt::ptr(pDepthStencilView), fmt::ptr(resource));
 
-		const bool acquired = D3D11On12SwapChainState::Acquired(resource);
-
-		if (!acquired)
-			D3D11On12SwapChainState::d3d11On12Device->AcquireWrappedResources(&resource, 1);
-
-		func(pContext, pDepthStencilView, ClearFlags, Depth, Stencil);
-
-		if (!acquired)
-			D3D11On12SwapChainState::d3d11On12Device->ReleaseWrappedResources(&resource, 1);
-
 		if (resource)
 			resource->Release();
+
+		D3D11On12SwapChainState::Acquire(pDepthStencilView);
+
+		func(pContext, pDepthStencilView, ClearFlags, Depth, Stencil);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -439,7 +419,7 @@ void D3D11On12SwapChain_InstallSwapChainHooks(IDXGISwapChain* pSwapChain, ID3D11
 
 	D3D11On12SwapChainState::bufferCount = a_bufferCount;
 
-	stl::detour_vfunc<8, IDXGISwapChain_Present_D3D11On12>(pSwapChain);
+	//stl::detour_vfunc<8, IDXGISwapChain_Present_D3D11On12>(pSwapChain);
 	stl::detour_vfunc<9, IDXGISwapChain_GetBuffer_D3D11On12>(pSwapChain);
 
 	D3D11On12SwapChainState::installed = true;
