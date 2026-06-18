@@ -10,6 +10,7 @@
 #include "State.h"
 #include "Util.h"
 
+#include "D3D11On12/D3D11On12SwapChainState.h"
 #include "DX12Interop.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
@@ -23,8 +24,6 @@
 #include "Features/VolumetricLighting.h"
 
 #include "ShaderTools/BSShaderHooks.h"
-
-#include <d3d11on12.h>
 
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
 
@@ -289,29 +288,19 @@ HRESULT WINAPI hk_CreateDXGIFactory(REFIID, void** ppFactory)
 	return ptrCreateDXGIFactory(__uuidof(IDXGIFactory4), ppFactory);
 }
 
-struct D3D11On12SwapChainHook
+struct IDXGISwapChain_GetBuffer_D3D11On12
 {
-	static inline winrt::com_ptr<ID3D11On12Device1> d3d11On12Device;
-	static inline winrt::com_ptr<ID3D11Resource> wrappedBuffers[3];
-	static inline UINT bufferCount = 0;
-
-	using GetBufferFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, REFIID, void**);
-	using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
-
-	static inline GetBufferFn origGetBuffer = nullptr;
-	static inline PresentFn origPresent = nullptr;
-	static inline bool installed = false;
-
-	static HRESULT STDMETHODCALLTYPE hkGetBuffer(IDXGISwapChain* pSwapChain, UINT Buffer, REFIID riid, void** ppSurface)
+	static HRESULT STDMETHODCALLTYPE thunk(IDXGISwapChain* pSwapChain, UINT Buffer, REFIID riid, void** ppSurface)
 	{
 		if (riid == __uuidof(ID3D11Texture2D)) {
-			if (Buffer >= bufferCount) {
+			if (Buffer >= D3D11On12SwapChainState::bufferCount) {
 				return E_INVALIDARG;
 			}
 
-			if (!wrappedBuffers[Buffer]) {
+			auto& wrappedBuffer = D3D11On12SwapChainState::wrappedBuffers[Buffer];
+			if (!wrappedBuffer.wrapped) {
 				winrt::com_ptr<ID3D12Resource> d3d12Resource;
-				HRESULT hr = origGetBuffer(pSwapChain, Buffer, IID_PPV_ARGS(d3d12Resource.put()));
+				HRESULT hr = func(pSwapChain, Buffer, IID_PPV_ARGS(d3d12Resource.put()));
 				if (FAILED(hr)) {
 					logger::error("[D3D11On12] Failed to get D3D12 back buffer {}: {:x}", Buffer, static_cast<uint32_t>(hr));
 					return hr;
@@ -320,82 +309,131 @@ struct D3D11On12SwapChainHook
 				D3D11_RESOURCE_FLAGS rf11 = {};
 				rf11.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-				winrt::com_ptr<ID3D11Resource> wrapped;
-				hr = d3d11On12Device->CreateWrappedResource(
+				winrt::com_ptr<ID3D11Texture2D> wrappedTex;
+				hr = D3D11On12SwapChainState::d3d11On12Device->CreateWrappedResource(
 					d3d12Resource.get(),
 					&rf11,
 					D3D12_RESOURCE_STATE_RENDER_TARGET,
 					D3D12_RESOURCE_STATE_PRESENT,
-					IID_PPV_ARGS(wrapped.put()));
+					IID_PPV_ARGS(wrappedTex.put()));
 
 				if (FAILED(hr)) {
 					logger::error("[D3D11On12] CreateWrappedResource failed for buffer {}: {:x}", Buffer, static_cast<uint32_t>(hr));
 					return hr;
 				}
 
-				wrappedBuffers[Buffer] = wrapped;
+				logger::info("[D3D11On12] Wrapped swapchain buffer {} (D3D12 -> D3D11): {}", Buffer, fmt::ptr(wrappedTex.get()));
 
-				ID3D11Resource* resources[] = { wrapped.get() };
-				d3d11On12Device->AcquireWrappedResources(resources, 1);
-
-				logger::info("[D3D11On12] Wrapped swapchain buffer {} (D3D12 -> D3D11)", Buffer);
+				wrappedBuffer.native = std::move(d3d12Resource);
+				wrappedBuffer.wrapped = std::move(wrappedTex);
 			}
 
-			return wrappedBuffers[Buffer]->QueryInterface(riid, ppSurface);
+			return wrappedBuffer.wrapped->QueryInterface(riid, ppSurface);
 		}
 
-		return origGetBuffer(pSwapChain, Buffer, riid, ppSurface);
+		return func(pSwapChain, Buffer, riid, ppSurface);
 	}
-
-	static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
-	{
-		ID3D11Resource* resources[3]{};
-		UINT count = 0;
-		for (UINT i = 0; i < bufferCount; i++) {
-			if (wrappedBuffers[i]) {
-				resources[count++] = wrappedBuffers[i].get();
-			}
-		}
-		if (count > 0) {
-			d3d11On12Device->ReleaseWrappedResources(resources, count);
-		}
-
-		HRESULT hr = origPresent(pSwapChain, SyncInterval, Flags);
-
-		if (count > 0) {
-			d3d11On12Device->AcquireWrappedResources(resources, count);
-		}
-
-		return hr;
-	}
-
-	static void Install(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, UINT a_bufferCount)
-	{
-		if (installed)
-			return;
-
-		HRESULT hr = pDevice->QueryInterface(IID_PPV_ARGS(d3d11On12Device.put()));
-		if (FAILED(hr)) {
-			logger::error("[D3D11On12] Failed to QI for ID3D11On12Device1: {:x}", static_cast<uint32_t>(hr));
-			return;
-		}
-
-		bufferCount = a_bufferCount;
-
-		auto vtable = *reinterpret_cast<uintptr_t**>(pSwapChain);
-		origPresent = reinterpret_cast<PresentFn>(vtable[8]);
-		origGetBuffer = reinterpret_cast<GetBufferFn>(vtable[9]);
-
-		DWORD oldProtect;
-		VirtualProtect(&vtable[8], 2 * sizeof(uintptr_t), PAGE_READWRITE, &oldProtect);
-		vtable[8] = reinterpret_cast<uintptr_t>(&hkPresent);
-		vtable[9] = reinterpret_cast<uintptr_t>(&hkGetBuffer);
-		VirtualProtect(&vtable[8], 2 * sizeof(uintptr_t), oldProtect, &oldProtect);
-
-		installed = true;
-		logger::info("[D3D11On12] Swapchain vtable hooks installed (GetBuffer + Present)");
-	}
+	static inline REL::Relocation<decltype(thunk)> func;
 };
+
+struct IDXGISwapChain_Present_D3D11On12
+{
+	static HRESULT STDMETHODCALLTYPE thunk(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
+	{
+		D3D11On12SwapChainState::ReleaseAll();
+		return func(pSwapChain, SyncInterval, Flags);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct ID3D11DeviceContext_OMSetRenderTargets_D3D11On12
+{
+	static void STDMETHODCALLTYPE thunk(
+		ID3D11DeviceContext* pContext,
+		UINT NumViews,
+		ID3D11RenderTargetView* const* ppRenderTargetViews,
+		ID3D11DepthStencilView* pDepthStencilView)
+	{
+		logger::info("[D3D11On12] OMSetRenderTargets ctx={} views={} rtv={} dsv={}", fmt::ptr(pContext), NumViews, fmt::ptr(ppRenderTargetViews[0]), fmt::ptr(pDepthStencilView));
+
+		D3D11On12SwapChainState::Acquire(ppRenderTargetViews, NumViews);
+		D3D11On12SwapChainState::Acquire(pDepthStencilView);
+
+		func(pContext, NumViews, ppRenderTargetViews, pDepthStencilView);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct ID3D11DeviceContext_ClearRenderTargetView_D3D11On12
+{
+	static void STDMETHODCALLTYPE thunk(
+		ID3D11DeviceContext* pContext,
+		ID3D11RenderTargetView* pRenderTargetView,
+		const float a_colorRGBA[4])
+	{
+		{
+			ID3D11Resource* resource = nullptr;
+			pRenderTargetView->GetResource(&resource);
+
+			logger::info("[D3D11On12] ClearRenderTargetView ctx={} rtv={} resource={}", fmt::ptr(pContext), fmt::ptr(pRenderTargetView), fmt::ptr(resource));
+
+			if (resource)
+				resource->Release();
+		}
+
+		D3D11On12SwapChainState::Acquire(pRenderTargetView);
+
+		func(pContext, pRenderTargetView, a_colorRGBA);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct ID3D11DeviceContext_ClearDepthStencilView_D3D11On12
+{
+	static void STDMETHODCALLTYPE thunk(
+		ID3D11DeviceContext* pContext,
+		ID3D11DepthStencilView* pDepthStencilView,
+		UINT ClearFlags,
+		FLOAT Depth,
+		UINT8 Stencil)
+	{
+		logger::info("[D3D11On12] ClearDepthStencilView ctx={} dsv={}", fmt::ptr(pContext), fmt::ptr(pDepthStencilView));
+
+		D3D11On12SwapChainState::Acquire(pDepthStencilView);
+
+		func(pContext, pDepthStencilView, ClearFlags, Depth, Stencil);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void D3D11On12SwapChain_InstallSwapChainHooks(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice, UINT a_bufferCount)
+{
+	if (D3D11On12SwapChainState::installed)
+		return;
+
+	HRESULT hr = pDevice->QueryInterface(IID_PPV_ARGS(D3D11On12SwapChainState::d3d11On12Device.put()));
+	if (FAILED(hr)) {
+		logger::error("[D3D11On12] Failed to QI for ID3D11On12Device1: {:x}", static_cast<uint32_t>(hr));
+		return;
+	}
+
+	D3D11On12SwapChainState::bufferCount = a_bufferCount;
+
+	stl::detour_vfunc<8, IDXGISwapChain_Present_D3D11On12>(pSwapChain);
+	stl::detour_vfunc<9, IDXGISwapChain_GetBuffer_D3D11On12>(pSwapChain);
+
+	D3D11On12SwapChainState::installed = true;
+	logger::info("[D3D11On12] Swapchain vtable hooks installed (GetBuffer + Present)");
+}
+
+void D3D11On12SwapChain_InstallContextHooks(ID3D11DeviceContext* pContext)
+{
+	stl::detour_vfunc<33, ID3D11DeviceContext_OMSetRenderTargets_D3D11On12>(pContext);
+	stl::detour_vfunc<50, ID3D11DeviceContext_ClearRenderTargetView_D3D11On12>(pContext);
+	stl::detour_vfunc<53, ID3D11DeviceContext_ClearDepthStencilView_D3D11On12>(pContext);
+
+	logger::info("[D3D11On12] Context hooks installed");
+}
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
 
@@ -473,7 +511,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 	logger::info("ppContext   = {}", fmt::ptr(*ppImmediateContext));
 	logger::info("pFeatureLvl = {}", fmt::ptr(pFeatureLevel));
 
-	D3D11On12SwapChainHook::Install(*ppSwapChain, *ppDevice, modifiedDesc.BufferCount);
+	D3D11On12SwapChain_InstallSwapChainHooks(*ppSwapChain, *ppDevice, modifiedDesc.BufferCount);
+	D3D11On12SwapChain_InstallContextHooks(*ppImmediateContext);
 
 	/*auto ret = ptrD3D11CreateDeviceAndSwapChain(pAdapter,
 		DriverType,
@@ -615,7 +654,7 @@ namespace Hooks
 			logger::info("Detouring virtual function tables");
 			// InstallSwapChainPresentHooks installs SwapChainPresentBottom (suppression) and OMSetBlendState first.
 			// IDXGISwapChain_Present is installed last so it sits at the top of the Detours chain and fires first.
-			HDRDisplay::InstallSwapChainPresentHooks(globals::d3d::swapChain);
+			//HDRDisplay::InstallSwapChainPresentHooks(globals::d3d::swapChain);
 			stl::detour_vfunc<8, IDXGISwapChain_Present>(globals::d3d::swapChain);
 
 			auto shaderCache = globals::shaderCache;
