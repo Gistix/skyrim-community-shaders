@@ -81,6 +81,8 @@ struct DX12Interop
 		DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), currentFenceValue));
 	}
 
+	void CreateD3D12Device(IDXGIAdapter* a_adapter);
+
 private:
 	bool active = false;
 
@@ -88,6 +90,4 @@ private:
 	void SetD3D11Device(ID3D11Device* a_d3d11Device);
 	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);
 	void InitializePIX();
-
-	void CreateD3D12Device(IDXGIAdapter* a_adapter);
 };

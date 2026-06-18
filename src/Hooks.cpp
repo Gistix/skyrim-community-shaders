@@ -24,6 +24,8 @@
 
 #include "ShaderTools/BSShaderHooks.h"
 
+#include <d3d11on12.h>
+
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
 
 void RegisterShaderBytecode(void* Shader, const void* Bytecode, size_t BytecodeLength)
@@ -291,12 +293,12 @@ decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChain;
 
 HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 	IDXGIAdapter* pAdapter,
-	D3D_DRIVER_TYPE DriverType,
-	HMODULE Software,
+	[[maybe_unused]] D3D_DRIVER_TYPE DriverType,
+	[[maybe_unused]] HMODULE Software,
 	UINT Flags,
 	[[maybe_unused]] const D3D_FEATURE_LEVEL* pFeatureLevels,
 	[[maybe_unused]] UINT FeatureLevels,
-	UINT SDKVersion,
+	[[maybe_unused]] UINT SDKVersion,
 	DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
 	IDXGISwapChain** ppSwapChain,
 	ID3D11Device** ppDevice,
@@ -309,8 +311,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 	if (globals::state->debugDevice)
 		Flags |= D3D11_CREATE_DEVICE_DEBUG;
-
-	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
 
 	DXGI_SWAP_CHAIN_DESC modifiedDesc = *pSwapChainDesc;
 
@@ -325,7 +325,47 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		logger::info("[HDR] Upgraded swap chain: R10G10B10A2_UNORM + FLIP_DISCARD");
 	}
 
-	auto ret = ptrD3D11CreateDeviceAndSwapChain(pAdapter,
+	auto dx12Interop = globals::dx12Interop;
+	dx12Interop->CreateD3D12Device(pAdapter);
+
+	logger::info("dx12Device  = {}", fmt::ptr(dx12Interop->d3d12Device.get()));
+	logger::info("queue       = {}", fmt::ptr(dx12Interop->commandQueue.get()));
+
+	winrt::com_ptr<IDXGIFactory> factory = nullptr;
+	pAdapter->GetParent(IID_PPV_ARGS(&factory));
+
+	factory->CreateSwapChain(
+		dx12Interop->commandQueue.get(),
+		&modifiedDesc,
+		ppSwapChain);
+
+	logger::info("ppSwapChain = {}", fmt::ptr(*ppSwapChain));
+
+	D3D_FEATURE_LEVEL featureLevels[] = {
+		D3D_FEATURE_LEVEL_11_1
+	};
+
+	IUnknown* queues[] = {
+		dx12Interop->commandQueue.get()
+	};
+
+	auto ret = D3D11On12CreateDevice(
+		dx12Interop->d3d12Device.get(),
+		Flags,
+		featureLevels,
+		ARRAYSIZE(featureLevels),
+		queues,
+		ARRAYSIZE(queues),
+		0,
+		ppDevice, 
+		ppImmediateContext,
+		pFeatureLevel);
+
+	logger::info("ppDevice    = {}", fmt::ptr(*ppDevice));
+	logger::info("ppContext   = {}", fmt::ptr(*ppImmediateContext));
+	logger::info("pFeatureLvl = {}", fmt::ptr(pFeatureLevel));
+
+	/*auto ret = ptrD3D11CreateDeviceAndSwapChain(pAdapter,
 		DriverType,
 		Software,
 		Flags,
@@ -336,9 +376,9 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		ppSwapChain,
 		ppDevice,
 		pFeatureLevel,
-		ppImmediateContext);
+		ppImmediateContext);*/
 
-	globals::dx12Interop->Init(*ppDevice, *ppImmediateContext, pAdapter);
+	logger::info("hk_D3D11CreateDeviceAndSwapChain");
 
 	return ret;
 }

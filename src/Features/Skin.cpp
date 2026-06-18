@@ -209,7 +209,7 @@ void Skin::LoadSkinDetailTexture()
 
 	ID3D11Resource* pResource = nullptr;
 	try {
-		auto miscFlags = rt.loaded ? D3D11_RESOURCE_MISC_SHARED : 0;
+		auto miscFlags = rt.Available(true) ? D3D11_RESOURCE_MISC_SHARED : 0;
 
 		DX::ThrowIfFailed(CreateTextureEx(device,
 			image.GetImages(), image.GetImageCount(), image.GetMetadata(), 
