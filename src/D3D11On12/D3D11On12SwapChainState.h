@@ -14,10 +14,70 @@ struct D3D11On12SwapChainState
 	static inline Resource wrappedBuffers[3];
 	static inline eastl::hash_set<ID3D11Resource*> acquiredResources;
 
+	static inline eastl::vector<winrt::com_ptr<ID3D11Resource>> outputMerger;
+
 	static inline eastl::vector<ID3D11Resource*> tempResources;
 
 	static inline UINT bufferCount = 0;
 	static inline bool installed = false;
+
+	static void AcquireOM(UINT numViews, ID3D11RenderTargetView* const* views, ID3D11DepthStencilView* dsv)
+	{
+		if (views && numViews > 0) {
+			tempResources.resize(numViews);
+
+			for (UINT i = 0; i < numViews; i++) {
+				winrt::com_ptr<ID3D11Resource> resource = nullptr;
+				views[i]->GetResource(resource.put());
+
+				tempResources[i] = resource.get();
+
+				outputMerger.emplace_back(eastl::move(resource));
+			}
+
+			d3d11On12Device->AcquireWrappedResources(tempResources.data(), numViews);
+
+			tempResources.clear();
+		}
+
+		if (dsv) {
+			winrt::com_ptr<ID3D11Resource> resource = nullptr;
+			dsv->GetResource(resource.put());
+
+			ID3D11Resource* resources[] = { resource.get() };
+			d3d11On12Device->AcquireWrappedResources(resources, ARRAYSIZE(resources));
+	
+			outputMerger.emplace_back(eastl::move(resource));
+		}
+	}
+
+	static void ReleaseOM()
+	{
+		if (outputMerger.empty())
+			return;
+
+		auto numResources = outputMerger.size();
+
+		tempResources.resize(numResources);
+
+		for (UINT i = 0; i < numResources; i++) {
+			tempResources[i] = outputMerger[i].get();
+		}
+
+		d3d11On12Device->ReleaseWrappedResources(tempResources.data(), (UINT)numResources);
+
+		tempResources.clear();
+
+		outputMerger.clear();
+	}
+
+	static bool Acquired(ID3D11Resource* resource)
+	{
+		if (!resource)
+			return false;
+
+		return acquiredResources.find(resource) != acquiredResources.end();
+	}
 
 	static void Acquire(ID3D11Resource* resource)
 	{
