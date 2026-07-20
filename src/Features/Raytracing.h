@@ -360,16 +360,27 @@ struct CreationEngineRaytracing
 		Exclusive = 1
 	};
 
+	enum struct TextureStreamingMode : uint32_t
+	{
+		Off = 0,
+		Conservative = 1,
+		Balanced = 2,
+		Aggressive = 3
+	};
+
 	struct ExperimentalSettings
 	{
 		bool PathTracingCull = false;
 		TextureMode TextureMode = TextureMode::Share;
 		uint32_t TextureCutOff = 0;
 		bool GlobalLights = false;
+		TextureStreamingMode TextureStreamingMode = TextureStreamingMode::Off;
+		uint32_t TextureBudgetMB = 0;
+		uint32_t TextureMaxMipBias = 2;
 
 		bool operator==(const ExperimentalSettings&) const = default;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights, TextureStreamingMode, TextureBudgetMB, TextureMaxMipBias)
 	};
 
 	struct DebugSettings
@@ -427,7 +438,7 @@ struct CreationEngineRaytracing
 		ID3D12Resource* native = nullptr;
 		ID3D11Texture2D* shared = nullptr;
 	};
-	
+
 	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 	HMODULE handle = nullptr;
@@ -451,6 +462,7 @@ struct CreationEngineRaytracing
 	using SetSkinDetailNormalFn = void (*)(ID3D12Resource*);
 	using GetAccumulatedFrameCountFn = uint32_t (*)();
 	using GetFakeDoubledVRAMUsageFn = uint64_t (*)();
+	using LogTextureMemoryStatsFn = void (*)();
 	using GetSceneGraphCountersFn = void (*)(uint32_t& textures, uint32_t& models, uint32_t& instances);
 
 	InitializeRendererFn InitializeRenderer = nullptr;
@@ -472,6 +484,7 @@ struct CreationEngineRaytracing
 	SetSkinDetailNormalFn SetSkinDetailNormal = nullptr;
 	GetAccumulatedFrameCountFn GetAccumulatedFrameCount = nullptr;
 	GetFakeDoubledVRAMUsageFn GetFakeDoubledVRAMUsage = nullptr;
+	LogTextureMemoryStatsFn LogTextureMemoryStats = nullptr;
 
 	CreationEngineRaytracing()
 	{
@@ -504,6 +517,7 @@ struct CreationEngineRaytracing
 		LOAD_FN(SetSkinDetailNormal);
 		LOAD_FN(GetAccumulatedFrameCount);
 		LOAD_FN(GetFakeDoubledVRAMUsage);
+		LOAD_FN(LogTextureMemoryStats);
 	}
 };
 
@@ -543,7 +557,10 @@ struct Raytracing : public OverlayFeature
 
 	// Functionality
 	virtual inline std::string_view GetShaderDefineName() override { return "RAYTRACING"; }
-	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override { return t == RE::BSShader::Type::Lighting || t == RE::BSShader::Type::Grass; };
+	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override
+	{
+		return t == RE::BSShader::Type::Lighting || t == RE::BSShader::Type::Grass || t == RE::BSShader::Type::Sky;
+	};
 
 	// Settings & UI
 	virtual void RestoreDefaultSettings() override;
@@ -762,7 +779,7 @@ struct Raytracing : public OverlayFeature
 						dx12Interop->ga->BeginCapture();
 					}
 
-					// Clear render targets 
+					// Clear render targets
 					if (rt.Mode() == CreationEngineRaytracing::Mode::PathTracing || rt.Mode() == CreationEngineRaytracing::Mode::Debug) {
 						if (rt.IsPathTracingCull()) {
 							auto renderer = globals::game::renderer;
