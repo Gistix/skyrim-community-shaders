@@ -876,6 +876,14 @@ void Raytracing::Load()
 	if (forcedDisabled)
 		return;
 
+	isDXVK = Util::DXVK::IsRunning();
+	if (isDXVK) {
+		logger::info("[Raytracing] DXVK detected via d3d11.dll/dxgi.dll proxy - Switching to Vulkan mode.");
+		VkHooks::Install();
+	}else {
+		logger::info("[Raytracing] DXVK not found.");	
+	}
+
 	Hooks::Install();
 }
 
@@ -934,6 +942,116 @@ void Raytracing::CompileShaders()
 	}
 }
 
+void Raytracing::VkHooks::Install()
+{
+	logger::info("[Raytracing] VkHooks::Install: Attempting to load vulkan-1.dll");
+
+	auto vulkanModule = GetModuleHandleW(L"vulkan-1.dll");
+	logger::info("[Raytracing] VkHooks::Install: GetModuleHandleW returned {}", fmt::ptr(vulkanModule));
+
+	if (!vulkanModule) {
+		vulkanModule = LoadLibraryW(L"vulkan-1.dll");
+		logger::info("[Raytracing] VkHooks::Install: LoadLibraryW returned {}", fmt::ptr(vulkanModule));
+	}
+
+	if (!vulkanModule) {
+		logger::error("[Raytracing] Failed to load vulkan-1.dll for DXVK hooks.");
+		return;
+	}
+
+	wchar_t modulePath[MAX_PATH];
+	if (GetModuleFileNameW(vulkanModule, modulePath, MAX_PATH) > 0)
+		logger::info("[Raytracing] VkHooks::Install: vulkan-1.dll path: {}", stl::utf16_to_utf8(modulePath).value_or("<conversion error>"));
+
+	CreateInstance::func = reinterpret_cast<decltype(CreateInstance::func)>(
+		GetProcAddress(vulkanModule, "vkCreateInstance"));
+	CreateDevice::func = reinterpret_cast<decltype(CreateDevice::func)>(
+		GetProcAddress(vulkanModule, "vkCreateDevice"));
+	GetDeviceQueue::func = reinterpret_cast<decltype(GetDeviceQueue::func)>(
+		GetProcAddress(vulkanModule, "vkGetDeviceQueue"));
+
+	logger::info("[Raytracing] VkHooks::Install: vkCreateInstance={}, vkCreateDevice={}, vkGetDeviceQueue={}",
+		fmt::ptr(CreateInstance::func), fmt::ptr(CreateDevice::func), fmt::ptr(GetDeviceQueue::func));
+
+	if (!CreateInstance::func || !CreateDevice::func || !GetDeviceQueue::func) {
+		logger::error("[Raytracing] Failed to resolve Vulkan functions for DXVK hooks.");
+		return;
+	}
+
+	logger::info("[Raytracing] VkHooks::Install: Attaching Detours...");
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(reinterpret_cast<PVOID*>(&CreateInstance::func), reinterpret_cast<PVOID>(CreateInstance::thunk));
+	DetourAttach(reinterpret_cast<PVOID*>(&CreateDevice::func), reinterpret_cast<PVOID>(CreateDevice::thunk));
+	DetourAttach(reinterpret_cast<PVOID*>(&GetDeviceQueue::func), reinterpret_cast<PVOID>(GetDeviceQueue::thunk));
+	auto detourResult = DetourTransactionCommit();
+	logger::info("[Raytracing] VkHooks::Install: DetourTransactionCommit returned {}", detourResult);
+
+	logger::info("[Raytracing] Installed Vulkan hooks for DXVK interop.");
+}
+
+int32_t WINAPI Raytracing::VkHooks::CreateInstance::thunk(const void* pCreateInfo, const void* pAllocator, void* pInstance)
+{
+	logger::info("[Raytracing] vkCreateInstance hook: Entered, calling original...");
+	auto result = func(pCreateInfo, pAllocator, pInstance);
+	logger::info("[Raytracing] vkCreateInstance hook: Original returned {}, pInstance=0x{}", result, fmt::ptr(pInstance));
+	if (result == 0) {
+		auto& rt = globals::features::raytracing;
+		auto inst = *static_cast<void**>(pInstance);
+		logger::info("[Raytracing] vkCreateInstance hook: VK_SUCCESS, instance={}", fmt::ptr(inst));
+		rt.vulkanInstance = inst;
+	}
+	logger::info("[Raytracing] vkCreateInstance hook: Returning {}", result);
+	return result;
+}
+
+int32_t WINAPI Raytracing::VkHooks::CreateDevice::thunk(void* physicalDevice, const void* pCreateInfo, const void* pAllocator, void* pDevice)
+{
+	logger::info("[Raytracing] vkCreateDevice hook: Entered, physicalDevice={}, calling original...", fmt::ptr(physicalDevice));
+	auto result = func(physicalDevice, pCreateInfo, pAllocator, pDevice);
+	logger::info("[Raytracing] vkCreateDevice hook: Original returned {}, pDevice=0x{}", result, fmt::ptr(pDevice));
+	if (result == 0) {
+		auto& rt = globals::features::raytracing;
+		auto dev = *static_cast<void**>(pDevice);
+		logger::info("[Raytracing] vkCreateDevice hook: VK_SUCCESS, physicalDevice={}, device={}",
+			fmt::ptr(physicalDevice), fmt::ptr(dev));
+		rt.vulkanPhysicalDevice = physicalDevice;
+		rt.vulkanDevice = dev;
+	}
+	logger::info("[Raytracing] vkCreateDevice hook: Returning {}", result);
+	return result;
+}
+
+void WINAPI Raytracing::VkHooks::GetDeviceQueue::thunk(void* device, uint32_t queueFamilyIndex, uint32_t queueIndex, void** pQueue)
+{
+	logger::info("[Raytracing] vkGetDeviceQueue hook: Entered, device={}, family={}, index={}",
+		fmt::ptr(device), queueFamilyIndex, queueIndex);
+
+	func(device, queueFamilyIndex, queueIndex, pQueue);
+
+	logger::info("[Raytracing] vkGetDeviceQueue hook: Original returned, pQueue={}", fmt::ptr(*pQueue));
+
+	if (!*pQueue) {
+		logger::warn("[Raytracing] vkGetDeviceQueue hook: Queue is null, skipping");
+		return;
+	}
+
+	auto& rt = globals::features::raytracing;
+	if (rt.vulkanGraphicsQueue == nullptr) {
+		logger::info("[Raytracing] vkGetDeviceQueue hook: Captured graphics/transfer/compute queue={}, family={}",
+			fmt::ptr(*pQueue), queueFamilyIndex);
+		rt.vulkanGraphicsQueue = *pQueue;
+		rt.vulkanGraphicsQueueIndex = static_cast<int>(queueFamilyIndex);
+		rt.vulkanTransferQueue = *pQueue;
+		rt.vulkanTransferQueueIndex = static_cast<int>(queueFamilyIndex);
+		rt.vulkanComputeQueue = *pQueue;
+		rt.vulkanComputeQueueIndex = static_cast<int>(queueFamilyIndex);
+	} else {
+		logger::info("[Raytracing] vkGetDeviceQueue hook: Additional queue={}, family={} (ignored, using first for all roles)",
+			fmt::ptr(*pQueue), queueFamilyIndex);
+	}
+}
+
 void Raytracing::InitializeCERaytracing(ID3D11Device5* d3d11Device, ID3D12Device5* d3d12Device, ID3D12CommandQueue* commandQueue, ID3D12CommandQueue* computeCommandQueue, ID3D12CommandQueue* copyCommandQueue)
 {
 	if (forcedDisabled)
@@ -942,7 +1060,23 @@ void Raytracing::InitializeCERaytracing(ID3D11Device5* d3d11Device, ID3D12Device
 	if (initialized)
 		return;
 
-	bool result = creationEngineRaytracing->InitializeRenderer(d3d11Device, d3d12Device, commandQueue, computeCommandQueue, copyCommandQueue);
+	bool result = false;
+	if (isDXVK) {
+		logger::info("[Raytracing] InitializeCERaytracing: Calling InitializeVulkanRenderer with inst={}, physDev={}, dev={}, gfxQ={}({}), xferQ={}({}), compQ={}({})",
+			fmt::ptr(vulkanInstance), fmt::ptr(vulkanPhysicalDevice), fmt::ptr(vulkanDevice),
+			fmt::ptr(vulkanGraphicsQueue), vulkanGraphicsQueueIndex,
+			fmt::ptr(vulkanTransferQueue), vulkanTransferQueueIndex,
+			fmt::ptr(vulkanComputeQueue), vulkanComputeQueueIndex);
+
+		result = creationEngineRaytracing->InitializeVulkanRenderer(
+			vulkanInstance, vulkanPhysicalDevice, vulkanDevice,
+			vulkanGraphicsQueue, vulkanGraphicsQueueIndex,
+			vulkanTransferQueue, vulkanTransferQueueIndex,
+			vulkanComputeQueue, vulkanComputeQueueIndex);
+
+		logger::info("[Raytracing] InitializeCERaytracing: InitializeVulkanRenderer returned {}", result);
+	} else
+		result = creationEngineRaytracing->InitializeRenderer(d3d11Device, d3d12Device, commandQueue, computeCommandQueue, copyCommandQueue);
 
 	if (!result) {
 		settings.CreationEngineRaytracingSettings.Enabled = false;

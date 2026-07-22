@@ -433,6 +433,7 @@ struct CreationEngineRaytracing
 	HMODULE handle = nullptr;
 
 	using InitializeRendererFn = bool (*)(ID3D11Device5*, ID3D12Device5*, ID3D12CommandQueue*, ID3D12CommandQueue*, ID3D12CommandQueue*);
+	using InitializeVulkanRendererFn = bool (*)(void* instance, void* physicalDevice, void* device, void* graphicsQueue, int graphicsQueueIndex, void* transferQueue, int transferQueueIndex, void* computeQueue, int computeQueueIndex);
 	using InitializeFn = void (*)(Settings);
 	using UpdateCameraFn = void (*)();
 	using ExecuteFn = void (*)();
@@ -454,6 +455,7 @@ struct CreationEngineRaytracing
 	using GetSceneGraphCountersFn = void (*)(uint32_t& textures, uint32_t& models, uint32_t& instances);
 
 	InitializeRendererFn InitializeRenderer = nullptr;
+	InitializeVulkanRendererFn InitializeVulkanRenderer = nullptr;	
 	InitializeFn Initialize = nullptr;
 	UpdateCameraFn UpdateCamera = nullptr;
 	ExecuteFn Execute = nullptr;
@@ -486,6 +488,7 @@ struct CreationEngineRaytracing
 		}
 
 		LOAD_FN(InitializeRenderer);
+		LOAD_FN(InitializeVulkanRenderer);		
 		LOAD_FN(Initialize);
 		LOAD_FN(UpdateCamera);
 		LOAD_FN(Execute);
@@ -646,6 +649,19 @@ struct Raytracing : public OverlayFeature
 
 	bool initialized = false;
 
+	bool isDXVK = false;
+
+	// Vulkan handles captured from DXVK via VkHooks (used for DXVK path)
+	void* vulkanInstance = nullptr;
+	void* vulkanPhysicalDevice = nullptr;
+	void* vulkanDevice = nullptr;
+	void* vulkanGraphicsQueue = nullptr;
+	int vulkanGraphicsQueueIndex = 0;
+	void* vulkanTransferQueue = nullptr;
+	int vulkanTransferQueueIndex = 0;
+	void* vulkanComputeQueue = nullptr;
+	int vulkanComputeQueueIndex = 0;
+
 	// Used when feature was force disabled, likely due to missing dll or incompatible hardware
 	bool forcedDisabled = false;
 
@@ -750,7 +766,7 @@ struct Raytracing : public OverlayFeature
 			{
 				auto& rt = globals::features::raytracing;
 
-				if (rt.Available()) {
+				if (rt.Mode() != CreationEngineRaytracing::Mode::None) {
 					rt.UpdateFeatureData();
 					rt.SkyCubeToHemi();
 
@@ -819,7 +835,7 @@ struct Raytracing : public OverlayFeature
 			static void thunk(void* imageSpaceShader, RE::BSTriShape* shape, RE::ImageSpaceEffectParam* param)
 			{
 				auto& rt = globals::features::raytracing;
-				if (rt.Available() && rt.Mode() == CreationEngineRaytracing::Mode::PathTracing)
+				if (rt.Mode() == CreationEngineRaytracing::Mode::PathTracing)
 					return;
 
 				func(imageSpaceShader, shape, param);
@@ -850,6 +866,29 @@ struct Raytracing : public OverlayFeature
 			stl::write_vfunc<0x1, BSImagespaceShaderRefraction_Render>(RE::VTABLE_BSImagespaceShaderRefraction[0]);
 			stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));
 		}
+	};
+
+	struct VkHooks
+	{
+		struct CreateInstance
+		{
+			static int32_t WINAPI thunk(const void* pCreateInfo, const void* pAllocator, void* pInstance);
+			static inline int32_t(WINAPI* func)(const void*, const void*, void*) = nullptr;
+		};
+
+		struct CreateDevice
+		{
+			static int32_t WINAPI thunk(void* physicalDevice, const void* pCreateInfo, const void* pAllocator, void* pDevice);
+			static inline int32_t(WINAPI* func)(void*, const void*, const void*, void*) = nullptr;
+		};
+
+		struct GetDeviceQueue
+		{
+			static void WINAPI thunk(void* device, uint32_t queueFamilyIndex, uint32_t queueIndex, void** pQueue);
+			static inline void(WINAPI* func)(void*, uint32_t, uint32_t, void**) = nullptr;
+		};
+
+		static void Install();
 	};
 
 	class BGSActorCellEventHandler : public RE::BSTEventSink<RE::BGSActorCellEvent>

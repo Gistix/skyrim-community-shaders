@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Utils/D3D.h"
+#include "Utils/DXVKDetection.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Form.h"
 #include "Utils/Format.h"
