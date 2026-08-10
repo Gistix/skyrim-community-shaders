@@ -10,6 +10,7 @@
 #include "Upscaling/DX12SwapChain.h"
 #include "Upscaling/FidelityFX.h"
 #include "Upscaling/Streamline.h"
+#include "Utils/Game.h"
 #include "Utils/UI.h"
 #include <Windows.h>
 #include <algorithm>
@@ -30,6 +31,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	frameGenerationAllowInMenus,
 	streamlineLogLevel,
 	sharpnessFSR,
+	sharpnessEnabledDLSS,
 	sharpnessDLSS,
 	presetDLSS,
 	presetDLSSRR,
@@ -296,7 +298,15 @@ void Upscaling::DrawSettings()
 		if (settings.upscaleMethod == UpscaleMethod::kFSR) {
 			ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f");
 		} else if (settings.upscaleMethod == UpscaleMethod::kDLSS) {
-			ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessDLSS, 0.0f, 1.0f, "%.1f");
+			ImGui::Checkbox(T(TKEY("enable_sharpening"), "Enable Sharpening"), &settings.sharpnessEnabledDLSS);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("%s", T(TKEY("enable_sharpening_tooltip"),
+									  "Applies RCAS sharpening to the DLSS output.\n"
+									  "Off by default; DLSS already resolves a sharp image."));
+			}
+
+			if (settings.sharpnessEnabledDLSS)
+				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessDLSS, 0.0f, 1.0f, "%.1f");
 
 			const char* dlssModelPresets[] = {
 				T(TKEY("dlss_model_preset_default"), "Default"),
@@ -551,7 +561,7 @@ void Upscaling::RestoreDefaultSettings()
 void Upscaling::DataLoaded()
 {
 	// Fix screenshots fix from Engine Fixes
-	RE::GetINISetting("bUseTAA:Display")->data.b = false;
+	Util::DisableVanillaTAA();
 
 	// The game defaults this to a non-zero value
 	static auto fDRClampOffset = RE::GetINISetting("fDRClampOffset:Display");
@@ -999,11 +1009,8 @@ void Upscaling::ConfigureTAA()
 {
 	auto upscaleMethod = GetUpscaleMethod();
 
-	auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
-	auto& BSImagespaceShaderISTemporalAA = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISTemporalAA;
-
 	// Force enable TAA if needed
-	BSImagespaceShaderISTemporalAA->taaEnabled = upscaleMethod != UpscaleMethod::kNONE;
+	Util::SetTemporal(upscaleMethod != UpscaleMethod::kNONE);
 }
 
 void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
@@ -1804,20 +1811,14 @@ void Upscaling::ApplySharpening()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Upscaling - Sharpening");
 
-	if (settings.sharpnessDLSS <= 0.0f)
-		return;
-
 	if (!sharpenerTexture)
 		return;
-
-	float currentSharpness = (-2.0f * settings.sharpnessDLSS) + 2.0f;
-	currentSharpness = exp2(-currentSharpness);
 
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
-	if (!main.UAV)
+	if (!main.texture)
 		return;
 
 	context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -1826,8 +1827,19 @@ void Upscaling::ApplySharpening()
 	if (d3d12Mode)
 		context->CopyResource(sharpenerTexture->resource.get(), main.texture);
 
-	// Zero-copy path: DLSS has already written to sharpenerTexture; sharpen directly into kMAIN.UAV.
-	rcas.ApplySharpen(sharpenerTexture->srv.get(), main.UAV, currentSharpness);
+	if (settings.sharpnessEnabledDLSS && settings.sharpnessDLSS > 0.0f && main.UAV) {
+		// Match FSR3's slider->RCAS conversion exactly (ffx_fsr3upscaler.cpp + FsrRcasCon):
+		//   sharpenessRemapped = -2*slider + 2   (sharpness in stops)
+		//   rcasAttenuation    = exp2(-sharpenessRemapped) = exp2(2*slider - 2)
+		float currentSharpness = (-2.0f * settings.sharpnessDLSS) + 2.0f;
+		currentSharpness = exp2(-currentSharpness);
+
+		// DLSS has already written to sharpenerTexture; sharpen directly into kMAIN.UAV.
+		rcas.ApplySharpen(sharpenerTexture->srv.get(), main.UAV, currentSharpness);
+	} else {
+		// Sharpening is disabled: resolve the DLSS output without altering it.
+		context->CopyResource(main.texture, sharpenerTexture->resource.get());
+	}
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 }
@@ -1879,10 +1891,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	if (upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR)
 		upscaling.ApplySharpening();
 
-	auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
-	auto& BSImagespaceShaderISTemporalAA = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISTemporalAA;
-
-	BSImagespaceShaderISTemporalAA->taaEnabled = upscaleMethod == UpscaleMethod::kTAA;
+	Util::SetTemporal(upscaleMethod == UpscaleMethod::kTAA);
 
 	// Redirect kFRAMEBUFFER to float texture before ISHDR runs so HDR values >1.0 survive
 	// When HDR Display is not loaded, ISHDR writes to vanilla kFRAMEBUFFER (SDR path)
@@ -1896,7 +1905,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 	if (hdrLoaded)
 		globals::features::hdrDisplay.RestoreFramebuffer();
 
-	BSImagespaceShaderISTemporalAA->taaEnabled = false;
+	Util::SetTemporal(false);
 }
 
 void Upscaling::SetScissorRect::thunk(RE::BSGraphics::Renderer* This, int a_left, int a_top, int a_right, int a_bottom)

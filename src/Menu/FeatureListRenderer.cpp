@@ -2,11 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
 #include <format>
 #include <imgui.h>
 #include <ranges>
-#include <system_error>
 #include <unordered_set>
 
 #include "Feature.h"
@@ -53,6 +51,14 @@ namespace
 	bool IsCoreMenu(const std::string& menuName)
 	{
 		return std::find(CORE_MENU_NAMES.begin(), CORE_MENU_NAMES.end(), menuName) != CORE_MENU_NAMES.end();
+	}
+
+	// Color for the [ALPHA]/[BETA] stage marker. Alpha (less stable) reads as an error,
+	// Beta as a warning.
+	ImVec4 StageTagColor(Feature::ReleaseStage stage)
+	{
+		const auto& statusPalette = globals::menu->GetTheme().StatusPalette;
+		return stage == Feature::ReleaseStage::Alpha ? statusPalette.Error : statusPalette.Warning;
 	}
 
 	/**
@@ -166,7 +172,7 @@ namespace
 	 * @param description Short description shown below the title (single line, truncated if too long)
 	 * @return The height of just the title line (for button alignment)
 	 */
-	float DrawFeatureHeader(const std::string& featureName, const std::string& version, const std::string& description = "")
+	float DrawFeatureHeader(const std::string& featureName, const std::string& version, const std::string& description = "", const std::string& stageTag = "", ImVec4 stageColor = {})
 	{
 		auto& themeSettings = globals::menu->GetTheme();
 		auto& palette = themeSettings.Palette;
@@ -197,6 +203,31 @@ namespace
 		// Store the title-only height for return value
 		float titleOnlyHeight = titleSize.y;
 
+		// Running x for bottom-aligned annotations (stage tag, then version) to the right of the title
+		float annotationX = startPos.x + titleSize.x + ImGui::GetStyle().ItemSpacing.x;
+
+		// Draw stage marker ([ALPHA]/[BETA]) on same line, bottom-aligned
+		if (!stageTag.empty()) {
+			ImVec2 tagSize;
+			{
+				MenuFonts::FontRoleGuard bodyGuard(Menu::FontRole::Body);
+				tagSize = ImGui::CalcTextSize(stageTag.c_str());
+				tagSize.x *= titleScale;
+				tagSize.y *= titleScale;
+			}
+
+			ImGui::SetCursorScreenPos(ImVec2(annotationX, startPos.y + titleSize.y - tagSize.y));
+			{
+				MenuFonts::FontRoleGuard bodyGuard(Menu::FontRole::Body);
+				ImGui::SetWindowFontScale(titleScale);
+				ImGui::TextColored(stageColor, "%s", stageTag.c_str());
+				ImGui::SetWindowFontScale(1.0f);
+			}
+
+			annotationX += tagSize.x + ImGui::GetStyle().ItemSpacing.x;
+			ImGui::SetCursorScreenPos(ImVec2(startPos.x, startPos.y + titleSize.y + ImGui::GetStyle().ItemSpacing.y * 0.25f));
+		}
+
 		// Draw version on same line with Body font, bottom-aligned if version exists
 		if (!version.empty()) {
 			// Format version: replace dashes with dots for consistency
@@ -212,8 +243,8 @@ namespace
 				versionSize.y *= titleScale;
 			}
 
-			// Position version text: right of title, bottom-aligned
-			float versionX = startPos.x + titleSize.x + ImGui::GetStyle().ItemSpacing.x;
+			// Position version text: right of the stage tag (or title), bottom-aligned
+			float versionX = annotationX;
 			float versionY = startPos.y + titleSize.y - versionSize.y;
 
 			ImGui::SetCursorScreenPos(ImVec2(versionX, versionY));
@@ -391,7 +422,7 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 	}
 
 	auto unloadedFeatures = sortedFeatureList | std::ranges::views::filter([](Feature* feat) {
-		return !feat->loaded && feat->IsInMenu() && (!FeatureIssues::IsObsoleteFeature(feat->GetShortName()) || globals::state->IsDeveloperMode());
+		return !feat->loaded && feat->IsInMenu() && !feat->IsHiddenUnreleased() && (!FeatureIssues::IsObsoleteFeature(feat->GetShortName()) || globals::state->IsDeveloperMode());
 	});
 	if (std::ranges::distance(unloadedFeatures) != 0) {
 		menuList.push_back(T("menu.features.unloaded_features", "Unloaded Features"));
@@ -565,14 +596,9 @@ void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
 	} else if (hasFailedMessage) {
 		textColor = feat->version.empty() ? themeSettings.StatusPalette.Disable : themeSettings.StatusPalette.Error;
 	} else {
-		// No failed message but not loaded - check if INI file exists
-		if (!std::filesystem::exists(Util::PathHelpers::GetFeatureIniPath(feat->GetShortName()))) {
-			// INI file missing - treat as missing feature (grey)
-			textColor = themeSettings.StatusPalette.Disable;
-		} else {
-			// INI file exists but feature not loaded - truly pending restart (green)
-			textColor = themeSettings.StatusPalette.RestartNeeded;
-		}
+		// Installed but not loaded means the feature is only pending a restart (green),
+		// otherwise it is simply missing (grey).
+		textColor = feat->installed ? themeSettings.StatusPalette.RestartNeeded : themeSettings.StatusPalette.Disable;
 	}
 
 	// Create selectable item with semantic color
@@ -581,6 +607,12 @@ void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
 		selectedMenuRef = listId;
 	}
 	ImGui::PopStyleColor();
+
+	// Display the stage marker behind the name, regardless of loaded state
+	if (const auto stage = feat->GetReleaseStage(); stage != Feature::ReleaseStage::Release) {
+		ImGui::SameLine();
+		ImGui::TextColored(StageTagColor(stage), "%s", Feature::GetReleaseStageTag(stage).c_str());
+	}
 
 	// Display version if loaded
 	if (isLoaded) {
@@ -624,7 +656,7 @@ void FeatureListRenderer::DrawMenuVisitor::operator()(Feature* feat)
 
 	if (ImGui::BeginChild("##FeatureConfigFrame", { 0, 0 }, true)) {
 		// Compute scene-controlled state once for both header and settings
-		auto* sceneManager = SceneSettingsManager::GetSingleton();
+		auto* sceneManager = globals::sceneSettingsManager;
 		bool sceneControlled = sceneManager->HasActiveSettingsForFeature(featureName) && !sceneManager->IsFeaturePaused(featureName);
 
 		// Render feature header with integrated action buttons
@@ -639,13 +671,6 @@ void FeatureListRenderer::DrawMenuVisitor::operator()(Feature* feat)
 	ImGui::EndChild();
 	// Render reactive constraint warning outside the child window so it can appear as a top-level popup
 	RenderReactiveConstraintWarningDialog();
-}
-
-bool FeatureListRenderer::DrawMenuVisitor::IsFeatureInstalled(const std::string& featureName)
-{
-	const auto path = Util::PathHelpers::GetFeatureIniPath(featureName);
-	std::error_code ec;
-	return std::filesystem::exists(path, ec);
 }
 
 void FeatureListRenderer::DrawMenuVisitor::RenderFeatureHeader(Feature* feat, bool isDisabled, bool isLoaded, bool sceneControlled)
@@ -682,7 +707,9 @@ void FeatureListRenderer::DrawMenuVisitor::RenderFeatureHeader(Feature* feat, bo
 
 	// Draw feature title, version, and description on the left
 	// Returns title-only height for button alignment
-	float titleOnlyHeight = DrawFeatureHeader(feat->GetDisplayName(), isLoaded ? feat->version : "", description);
+	const auto stage = feat->GetReleaseStage();
+	const std::string stageTag = Feature::GetReleaseStageTag(stage);  // empty for Release; color unused when tag is empty
+	float titleOnlyHeight = DrawFeatureHeader(feat->GetDisplayName(), isLoaded ? feat->version : "", description, stageTag, StageTagColor(stage));
 
 	// Save cursor position after header (for restoring after buttons are drawn)
 	ImVec2 cursorPosAfterHeader = ImGui::GetCursorScreenPos();
@@ -789,7 +816,7 @@ void FeatureListRenderer::DrawMenuVisitor::RenderFeatureSettings(Feature* feat, 
 			// Show toggle whenever scene entries exist for this feature, even if feature-paused
 			{
 				const auto& featureShortName = feat->GetShortName();
-				auto* sceneMgr = SceneSettingsManager::GetSingleton();
+				auto* sceneMgr = globals::sceneSettingsManager;
 				bool scenePaused = sceneMgr->IsFeaturePaused(featureShortName);
 				if (sceneControlled || scenePaused) {
 					bool active = !scenePaused;
@@ -873,7 +900,7 @@ void FeatureListRenderer::DrawMenuVisitor::RenderFeatureSettings(Feature* feat, 
 		} else {
 			if (FeatureIssues::IsObsoleteFeature(feat->GetShortName())) {
 				feat->DrawUnloadedUI();
-			} else if (IsFeatureInstalled(feat->GetShortName())) {
+			} else if (feat->installed) {
 				ImGui::Text("%s", T("menu.features.available_after_restart", "This feature will be available after restart."));
 			} else {
 				feat->DrawUnloadedUI();

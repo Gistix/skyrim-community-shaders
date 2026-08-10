@@ -30,9 +30,16 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Position,
 	PositionSet)
 
+void CSEditor::PostPostLoad()
+{
+	// Before the game loop starts, so no call site can be executing while it is rewritten.
+	EditorWindow::InstallWeatherLockHooks();
+}
+
 void CSEditor::DataLoaded()
 {
 	s_dataAvailable = true;
+	EditorWindow::MenuOpenCloseEventHandler::Register();
 }
 
 bool CSEditor::HasWidgetJsonFiles()
@@ -211,18 +218,7 @@ void CSEditor::Prepass()
 		EnsureDataLoaded();
 	}
 
-	// Re-enforce weather lock if active (handles time changes)
-	auto editorWindow = EditorWindow::GetSingleton();
-	if (editorWindow->IsWeatherLocked()) {
-		auto lockedWeather = editorWindow->GetLockedWeather();
-		auto sky = globals::game::sky;
-		if (sky && lockedWeather && sky->currentWeather != lockedWeather) {
-			sky->ForceWeather(lockedWeather, false);
-		}
-	}
-
-	// Update time controls (handles sleep/wait and external state sync)
-	editorWindow->UpdateTimeState();
+	EditorWindow::MaintainWeatherLock();
 }
 
 void CSEditor::DrawWeatherPickerSection()
@@ -320,7 +316,7 @@ void CSEditor::DrawWeatherStatusPanel()
 {
 	ImGui::Spacing();
 
-	auto weatherManager = WeatherManager::GetSingleton();
+	auto weatherManager = globals::weatherManager;
 	auto currentWeathers = weatherManager->GetCurrentWeathers();
 	const auto& theme = Menu::GetSingleton()->GetTheme();
 
@@ -753,7 +749,13 @@ void CSEditor::RenderWeatherControls(RE::Sky* sky, bool showSectionHeader)
 		ImGui::PopStyleColor();
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("lock_weather_tooltip"), isLocked ? "Unlock weather to allow natural changes" : "Lock current weather to prevent changes"));
+		if (EditorWindow::AreWeatherLockHooksInstalled()) {
+			ImGui::Text("%s", T(TKEY("lock_weather_tooltip"), isLocked ? "Unlock weather to allow natural changes" : "Lock current weather to prevent changes"));
+		} else {
+			// MaintainWeatherLock still re-applies the lock every frame without the call-site
+			// redirects, so the lock works but weather can visibly flash before correcting.
+			ImGui::Text("%s", T(TKEY("lock_weather_unavailable_tooltip"), "Weather-lock hooks failed to install; the lock still works but weather may briefly flash before correcting"));
+		}
 	}
 
 	// Weather Selection - now with colored text

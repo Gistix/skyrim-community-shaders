@@ -20,6 +20,7 @@ struct ExtendedMaterials : Feature
 				T("feature.extended_materials.key_feature_5", "Height-based texture blending") } };
 	};
 
+	/** @brief Returns true only for Lighting shader type. */
 	bool HasShaderDefine(RE::BSShader::Type shaderType) override;
 
 	struct alignas(16) Settings
@@ -31,23 +32,22 @@ struct ExtendedMaterials : Feature
 		uint EnableHeightBlending = 1;
 
 		uint EnableShadows = 1;
-		uint ExtendShadows = 1;
 		uint EnableParallaxWarpingFix = 1;
 
-		float pad[1];
+		uint pad[2]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 
 	Settings settings;
 
+	/** @brief Enables bLandSpecular INI setting when terrain parallax is active. */
 	virtual void DataLoaded() override;
 
+	/** @brief Draws the ImGui settings UI for complex material, parallax, and shadow options. */
 	virtual void DrawSettings() override;
 
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
-
 	virtual void RestoreDefaultSettings() override;
-
 	virtual bool IsCore() const override { return true; };
 };

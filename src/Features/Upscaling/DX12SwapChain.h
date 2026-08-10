@@ -77,10 +77,12 @@ public:
 	void CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
 
 	void CreateInterop();
+	void RecreateWrappedResources(const DXGI_SWAP_CHAIN_DESC1& desc);
 
 	DXGISwapChainProxy* GetSwapChainProxy();
 
-	HRESULT GetBuffer(void** ppSurface);
+	HRESULT GetBuffer(UINT buffer, REFIID riid, void** ppSurface);
+	HRESULT ResizeBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags);
 	HRESULT Present(UINT SyncInterval, UINT Flags);
 	HRESULT GetDevice(_In_ REFIID riid, _COM_Outptr_ void** ppDevice);
 	HANDLE GetFrameLatencyWaitableObject();

@@ -802,6 +802,7 @@ void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* col
 	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
 	auto renderSize = Util::ConvertToDynamic(screenSize);
 
+
 	sl::Extent extentIn{ 0, 0, (uint)renderSize.x, (uint)renderSize.y };
 	sl::Extent extentOut{ 0, 0, (uint)screenSize.x, (uint)screenSize.y };
 

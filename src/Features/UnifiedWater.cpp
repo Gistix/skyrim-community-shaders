@@ -31,6 +31,14 @@ namespace
 		return cell && cell->IsInteriorCell();
 	}
 
+	/** @brief Logs the resource error alongside whether the process can see the loose file; the path stays relative so USVFS-virtualised files resolve. */
+	void LogMeshLoadFailure(RE::BSResource::ErrorCode error, const char* dataRelativePath)
+	{
+		std::error_code ec;
+		logger::error("[Unified Water] {} load failed: {}, loose file present: {}", dataRelativePath, magic_enum::enum_name(error),
+			std::filesystem::exists(std::filesystem::path("Data") / dataRelativePath, ec));
+	}
+
 	bool IsShortBranch(const std::uint8_t opcode)
 	{
 		return opcode == 0xEB || (opcode >= 0x70 && opcode <= 0x7F);
@@ -61,6 +69,40 @@ namespace
 		}
 
 		logger::error("[Unified Water] Skipping {} patch at {:X}: unexpected branch bytes {:02X} {:02X}", label, address, bytes[0], bytes[1]);
+	}
+
+	bool CanPatchBranch(const std::uintptr_t address)
+	{
+		const auto bytes = reinterpret_cast<const std::uint8_t*>(address);
+		return IsShortBranch(bytes[0]) || IsNearConditionalBranch(bytes[0], bytes[1]);
+	}
+
+	/** @brief Disables the vanilla LOD water and flow map paths that Unified Water supersedes. Irreversible, so it must only run once the meshes are validated. */
+	bool DisableVanillaWaterLOD()
+	{
+		// DataLoaded can run more than once, and re-patching a patched branch no longer matches either encoding
+		static bool patched = false;
+		if (patched)
+			return true;
+
+		// Skip iterating attached meshes and calling TESWaterSystem::AddLODWater, this is handled in Attach now
+		const auto attachedMeshAddLoop = REL::RelocationID(30934, 31737).address() + REL::Relocate(0x109, 0x109);
+		const auto lodWaterAddLoop = REL::RelocationID(30978, 31751).address() + REL::Relocate(0x54, 0xEA);
+
+		if (!CanPatchBranch(attachedMeshAddLoop) || !CanPatchBranch(lodWaterAddLoop)) {
+			logger::error("[Unified Water] Unexpected branch bytes at {:X} or {:X}; another mod may patch the same code", attachedMeshAddLoop, lodWaterAddLoop);
+			return false;
+		}
+		patched = true;
+
+		PatchBranchToUnconditional(attachedMeshAddLoop, "attached mesh add loop");
+		PatchBranchToUnconditional(lodWaterAddLoop, "LOD water add loop");
+
+		// Patch out the compute shader calls that write to the flow map in Main::RenderWaterEffects
+		REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x1B7, 0x1F7), REL::NOP, 5);
+		REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x1EA, 0x22A), REL::NOP, 5);
+		REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242), REL::NOP, 5);
+		return true;
 	}
 
 }
@@ -173,43 +215,54 @@ void UnifiedWater::DataLoaded()
 	args.postProcess = false;
 	RE::NiPointer<RE::NiNode> nif;
 
+	const auto fail = [this](std::string reason) {
+		logger::error("[Unified Water] {}; distant water falls back to vanilla LOD", reason);
+		failedLoadedMessage = std::move(reason);
+	};
+
 	if (const auto error = RE::BSModelDB::Demand("meshes\\water\\watermesh.nif", nif, args); error != RE::BSResource::ErrorCode::kNone) {
-		logger::error("[Unified Water] Failed to load water mesh");
+		LogMeshLoadFailure(error, "meshes\\water\\WaterMesh.nif");
+		fail("Failed to load water mesh");
 		return;
 	}
 	if (!nif || nif->GetChildren().empty() || !nif->GetChildren().front()->AsNode() || nif->GetChildren().front()->AsNode()->GetChildren().empty()) {
-		logger::error("[Unified Water] Invalid water mesh hierarchy");
+		fail("Invalid water mesh hierarchy");
 		return;
 	}
 	const auto waterShape = nif->GetChildren().front()->AsNode()->GetChildren().front()->AsTriShape();
 	if (!waterShape) {
-		logger::error("[Unified Water] Water mesh does not contain valid TriShape");
+		fail("Water mesh does not contain valid TriShape");
 		return;
 	}
 	waterMesh = RE::NiPointer(waterShape);
 	logger::debug("[Unified Water] Water mesh loaded");
 
 	if (const auto error = RE::BSModelDB::Demand("meshes\\water\\optimisedwatermesh.nif", nif, args); error != RE::BSResource::ErrorCode::kNone) {
-		logger::error("[Unified Water] Failed to load optimised water mesh");
+		LogMeshLoadFailure(error, "meshes\\water\\OptimisedWaterMesh.nif");
+		fail("Failed to load optimised water mesh");
 		return;
 	}
 	if (!nif || nif->GetChildren().empty() || !nif->GetChildren().front()->AsNode() || nif->GetChildren().front()->AsNode()->GetChildren().empty()) {
-		logger::error("[Unified Water] Invalid optimised water mesh hierarchy");
+		fail("Invalid optimised water mesh hierarchy");
 		return;
 	}
 	const auto optimisedWaterShape = nif->GetChildren().front()->AsNode()->GetChildren().front()->AsTriShape();
 	if (!optimisedWaterShape) {
-		logger::error("[Unified Water] Optimised water mesh does not contain valid TriShape");
+		fail("Optimised water mesh does not contain valid TriShape");
 		return;
 	}
 	optimisedWaterMesh = RE::NiPointer(optimisedWaterShape);
 	logger::debug("[Unified Water] Optimised water mesh loaded");
+	if (!DisableVanillaWaterLOD()) {
+		fail("Could not disable vanilla water LOD");
+		return;
+	}
 
 	flowmap = new Flowmap();
 	waterCache = new WaterCache();
 
 	if (LoadOrderChanged()) {
-		logger::info("[Unified Water] Load order changed, regenerating flowmap and caches");
+		logger::info("[Unified Water] Load order or plugin version changed, regenerating flowmap and caches");
 
 		if (flowmap->RegenerateAndLoadFlowmap())
 			SetFlowmapTex();
@@ -277,6 +330,68 @@ bool UnifiedWater::MenuOpenCloseEventHandler::Register()
 	return true;
 }
 
+namespace
+{
+	// Permissive sharing so a lingering handle on UWLoadOrder.hash never blocks a
+	// later attempt with ERROR_SHARING_VIOLATION - reproduced directly: writes to
+	// Data/ root failed while the game was running. The retry only helps a
+	// transient locker (AV/indexer), not a persistent one.
+	constexpr int kShareRetries = 3;
+	constexpr DWORD kShareRetryDelayMs = 50;
+
+	bool ReadHashFile(const std::filesystem::path& path, uint64_t& outHash)
+	{
+		for (int attempt = 0; attempt < kShareRetries; ++attempt) {
+			winrt::file_handle handle{ CreateFileW(path.c_str(), GENERIC_READ,
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) };
+			if (handle) {
+				DWORD bytesRead = 0;
+				const bool ok = ReadFile(handle.get(), &outHash, sizeof(outHash), &bytesRead, nullptr) &&
+				                bytesRead == sizeof(outHash);
+				if (!ok)
+					logger::warn("[Unified Water] '{}' exists but could not be fully read; treating as no persisted hash", path.string());
+				return ok;
+			}
+			const DWORD err = GetLastError();
+			if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+				return false;
+			if ((err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) && attempt + 1 < kShareRetries) {
+				Sleep(kShareRetryDelayMs);
+				continue;
+			}
+			logger::warn("[Unified Water] Failed to open '{}' for reading (error {})", path.string(), err);
+			return false;
+		}
+		return false;
+	}
+
+	bool WriteHashFile(const std::filesystem::path& path, uint64_t hash)
+	{
+		for (int attempt = 0; attempt < kShareRetries; ++attempt) {
+			winrt::file_handle handle{ CreateFileW(path.c_str(), GENERIC_WRITE,
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+				CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr) };
+			if (handle) {
+				DWORD bytesWritten = 0;
+				const bool ok = WriteFile(handle.get(), &hash, sizeof(hash), &bytesWritten, nullptr) &&
+				                bytesWritten == sizeof(hash);
+				if (!ok)
+					logger::error("[Unified Water] Failed to persist load-order hash to '{}'; cache will regenerate again next launch", path.string());
+				return ok;
+			}
+			const DWORD err = GetLastError();
+			if ((err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) && attempt + 1 < kShareRetries) {
+				Sleep(kShareRetryDelayMs);
+				continue;
+			}
+			logger::error("[Unified Water] Failed to open '{}' for writing (error {}); cache will regenerate again next launch", path.string(), err);
+			return false;
+		}
+		return false;
+	}
+}
+
 bool UnifiedWater::LoadOrderChanged()
 {
 	auto* dataHandler = RE::TESDataHandler::GetSingleton();
@@ -285,13 +400,17 @@ bool UnifiedWater::LoadOrderChanged()
 
 	uint64_t hash = 14695981039346656037ull;
 
-	auto addToHash = [&](const RE::TESFile* file) {
-		if (!file || !file->fileName)
-			return;
-		for (auto p = reinterpret_cast<const unsigned char*>(file->fileName); *p; ++p) {
+	auto addBytes = [&](const unsigned char* p) {
+		for (; *p; ++p) {
 			hash ^= *p;
 			hash *= 1099511628211ull;
 		}
+	};
+
+	auto addToHash = [&](const RE::TESFile* file) {
+		if (!file || !file->fileName)
+			return;
+		addBytes(reinterpret_cast<const unsigned char*>(file->fileName));
 	};
 
 	if (const auto mods = dataHandler->GetLoadedMods()) {
@@ -306,26 +425,27 @@ bool UnifiedWater::LoadOrderChanged()
 			addToHash(lightMods[i]);
 	}
 
-	namespace fs = std::filesystem;
-	const fs::path path = Util::PathHelpers::GetDataPath() / "UWLoadOrder.hash";
+	addBytes(reinterpret_cast<const unsigned char*>(Plugin::VERSION.string().c_str()));
+
+	// Data/ root is subject to a persistent external lock while the game runs (writes
+	// fail with ERROR_SHARING_VIOLATION for the whole session). Our plugin's own
+	// subfolder isn't - SettingsUser.json writes there every session without issue -
+	// so the hash lives there instead of directly under Data/.
+	const std::filesystem::path path = Util::PathHelpers::GetCommunityShaderPath() / "UWLoadOrder.hash";
 
 	uint64_t existingHash = 0;
-	if (fs::exists(path)) {
-		std::ifstream file(path, std::ios::binary);
-		if (file.is_open()) {
-			file.read(reinterpret_cast<char*>(&existingHash), sizeof(existingHash));
-			file.close();
-		}
+	ReadHashFile(path, existingHash);
+
+	const bool changed = hash != existingHash;
+	logger::debug("[Unified Water] Load order hash: computed={:#x} persisted={:#x} changed={}", hash, existingHash, changed);
+
+	if (changed) {
+		std::error_code ec;
+		std::filesystem::create_directories(path.parent_path(), ec);
+		WriteHashFile(path, hash);
 	}
 
-	if (hash != existingHash) {
-		std::ofstream file(path, std::ios::binary | std::ios::trunc);
-		if (file.is_open()) {
-			file.write(reinterpret_cast<const char*>(&hash), sizeof(hash));
-		}
-	}
-
-	return hash != existingHash;
+	return changed;
 }
 
 void UnifiedWater::SetFlowmapTex() const
@@ -355,12 +475,6 @@ void UnifiedWater::PostPostLoad()
 
 	stl::detour_thunk<BGSTerrainBlock_Attach>(REL::RelocationID(30934, 31737));
 
-	// Skip iterating attached meshes and calling TESWaterSystem::AddLODWater, this is handled in Attach now
-	const auto addLoopOffset = REL::RelocationID(30934, 31737).address() + REL::Relocate(0x109, 0x109);
-	const auto addLoopOffset2 = REL::RelocationID(30978, 31751).address() + REL::Relocate(0x54, 0xEA);
-	PatchBranchToUnconditional(addLoopOffset, "attached mesh add loop");
-	PatchBranchToUnconditional(addLoopOffset2, "LOD water add loop");
-
 	stl::detour_thunk<BGSTerrainBlock_Detach>(REL::RelocationID(30936, 31739));
 
 	stl::detour_thunk<BGSTerrainNode_UpdateWaterMeshSubVisibility>(REL::RelocationID(31059, 31846));
@@ -368,11 +482,6 @@ void UnifiedWater::PostPostLoad()
 	stl::detour_thunk<TESWaterSystem_UpdateDisplacementMeshPosition>(REL::RelocationID(31384, 32175));
 
 	stl::write_vfunc<0x6, BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
-
-	// Patch out the code compute shader calls that write to the flow map in Main::RenderWaterEffects
-	REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x1B7, 0x1F7), REL::NOP, 5);
-	REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x1EA, 0x22A), REL::NOP, 5);
-	REL::safe_fill(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242), REL::NOP, 5);
 
 	gWaterLOD = reinterpret_cast<RE::NiNode**>(REL::RelocationID(516171, 402322).address());
 	gFlowMapSize = reinterpret_cast<int32_t*>(REL::RelocationID(527644, 414596).address());
@@ -417,6 +526,11 @@ int32_t UnifiedWater::BSWaterShaderMaterial_ComputeCRC32::thunk(RE::BSWaterShade
 	return func(material, srcHash);
 }
 
+bool UnifiedWater::IsWaterDataReady() const
+{
+	return waterCache && waterMesh && optimisedWaterMesh;
+}
+
 bool UnifiedWater::IsExteriorWorldspaceActive() const
 {
 	// Interior cells may still inherit stale exterior worldspace state during transitions
@@ -440,7 +554,8 @@ void UnifiedWater::TES_SetWorldSpace::thunk(RE::TES* tes, RE::TESWorldSpace* wor
 
 	auto& singleton = globals::features::unifiedWater;
 	singleton.exteriorWorldspaceActive.store(worldSpace && isExterior, std::memory_order_release);
-	singleton.waterCache->SetCurrentWorldSpace(worldSpace);
+	if (singleton.IsWaterDataReady())
+		singleton.waterCache->SetCurrentWorldSpace(worldSpace);
 	singleton.UpdateWaterLODCull();
 }
 
@@ -450,12 +565,18 @@ void UnifiedWater::TES_DestroySkyCell::thunk(RE::TES* tes)
 
 	auto& singleton = globals::features::unifiedWater;
 	singleton.exteriorWorldspaceActive.store(false, std::memory_order_release);
-	singleton.waterCache->SetCurrentWorldSpace(nullptr);
+	if (singleton.IsWaterDataReady())
+		singleton.waterCache->SetCurrentWorldSpace(nullptr);
 	singleton.UpdateWaterLODCull();
 }
 
 void UnifiedWater::BGSTerrainNode_UpdateWaterMeshSubVisibility::thunk(const RE::BGSTerrainNode* node, RE::BSMultiBoundNode* waterParent)
 {
+	if (!globals::features::unifiedWater.IsWaterDataReady()) {
+		func(node, waterParent);
+		return;
+	}
+
 	if (!node || !waterParent)
 		return;
 
@@ -502,8 +623,10 @@ void UnifiedWater::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 	std::vector<std::pair<RE::BSTriShape*, const WaterCache::Instruction*>> built;
 	bool attaching = false;
 	RE::NiPointer<RE::BSMultiBoundNode> water;
+	// Keeps the backing RuntimeCache alive for as long as `built` holds pointers into it.
+	WaterCache::InstructionResult instructionResult;
 
-	if (block && block->loaded && !block->attached && block->chunk && block->water) {
+	if (singleton.IsWaterDataReady() && block && block->loaded && !block->attached && block->chunk && block->water) {
 		// Keep terrain water alive while moving it out of its owning node
 		water = RE::NiPointer<RE::BSMultiBoundNode>(block->water);
 		block->chunk->DetachChild2(water.get());
@@ -516,7 +639,8 @@ void UnifiedWater::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 		const auto lodLevel = node->GetLODLevel();
 		const auto worldSpace = block->node->manager->worldSpace;
 
-		const auto instructions = singleton.waterCache->GetInstructions(worldSpace, lodLevel, node->baseCellX, node->baseCellY);
+		instructionResult = singleton.waterCache->GetInstructions(worldSpace, lodLevel, node->baseCellX, node->baseCellY);
+		const auto instructions = instructionResult.instructions;
 		if (!instructions) {
 			logger::warn("[Unified Water] No instructions found for {} chunk at {}, {}", worldSpace->GetFormEditorID(), node->baseCellX, node->baseCellY);
 			// Reattach the saved node before falling back to vanilla
@@ -587,6 +711,12 @@ void UnifiedWater::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 		return;
 	}
 
+	// Reserve up front so AddWater can't reallocate waterObjects mid-loop and free a buffer other threads may be iterating.
+	{
+		RE::BSSpinLockGuard guard(waterSystem->lock);
+		waterSystem->waterObjects.reserve(waterSystem->waterObjects.size() + static_cast<std::uint32_t>(built.size()));
+	}
+
 	for (auto& [shape, instruction] : built) {
 		waterSystem->AddWater(shape, instruction->form.ptr, instruction->waterHeight, nullptr, true, false);
 
@@ -602,9 +732,12 @@ void UnifiedWater::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 			waterShaderProp->waterFlags = waterFlags;
 		}
 
-		// Remove from WaterSystem, will manage it ourselves
-		if (!waterSystem->waterObjects.empty()) {
-			waterSystem->waterObjects.pop_back();
+		// Remove from WaterSystem, will manage it ourselves. Lock: our only direct edit to the shared list.
+		{
+			RE::BSSpinLockGuard guard(waterSystem->lock);
+			if (!waterSystem->waterObjects.empty()) {
+				waterSystem->waterObjects.pop_back();
+			}
 		}
 	}
 

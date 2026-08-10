@@ -9,11 +9,14 @@
 #include "FeatureIssues.h"
 #include "Features/CSEditor.h"
 #include "Features/CloudShadows.h"
+#include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
+#include "Features/SkySync.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/Skin.h"
+#include "Features/Skylighting.h"
 #include "Features/SkySync.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
@@ -52,6 +55,8 @@ void State::Draw()
 	ZoneScoped;
 
 	auto shaderCache = globals::shaderCache;
+	auto weatherManager = globals::weatherManager;
+	auto sceneSettingsManager = globals::sceneSettingsManager;
 	auto& terrainBlending = globals::features::terrainBlending;
 	auto& terrainHelper = globals::features::terrainHelper;
 	auto& cloudShadows = globals::features::cloudShadows;
@@ -60,14 +65,15 @@ void State::Draw()
 	auto& truePBR = globals::features::truePBR;
 	auto context = globals::d3d::context;
 	auto& volumetricShadows = globals::features::volumetricShadows;
+	auto& skylighting = globals::features::skylighting;
 
 	if (shaderCache->IsEnabled()) {
 		// Process deferred cell transitions (interior detection)
-		SceneSettingsManager::GetSingleton()->Update();
+		sceneSettingsManager->Update();
 
 		if (csEditor.loaded) {
 			ZoneScopedN("WeatherManager::UpdateFeatures");
-			WeatherManager::GetSingleton()->UpdateFeatures();
+			weatherManager->UpdateFeatures();
 		}
 
 		if (terrainBlending.loaded && terrainBlending.settings.Enabled) {
@@ -78,6 +84,11 @@ void State::Draw()
 		if (cloudShadows.loaded) {
 			ZoneScopedN("CloudShadows::SkyShaderHacks");
 			cloudShadows.SkyShaderHacks();
+		}
+
+		if (globals::features::effects11.loaded) {
+			ZoneScopedN("Effects11::ParticleShaderHacks");
+			globals::features::effects11.ParticleShaderHacks();
 		}
 
 		if (terrainHelper.loaded) {
@@ -107,6 +118,8 @@ void State::Draw()
 						volumetricShadows.CopyShadowLightData();
 					if (globals::features::exponentialHeightFog.loaded)
 						globals::features::exponentialHeightFog.CaptureDirectionalShadowMap();
+					if (skylighting.loaded)
+						skylighting.CaptureShadowCascadeSRV();
 				}
 			}
 		}
@@ -173,24 +186,58 @@ void State::Debug()
 	}
 }
 
+bool State::HandlePostProcessing(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_output)
+{
+	auto& effects11 = globals::features::effects11;
+	if (!effects11.loaded || !effects11.HandleTonemapRender(a_input, a_output))
+		return false;
+
+	auto renderer = globals::game::renderer;
+	auto& outputRT = renderer->GetRuntimeData().renderTargets[a_output];
+	globals::d3d::context->OMSetRenderTargets(1, &outputRT.RTV, nullptr);
+
+	auto shadowState = globals::game::shadowState;
+	auto& stateData = shadowState->GetRuntimeData();
+	stateData.renderTargets[0] = a_output;
+	stateData.setRenderTargetMode[0] = RE::BSGraphics::SetRenderTargetMode::SRTM_NO_CLEAR;
+	for (int i = 1; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
+		stateData.renderTargets[i] = RE::RENDER_TARGET::kNONE;
+		stateData.setRenderTargetMode[i] = RE::BSGraphics::SetRenderTargetMode::SRTM_NO_CLEAR;
+	}
+	stateData.depthStencil = static_cast<uint32_t>(-1);
+
+	return true;
+}
+
+/**
+ * @brief Resets per-frame state and publishes frame counter to off-thread readers.
+ *
+ * Ends the current profiler frame, resets all loaded features, updates the
+ * timer if the game is not paused, caches current menu open states, clears
+ * shader descriptor tracking, increments and atomically publishes the frame
+ * count, and disables reflection and improved snow shaders.
+ */
 void State::Reset()
 {
 	globals::profiler->EndFrame();
 
 	Feature::ForEachLoadedFeature("Reset", [](Feature* feature) { feature->Reset(); });
-	if (!globals::game::ui->GameIsPaused())
-		timer += RE::GetSecondsSinceLastFrame();
 
 	// Cache menu open states once per frame to avoid repeated IsMenuOpen calls
 	// (each call constructs a BSFixedString, which is expensive at scale).
 	if (auto ui = globals::game::ui) {
+		if (!ui->GameIsPaused())
+			timer += RE::GetSecondsSinceLastFrame();
+
 		isMainMenuOpen = ui->IsMenuOpen(RE::MainMenu::MENU_NAME);
 		isLoadingMenuOpen = ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME);
 		isMapMenuOpen = ui->IsMenuOpen(RE::MapMenu::MENU_NAME);
+		isStatsMenuOpen = ui->IsMenuOpen(RE::StatsMenu::MENU_NAME);
 	} else {
 		isMainMenuOpen = false;
 		isLoadingMenuOpen = false;
 		isMapMenuOpen = false;
+		isStatsMenuOpen = false;
 	}
 
 	lastModifiedPixelDescriptor = 0;
@@ -199,8 +246,10 @@ void State::Reset()
 	lastVertexDescriptor = 0;
 	std::memset(&permutationDataPrevious, 0xFF, sizeof(PermutationCB));
 	frameCount++;
+	// Publish for off-thread readers (e.g. the MCP listener thread).
+	frameCountAtomic.store(frameCount, std::memory_order_relaxed);
 
-	if (auto* imageSpaceManager = RE::ImageSpaceManager::GetSingleton()) {
+	if (auto* imageSpaceManager = globals::game::imageSpaceManager) {
 		auto& BSImagespaceShaderApplyReflections = imageSpaceManager->GetRuntimeData().BSImagespaceShaderApplyReflections;
 
 		// Disable reflections being applied to things other than water
@@ -222,6 +271,7 @@ void State::Setup()
 	if (moonAndStarsLoaded)
 		logger::info("Moon and Stars detected, compatibility enabled");
 
+	globals::features::truePBR.SetupResources();
 	SetupResources();
 
 	// Probe typed UAV load support before features set up their resources, so any
@@ -233,10 +283,10 @@ void State::Setup()
 	Feature::ForEachLoadedFeature("SetupResources", [](Feature* feature) { feature->SetupResources(); });
 
 	// Load per-weather settings after features are setup
-	WeatherManager::GetSingleton()->LoadPerWeatherSettingsFromDisk();
+	globals::weatherManager->LoadPerWeatherSettingsFromDisk();
 
 	// Load scene-specific settings (Interior Only, etc.)
-	SceneSettingsManager::GetSingleton()->LoadAll();
+	globals::sceneSettingsManager->LoadAll();
 }
 
 static std::string GetConfigPath(State::ConfigMode a_configMode)
@@ -371,6 +421,14 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 		for (auto* feature : Feature::GetFeatureList()) {
 			try {
 				const std::string featureName = feature->GetShortName();
+				// Resolved here rather than in Feature::Load so features disabled at boot,
+				// which never reach Load, still report their install state to the UI.
+				std::error_code ec;
+				const bool iniExists = std::filesystem::exists(Util::PathHelpers::GetFeatureIniPath(featureName), ec);
+				// exists() reports false on error, so treat an unreadable path as installed rather than letting a probe failure hide the feature.
+				if (ec)
+					logger::warn("Could not determine install state for feature '{}': {}", featureName, ec.message());
+				feature->installed = ec || iniExists;
 				if (!disabledFeatures.contains(featureName) && feature->IsDisabledByDefault()) {
 					disabledFeatures[featureName] = true;
 					logger::info("Feature '{}' is disabled by default", featureName);
@@ -904,16 +962,6 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 					a_pixelDescriptor |= 256;
 			}
 			break;
-		case RE::BSShader::Type::Grass:
-			{
-				auto technique = a_vertexDescriptor & 0xF;
-				auto flags = a_vertexDescriptor & ~0xF;
-				if (technique == static_cast<uint32_t>(SIE::ShaderCache::GrassShaderTechniques::TruePbr)) {
-					technique = 0;
-				}
-				a_vertexDescriptor = flags | technique;
-			}
-			break;
 		}
 	}
 }
@@ -966,7 +1014,6 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 
 		const auto shaderManager = globals::game::smState;
 		const RE::NiTransform& dalcTransform = shaderManager->directionalAmbientTransform;
-		Util::StoreTransform3x4NoScale(data.DirectionalAmbient, dalcTransform);
 
 		auto shadowSceneNode = shaderManager->shadowSceneNode[0];
 		auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(shadowSceneNode->GetRuntimeData().sunLight->light.get());
@@ -975,8 +1022,8 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		data.DirLightColor = { lightRuntimeData.diffuse.red, lightRuntimeData.diffuse.green, lightRuntimeData.diffuse.blue, 1.0f };
 		data.DirLightColor *= lightRuntimeData.fade;
 
-		auto imageSpaceManager = RE::ImageSpaceManager::GetSingleton();
-		data.DirLightColor *= imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
+		if (auto imageSpaceManager = globals::game::imageSpaceManager)
+			data.DirLightColor *= imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
 
 		const auto& direction = dirLight->GetWorldDirection();
 		data.DirLightDirection = { -direction.x, -direction.y, -direction.z, 0.0f };
@@ -1047,13 +1094,15 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			if (auto masser = sky->masser) {
 				auto dir = Util::Moon::GetDirection(masser, moonAndStarsLoaded);
 				data.MasserDirection = { dir.x, dir.y, dir.z, 0.0f };
-				data.MasserColor = Util::Moon::GetBlendColor(masser, Util::Moon::MasserBaseColor, globals::features::skySync.settings.NewMoonIntensity, globals::features::skySync.settings.CrescentMoonIntensity, globals::features::skySync.settings.FullMoonIntensity);
+				if (masser->root && !masser->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+					data.MasserColor = Util::Moon::GetBlendColor(masser, Util::Moon::MasserBaseColor, globals::features::skySync.settings.NewMoonIntensity, globals::features::skySync.settings.CrescentMoonIntensity, globals::features::skySync.settings.FullMoonIntensity);
 			}
 
 			if (auto secunda = sky->secunda) {
 				auto dir = Util::Moon::GetDirection(secunda, moonAndStarsLoaded);
 				data.SecundaDirection = { dir.x, dir.y, dir.z, 0.0f };
-				data.SecundaColor = Util::Moon::GetBlendColor(secunda, Util::Moon::SecundaBaseColor, globals::features::skySync.settings.NewMoonIntensity, globals::features::skySync.settings.CrescentMoonIntensity, globals::features::skySync.settings.FullMoonIntensity);
+				if (secunda->root && !secunda->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+					data.SecundaColor = Util::Moon::GetBlendColor(secunda, Util::Moon::SecundaBaseColor, globals::features::skySync.settings.NewMoonIntensity, globals::features::skySync.settings.CrescentMoonIntensity, globals::features::skySync.settings.FullMoonIntensity);
 			}
 		}
 

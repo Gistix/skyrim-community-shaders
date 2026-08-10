@@ -25,19 +25,28 @@ public:
 	virtual inline std::string_view GetShaderDefineName() override { return "EXP_HEIGHT_FOG"; }
 	bool HasShaderDefine(RE::BSShader::Type) override { return true; };
 
+	/** @brief Draws the ImGui settings UI for fog parameters and volumetric fog options. */
 	virtual void DrawSettings() override;
+	/** @brief Creates samplers and the volumetric fog constant buffer. */
 	virtual void SetupResources() override;
+	/** @brief Releases all cached volumetric fog compute shaders so they can be recompiled. */
 	virtual void ClearShaderCache() override;
+	/**
+	 * @brief Runs the volumetric fog pipeline: material setup, conservative depth,
+	 * light scattering, and front-to-back integration.
+	 */
 	virtual void Prepass() override;
 
 	virtual void RestoreDefaultSettings() override;
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
+	/** @brief Registers all fog parameters as weather-interpolatable variables. */
 	void RegisterWeatherVariables() override;
+	/** @brief Captures the current directional shadow map SRV for use in volumetric fog light scattering. */
 	void CaptureDirectionalShadowMap();
 
-	struct Settings
+	struct alignas(16) Settings
 	{
 		uint enabled = 0;
 		uint useDynamicCubemaps = 1;
@@ -76,6 +85,8 @@ public:
 		float2 pad0;
 	} settings;
 	STATIC_ASSERT_ALIGNAS_16(Settings);
+
+	Settings GetCommonBufferData() const;
 
 private:
 	struct VolumetricFogCB

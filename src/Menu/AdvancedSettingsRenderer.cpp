@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "DX12Interop.h"
+#include "CSEditor/EditorWindow.h"
 #include "FeatureIssues.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
 #include "Fonts.h"
@@ -728,7 +729,7 @@ void AdvancedSettingsRenderer::RenderDeveloperSection()
 				RE::Console::ExecuteCommand("player.setav speedmult 1000");
 				RE::Console::ExecuteCommand("tgm");
 				RE::Console::ExecuteCommand("tcl");
-				RE::Console::ExecuteCommand("set timescale to 0");
+				EditorWindow::GetSingleton()->PauseTime();
 				RE::Console::ExecuteCommand("set gamehour to 12");
 				RE::Console::ExecuteCommand("coc whiterun");
 				RE::Console::ExecuteCommand("fw 81a");
