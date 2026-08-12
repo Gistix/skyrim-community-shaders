@@ -19,6 +19,8 @@
 #include <directx/d3dx12.h>
 #include <format>
 
+#include "Features/PostProcessing.h"
+
 #define I18N_KEY_PREFIX "feature.upscaling."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -1868,6 +1870,11 @@ void Upscaling::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
 
 void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
 {
+	auto& postProcessing = globals::features::postProcessing;
+	if (postProcessing.loaded) {
+		postProcessing.DrawBeforeUpscaling();
+	}
+
 	auto& upscaling = globals::features::upscaling;
 	auto upscaleMethod = upscaling.GetUpscaleMethod();
 
@@ -1880,11 +1887,16 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		if (upscaling.d3d12Mode)
 			upscaling.CopySharedD3D12Resources();
 
+		if (upscaling.ShouldUseFrameGenerationThisFrame() && postProcessing.loaded)
+			postProcessing.ClearBorderMotionVectorsForFrameGen();
+
 		upscaling.PerformUpscaling();
 
 		// Linear to gamma
 		upscaling.ConvertColorSpace(false);
 	} else if (upscaling.ShouldUseFrameGenerationThisFrame()) {
+		if (postProcessing.loaded)
+			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.CopySharedD3D12Resources();
 	}
 
@@ -1901,7 +1913,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 
 	func(a_this, a3, a_target, a_4, a_5);
 
-	// Restore kFRAMEBUFFER after ISHDR — hdrTexture now has the HDR scene
+	// Restore kFRAMEBUFFER after ISHDR - hdrTexture now has the HDR scene
 	if (hdrLoaded)
 		globals::features::hdrDisplay.RestoreFramebuffer();
 

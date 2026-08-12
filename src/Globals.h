@@ -40,6 +40,7 @@ struct SceneGraphExplorer;
 struct Effects11;
 struct ExponentialHeightFog;
 struct HDRDisplay;
+struct PostProcessing;
 struct ScreenshotFeature;
 struct Skin;
 
@@ -135,6 +136,7 @@ namespace globals
 		extern SceneGraphExplorer sceneGraphExplorer;
 		extern TruePBR truePBR;
 		extern Skin skin;
+		extern PostProcessing postProcessing;
 
 	}
 

@@ -22,6 +22,7 @@
 #include "Features/LinearLighting.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/Raytracing.h"
+#include "Features/PostProcessing.h"
 #include "Features/RemoteControl.h"
 #include "Features/RenderDoc.h"
 #include "Features/SceneGraphExplorer.h"
@@ -102,6 +103,7 @@ namespace globals
 		SceneGraphExplorer sceneGraphExplorer{};
 		TruePBR truePBR{};
 		Skin skin{};
+		PostProcessing postProcessing{};
 
 		namespace llf
 		{
