@@ -37,6 +37,7 @@
 #include "Features/TerrainHelper.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
+#include "Features/Tessellation.h"
 #include "Features/UnifiedWater.h"
 #include "Features/Upscaling.h"
 #include "Features/VolumetricLighting.h"
@@ -104,6 +105,7 @@ namespace globals
 		TruePBR truePBR{};
 		Skin skin{};
 		PostProcessing postProcessing{};
+		Tessellation tessellation{};
 
 		namespace llf
 		{

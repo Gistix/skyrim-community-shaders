@@ -37,6 +37,7 @@
 #include "Features/TerrainHelper.h"
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
+#include "Features/Tessellation.h"
 #include "Features/UnifiedWater.h"
 #include "Features/Upscaling.h"
 #include "Features/VolumetricLighting.h"
@@ -263,7 +264,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::exponentialHeightFog,
 		&globals::features::hdrDisplay,
 		&globals::features::skin,
-		&globals::features::postProcessing
+		&globals::features::postProcessing,
+		&globals::features::tessellation		
 	};
 
 	return features;

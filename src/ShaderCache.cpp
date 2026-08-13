@@ -78,7 +78,6 @@ namespace SIE
 
 	namespace SShaderCache
 	{
-		static void GetShaderDefines(const RE::BSShader&, uint32_t, D3D_SHADER_MACRO*);
 		static std::string GetShaderString(ShaderClass, const RE::BSShader&, uint32_t, bool = false);
 		/**
 		 * @brief Resolve image-space shader descriptor when applicable.
@@ -671,7 +670,7 @@ namespace SIE
 			return;
 		}
 
-		static void GetShaderDefines(const RE::BSShader& shader, uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
+		void GetShaderDefines(const RE::BSShader& shader, uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
 			switch (shader.shaderType.get()) {
 			case RE::BSShader::Type::Grass:

@@ -212,37 +212,47 @@ namespace Util
 		logger::debug("Compiling {} with {}", str, DefinesToString(macros));
 		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), &include, Program, ProgramType, flags, 0, &shaderBlob, &shaderErrors))) {
 			logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
+			if (shaderErrors)
+				shaderErrors->Release();
 			return nullptr;
 		}
 		if (shaderErrors)
 			logger::debug("Shader logs:\n{}", static_cast<char*>(shaderErrors->GetBufferPointer()));
+
+		// Create the shader from the blob, then release both blobs; they are
+		// only needed as compile intermediates.
+		ID3D11DeviceChild* shader = nullptr;
 		if (!_stricmp(ProgramType, "ps_5_0")) {
 			ID3D11PixelShader* regShader;
 			DX::ThrowIfFailed(device->CreatePixelShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		} else if (!_stricmp(ProgramType, "vs_5_0")) {
 			ID3D11VertexShader* regShader;
 			DX::ThrowIfFailed(device->CreateVertexShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		} else if (!_stricmp(ProgramType, "hs_5_0")) {
 			ID3D11HullShader* regShader;
 			DX::ThrowIfFailed(device->CreateHullShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		} else if (!_stricmp(ProgramType, "ds_5_0")) {
 			ID3D11DomainShader* regShader;
 			DX::ThrowIfFailed(device->CreateDomainShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		} else if (!_stricmp(ProgramType, "cs_5_0")) {
 			ID3D11ComputeShader* regShader;
 			DX::ThrowIfFailed(device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		} else if (!_stricmp(ProgramType, "cs_4_0")) {
 			ID3D11ComputeShader* regShader;
 			DX::ThrowIfFailed(device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
-			return regShader;
+			shader = regShader;
 		}
 
-		return nullptr;
+		if (shaderErrors)
+			shaderErrors->Release();
+		shaderBlob->Release();
+
+		return shader;
 	}
 
 	// RAII wrapper for D3D mapped resources

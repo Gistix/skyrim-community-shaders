@@ -26,6 +26,7 @@ struct SubsurfaceScattering;
 struct TerrainBlending;
 struct TerrainHelper;
 struct TerrainShadows;
+struct Tessellation;
 struct UnifiedWater;
 struct VolumetricLighting;
 struct WaterEffects;
@@ -137,7 +138,7 @@ namespace globals
 		extern TruePBR truePBR;
 		extern Skin skin;
 		extern PostProcessing postProcessing;
-
+		extern Tessellation tessellation;
 	}
 
 	/** @brief GPU constant buffer layout matching Skyrim's per-frame camera data. */

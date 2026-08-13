@@ -1,7 +1,9 @@
 #pragma once
 
 #include <BS_thread_pool.hpp>
+#include <d3dcompiler.h>
 #include <efsw/efsw.hpp>
+#include <span>
 #include <vector>
 
 #include "Utils/WinApi.h"
@@ -133,6 +135,25 @@ namespace SIE
 		Compute,
 		Total,
 	};
+
+	/**
+	 * @brief Shader preprocessor define helpers shared with feature code.
+	 *
+	 * The lighting technique/flag decoding is performed by the vanilla
+	 * GetLightingShaderDefines (REL 101631); the wrapper adds Community
+	 * Shaders defines (DEFERRED, TRUE_PBR, GLINT) and feature defines.
+	 */
+	namespace SShaderCache
+	{
+		/**
+		 * @brief Build the complete preprocessor defines for a shader descriptor,
+		 * matching the defines used to compile the runtime VS/PS permutations.
+		 * @param shader The shader (dispatch keyed on shader type).
+		 * @param descriptor The shader descriptor (technique bits + flag bits).
+		 * @param defines Output span, terminated with a null macro when complete.
+		 */
+		void GetShaderDefines(const RE::BSShader& shader, uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines);
+	}
 
 	class ShaderCompilationTask
 	{
