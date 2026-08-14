@@ -11,6 +11,7 @@
  */
 
 #include "Tessellation/Common.hlsli"
+#include "Tessellation/LightingCommon.hlsli"
 
 // Mirrors of the game's bound buffers (see Tessellation::MirrorParallaxBindings).
 // Partial layouts: only the members this shader reads are declared, with
@@ -34,47 +35,12 @@ cbuffer VS_PerFrame : register(b12)
 Texture2D<float4> ParallaxHeightmap : register(t0);
 SamplerState ParallaxSampler : register(s0);
 
-struct DomainInput
-{
-	float4 Position : SV_POSITION0;
-#if (defined(PROJECTED_UV) && !defined(SKINNED)) || defined(LANDSCAPE)
-	float4 TexCoord0 : TEXCOORD0;
-#else
-	float2 TexCoord0 : TEXCOORD0;
-#endif
-
-#if defined(WORLD_MAP)
-	float3 InputPosition : TEXCOORD4;
-#endif
-
-#if defined(SKINNED) || !defined(MODELSPACENORMALS)
-	float3 TBN0 : TEXCOORD1;
-	float3 TBN1 : TEXCOORD2;
-	float3 TBN2 : TEXCOORD3;
-#endif
-#if defined(EYE)
-	float3 EyeNormal : TEXCOORD6;
-#elif defined(LANDSCAPE)
-	float4 LandBlendWeights1 : TEXCOORD6;
-	float4 LandBlendWeights2 : TEXCOORD7;
-#elif defined(PROJECTED_UV) && !defined(SKINNED)
-	float3 TexProj : TEXCOORD7;
-#endif
-
-	float4 WorldPosition : POSITION1;
-	float4 PreviousWorldPosition : POSITION2;
-	float4 Color : COLOR0;
-	float4 FogParam : COLOR1;
-
-	float3 ModelPosition : TEXCOORD12;
-};
-
 [domain("tri")]
-DomainInput main(PatchConstantOutput a_patchConstant,
+LightingInOut main(PatchConstantOutput a_patchConstant,
 	float3 a_barycentric : SV_DomainLocation,
-	const OutputPatch<DomainInput, INPUT_PATCH_SIZE> a_patch)
+	const OutputPatch<LightingInOut, INPUT_PATCH_SIZE> a_patch)
 {
-	DomainInput output;
+    LightingInOut output;
 
 	output.Position = Interpolate4(a_barycentric, a_patch[0].Position, a_patch[1].Position, a_patch[2].Position);
 #if (defined(PROJECTED_UV) && !defined(SKINNED)) || defined(LANDSCAPE)
@@ -117,9 +83,10 @@ DomainInput main(PatchConstantOutput a_patchConstant,
 	float3 faceNormal = normalize(cross(e1, e2));
 	
     float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;	
-	float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - 0.5) * TessellationScale;
+	float3 displacedWorld = output.WorldPosition.xyz - faceNormal * height * TessellationScale;
 	
 	output.WorldPosition.xyz = displacedWorld;
+	
 	// Matrix-first mul to match the game's VS convention (mul(ViewProj, ...)
 	// in Lighting.hlsl); mul(v, M) would apply the transposed transform and
 	// collapse the geometry toward screen center.

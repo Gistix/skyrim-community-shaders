@@ -645,6 +645,12 @@ namespace SIE
 				defines[lastIndex++] = { "NO_PIXEL_SHADER", nullptr };
 			}
 
+			for (auto* feature : Feature::GetFeatureList()) {
+				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Utility)) {
+					defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };
+				}
+			}
+
 			defines[lastIndex++] = { nullptr, nullptr };
 		}
 

@@ -38,7 +38,7 @@ void Tessellation::SaveSettings(json& o_json)
 void Tessellation::DrawSettings()
 {
 	ImGui::Checkbox(T(TKEY("tessellation_enable"), "Enable"), &settings.Enable);
-	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Tessellation Scale"), &settings.TessellationScale, 0.0f, 0.1f, "%.4f");
+	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Tessellation Scale"), &settings.TessellationScale, 0.0f, 1.0f, "%.4f");
 	ImGui::SliderFloat(T(TKEY("tessellation_factor"), "Tessellation Factor"), &settings.TessellationFactor, 1.0f, 8.0f, "%.1f");
 }
 
@@ -79,7 +79,7 @@ Tessellation::TessellationStage Tessellation::GetStage(const RE::BSShader& shade
 	return stage;
 }
 
-void Tessellation::SetupMaterial(RE::BSShaderMaterial const* a_material)
+void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material)
 {
 	auto& tessellation = globals::features::tessellation;
 
@@ -87,6 +87,16 @@ void Tessellation::SetupMaterial(RE::BSShaderMaterial const* a_material)
 		return;
 
 	tessellation.currentPassHasDisplacement = false;
+
+	if (a_shader->shaderType.all(RE::BSShader::Type::Utility)) {
+		using Flags = RE::BSUtilityShader::Flags;
+
+		auto* utilityShader = reinterpret_cast<RE::BSUtilityShader*>(a_shader);
+		const auto flags = stl::enumeration<Flags>(static_cast<Flags>(utilityShader->unk90));
+		
+		if (flags.none(Flags::RenderDepth))
+			return;
+	}
 
 	RE::NiSourceTexture* heightTexture = nullptr;
 	int32_t clampMode = 0;
@@ -233,7 +243,7 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSLightingShader* a_shader, RE::BSLightingShaderMaterialBase const* a_material)
 		{
 			func(a_shader, a_material);
-			Tessellation::SetupMaterial(a_material);
+			Tessellation::SetupMaterial(a_shader, a_material);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -273,7 +283,7 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSUtilityShader* a_shader, RE::BSShaderMaterial const* a_material)
 		{
 			func(a_shader, a_material);
-			Tessellation::SetupMaterial(a_material);
+			Tessellation::SetupMaterial(a_shader, a_material);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -300,7 +310,7 @@ struct Tessellation::Hooks
 
 	struct BSUtilityShader_RestoreGeometry
 	{
-		static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
+		static void thunk(RE::BSUtilityShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
 			Tessellation::RestoreGeometry();
@@ -328,8 +338,18 @@ struct Tessellation::Hooks
 						a_vertexDesc.SetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0, 16);
 				}
 
+				auto shaderCache = globals::shaderCache;
+
+				const bool asyncCompilation = shaderCache->IsAsync();
+				if (asyncCompilation)
+					shaderCache->SetAsync(false);
+
 				// Override the original shader so the input layout gets TEXCOORD input from our custom shader
-				auto customShader = globals::shaderCache->GetVertexShader(*originalShader, globals::state->modifiedVertexDescriptor);
+				auto customShader = shaderCache->GetVertexShader(*originalShader, globals::state->modifiedVertexDescriptor);
+
+				if (asyncCompilation)
+					shaderCache->SetAsync(true);
+
 				*globals::game::currentVertexShader = customShader;
 			}
 
@@ -381,9 +401,9 @@ void Tessellation::SetupResources()
 	{
 		D3D11_SAMPLER_DESC samplerDesc = {
 			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressU = D3D11_TEXTURE_ADDRESS_WRAP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_WRAP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_WRAP,
 			.MaxAnisotropy = 1,
 			.MinLOD = 0,
 			.MaxLOD = D3D11_FLOAT32_MAX

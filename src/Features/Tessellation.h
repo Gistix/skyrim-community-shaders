@@ -39,7 +39,7 @@ struct Tessellation : public Feature
 	virtual void PostPostLoad() override;
 
 	static void RestoreTechnique();
-	static void SetupMaterial(RE::BSShaderMaterial const* a_material);
+	static void SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material);
 	static void SetupGeometry(RE::BSShader* a_shader);
 	static void RestoreGeometry();
 

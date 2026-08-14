@@ -33,8 +33,8 @@ struct VS_OUTPUT
 {
 	float4 PositionCS: SV_POSITION0;
 
-#if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2 || defined(TESSELLATION)
-#if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE) || defined(TESSELLATION)
+#if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
+#if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
 	float4 TexCoord0: TEXCOORD0;
 #	endif
 
@@ -68,6 +68,11 @@ struct VS_OUTPUT
 	float Depth: TEXCOORD2;
 #	endif
 #endif
+	
+#if defined(TESSELLATION)
+	float2 TexCoord2: TEXCOORD6;
+	float4 WorldPosition : POSITION1;	
+#endif	
 };
 
 #ifdef VSHADER
@@ -137,10 +142,19 @@ VS_OUTPUT main(VS_INPUT input)
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, boneIndices, FrameBuffer::CameraPosAdjust.xyz, input.BoneWeights);
 	precise float4 positionWS = float4(mul(positionMS, transpose(worldMatrix)), 1);
 
+#			if defined(TESSELLATION)
+	vsout.WorldPosition = positionWS;
+#			endif
+
 	positionCS = mul(FrameBuffer::CameraViewProj, positionWS);
 #		else
 	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj, World);
 	positionCS = mul(modelViewProj, positionMS);
+
+#			if defined(TESSELLATION)
+	precise float4 worldPosition = mul(World, positionMS);
+	vsout.WorldPosition = worldPosition;
+#			endif
 #		endif
 
 #		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED)
@@ -239,6 +253,10 @@ VS_OUTPUT main(VS_INPUT input)
 #		endif
 
 #	endif
+
+#if defined(TESSELLATION)
+	vsout.TexCoord2 = input.TexCoord;
+#endif	
 
 #	if defined(OFFSET_DEPTH)
 	vsout.PositionCS.z += 10.0;
