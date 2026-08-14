@@ -12,7 +12,7 @@ struct VS_INPUT
 {
 	float4 PositionMS: POSITION0;
 
-#if defined(TEXTURE)
+#if defined(TEXTURE) || defined(TESSELLATION)
 	float2 TexCoord: TEXCOORD0;
 #endif
 
@@ -33,8 +33,8 @@ struct VS_OUTPUT
 {
 	float4 PositionCS: SV_POSITION0;
 
-#if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
-#	if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
+#if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2 || defined(TESSELLATION)
+#if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE) || defined(TESSELLATION)
 	float4 TexCoord0: TEXCOORD0;
 #	endif
 

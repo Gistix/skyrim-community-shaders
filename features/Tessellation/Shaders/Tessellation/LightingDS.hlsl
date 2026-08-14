@@ -30,17 +30,9 @@ cbuffer VS_PerFrame : register(b12)
 	row_major float4x4 ViewProj : packoffset(c8);
 };
 
-#if defined(PARALLAX) || defined(PARALLAX_OCC)
-// The game binds the parallax heightmap at PS slot 3 for vanilla parallax
-// materials (BSLightingShader::SetupMaterial, MatSetTextureSlot(3, ...)).
-Texture2D<float4> ParallaxHeightmap : register(t3);
-SamplerState ParallaxSampler : register(s3);
-#elif defined(TRUE_PBR)
-// PBR materials bind their displacement texture at PS slot 4
-// (TruePBR.cpp, SetPSTexture(4, ...)).
-Texture2D<float4> ParallaxHeightmap : register(t4);
-SamplerState ParallaxSampler : register(s4);
-#endif
+
+Texture2D<float4> ParallaxHeightmap : register(t0);
+SamplerState ParallaxSampler : register(s0);
 
 struct DomainInput
 {
@@ -115,23 +107,23 @@ DomainInput main(PatchConstantOutput a_patchConstant,
 	output.FogParam = Interpolate4(a_barycentric, a_patch[0].FogParam, a_patch[1].FogParam, a_patch[2].FogParam);
 	output.ModelPosition = Interpolate3(a_barycentric, a_patch[0].ModelPosition, a_patch[1].ModelPosition, a_patch[2].ModelPosition);
 
-#if defined(PARALLAX) || defined(PARALLAX_OCC) || defined(TRUE_PBR)
 	// True displacement: displace the interpolated world position along the
 	// patch's geometric normal (from the raw control point winding, edges
 	// normalized first for stability at camera-relative coordinates) by the
 	// parallax height (sampled like the PS does, .x channel), then recompute
 	// the clip-space position.
-	float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;
 	float3 e1 = normalize(a_patch[1].WorldPosition.xyz - a_patch[0].WorldPosition.xyz);
 	float3 e2 = normalize(a_patch[2].WorldPosition.xyz - a_patch[0].WorldPosition.xyz);
 	float3 faceNormal = normalize(cross(e1, e2));
+	
+    float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;	
 	float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - 0.5) * TessellationScale;
+	
 	output.WorldPosition.xyz = displacedWorld;
 	// Matrix-first mul to match the game's VS convention (mul(ViewProj, ...)
 	// in Lighting.hlsl); mul(v, M) would apply the transposed transform and
 	// collapse the geometry toward screen center.
 	output.Position = mul(ViewProj, float4(displacedWorld, 1.0));
-#endif
 
 	return output;
 }

@@ -24,8 +24,8 @@ struct Tessellation : public Feature
 	}
 
 	// Functionality
-	virtual inline std::string_view GetShaderDefineName() override { return "SHADER_MACRO"; }
-	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override { return t == RE::BSShader::Type::Lighting; };
+	virtual inline std::string_view GetShaderDefineName() override { return "TESSELLATION"; }
+	virtual inline bool HasShaderDefine(RE::BSShader::Type t) override { return t == RE::BSShader::Type::Lighting || t == RE::BSShader::Type::Utility; };
 
 	// Settings & UI
 	virtual void RestoreDefaultSettings() override;
@@ -38,14 +38,10 @@ struct Tessellation : public Feature
 	virtual void ClearShaderCache() override;
 	virtual void PostPostLoad() override;
 
-	static void BSLightingShader_SetupMaterial(RE::BSLightingShader* a_shader, RE::BSLightingShaderMaterialBase const* a_material);
-	static void BSLightingShader_RestoreTechnique();
-	static void BSLightingShader_SetupGeometry(RE::BSShader* a_shader);
-	static void BSLightingShader_RestoreGeometry();
-	static void BSUtilityShader_SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material);
-	static void BSUtilityShader_SetupGeometry(RE::BSShader* a_shader);
-	static void BSUtilityShader_RestoreTechnique();
-	static void BSUtilityShader_RestoreGeometry();
+	static void RestoreTechnique();
+	static void SetupMaterial(RE::BSShaderMaterial const* a_material);
+	static void SetupGeometry(RE::BSShader* a_shader);
+	static void RestoreGeometry();
 
 	struct Hooks;
 
@@ -87,23 +83,10 @@ struct Tessellation : public Feature
 	 */
 	TessellationStage GetStage(const RE::BSShader& shader, uint32_t descriptor);
 
-	/**
-	 * @brief Mirrors the game's per-pass constant buffers and the parallax
-	 * heightmap SRV/sampler onto the HS/DS stages for PARALLAX / PARALLAX_OCC
-	 * techniques.
-	 * @param descriptor The modified pixel descriptor of the current pass.
-	 * @return True when the heightmap was bound at slot 3 (tessellation
-	 * enabled for the pass), false otherwise (pass renders vanilla).
-	 */
-	bool MirrorParallaxBindings();
-
 	std::unordered_map<uint64_t, TessellationStage> stageCache;  // key = shaderType << 32 | descriptor
 
 	/** @brief Set per pass in the SetupMaterial hooks: the current material actually has displacement. */
 	bool currentPassHasDisplacement = false;
-
-	/** @brief PS texture slot the heightmap is bound to (3 = vanilla parallax, 4 = PBR/utility). */
-	uint32_t currentHeightmapSlot = 3;
 
 	eastl::unique_ptr<ConstantBuffer> tessellationCb = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> parallaxSampler = nullptr;

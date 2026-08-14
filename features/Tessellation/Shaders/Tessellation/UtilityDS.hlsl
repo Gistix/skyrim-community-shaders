@@ -6,8 +6,6 @@
  * modified pixel descriptor. The output struct mirrors the Utility shader's
  * VS_OUTPUT layout (package/Shaders/Utility.hlsl) so downstream stages
  * consume it directly.
- *
- * Pass-through for now; heightmap bindings and displacement come later.
  */
 
 #include "Tessellation/Common.hlsli"
@@ -16,18 +14,15 @@
 // The utility path always binds the heightmap at PS slot 4 (see
 // Tessellation::BSUtilityShader_SetupMaterial); the utility descriptor
 // carries no technique flags, so this slot is unconditional.
-Texture2D<float4> ParallaxHeightmap : register(t4);
-SamplerState ParallaxSampler : register(s4);
+Texture2D<float4> ParallaxHeightmap : register(t0);
+SamplerState ParallaxSampler : register(s0);
 
 struct UtilityOutput
 {
 	float4 PositionCS : SV_POSITION0;
+	float4 TexCoord0 : TEXCOORD0;
 
 #if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
-#	if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
-	float4 TexCoord0 : TEXCOORD0;
-#	endif
-
 #	if defined(RENDER_NORMAL)
 	float4 Normal : TEXCOORD1;
 #	endif
@@ -68,12 +63,9 @@ UtilityOutput main(PatchConstantOutput a_patchConstant,
 	UtilityOutput output;
 
 	output.PositionCS = Interpolate4(a_barycentric, a_patch[0].PositionCS, a_patch[1].PositionCS, a_patch[2].PositionCS);
+	output.TexCoord0 = Interpolate4(a_barycentric, a_patch[0].TexCoord0, a_patch[1].TexCoord0, a_patch[2].TexCoord0);
 
 #if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
-#	if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
-	output.TexCoord0 = Interpolate4(a_barycentric, a_patch[0].TexCoord0, a_patch[1].TexCoord0, a_patch[2].TexCoord0);
-#	endif
-
 #	if defined(RENDER_NORMAL)
 	output.Normal = Interpolate4(a_barycentric, a_patch[0].Normal, a_patch[1].Normal, a_patch[2].Normal);
 #	endif
@@ -105,21 +97,26 @@ UtilityOutput main(PatchConstantOutput a_patchConstant,
 #	endif
 #endif
 
-#if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
+#if !defined(RENDER_SHADOWMAP) && !defined(RENDER_SHADOWMAP_PB)
 	// The Utility VS does not output world positions, so reconstruct the
 	// camera-relative control points from clip space and displace along the
-	// patch face normal, mirroring the Lighting DS. This requires UVs, which
-	// are only present in the permutations guarded above; the base depth
-	// prepass permutation has no TexCoord0 and stays pass-through.
+	// patch face normal, mirroring the Lighting DS. UVs are always available
+	// now (Utility.hlsl emits TexCoord0 unconditionally). Skipped for shadow
+	// map permutations where PositionCS is clamped or parabola-warped and the
+	// inverse transform would be invalid.
 	float4 world0 = mul(FrameBuffer::CameraViewProjInverse, a_patch[0].PositionCS);
 	float4 world1 = mul(FrameBuffer::CameraViewProjInverse, a_patch[1].PositionCS);
 	float4 world2 = mul(FrameBuffer::CameraViewProjInverse, a_patch[2].PositionCS);
+	
 	float3 e1 = normalize(world1.xyz - world0.xyz);
-	float3 e2 = normalize(world2.xyz - world0.xyz);
+	float3 e2 = normalize(world2.xyz - world0.xyz);	
 	float3 faceNormal = normalize(cross(e1, e2));
+	
 	float3 worldPos = Interpolate3(a_barycentric, world0.xyz, world1.xyz, world2.xyz);
+	
 	float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;
 	float3 displacedWorld = worldPos + faceNormal * (height - 0.5) * TessellationScale;
+	
 	output.PositionCS = mul(FrameBuffer::CameraViewProj, float4(displacedWorld, 1.0));
 #endif
 

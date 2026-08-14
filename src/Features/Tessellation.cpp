@@ -20,25 +20,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TessellationFactor)
 
 ////////////////////////////////////////////////////////////////////////////////////
-
-/** @brief True for the materials that actually tessellate (parallax displacement). */
-static bool IsTessellatableTechnique(uint32_t descriptor)
-{
-	const auto technique = static_cast<SIE::ShaderCache::LightingShaderTechniques>(0x3F & (descriptor >> 24));
-	if (technique == SIE::ShaderCache::LightingShaderTechniques::Parallax ||
-		technique == SIE::ShaderCache::LightingShaderTechniques::ParallaxOcc) {
-		return true;
-	}
-	// PBR materials (non-landscape): displacement texture bound at PS slot 4
-	// (TruePBR.cpp, SetPSTexture(4, ...)). Landscape PBR uses per-tile t80+
-	// displacement textures, out of scope for now.
-	if ((descriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
-		return technique == SIE::ShaderCache::LightingShaderTechniques::None ||
-		       technique == SIE::ShaderCache::LightingShaderTechniques::TreeAnim;
-	}
-	return false;
-}
-
 void Tessellation::RestoreDefaultSettings()
 {
 	settings = {};
@@ -88,6 +69,7 @@ Tessellation::TessellationStage Tessellation::GetStage(const RE::BSShader& shade
 		stage.hull.attach(rawPtr);
 	else
 		logger::error("[Tessellation] Failed to compile hull shader for descriptor {:X}", descriptor);
+
 	if (auto rawPtr = reinterpret_cast<ID3D11DomainShader*>(Util::CompileShader(domainPath, macroPairs, "ds_5_0")); rawPtr)
 		stage.domain.attach(rawPtr);
 	else
@@ -97,71 +79,39 @@ Tessellation::TessellationStage Tessellation::GetStage(const RE::BSShader& shade
 	return stage;
 }
 
-void Tessellation::BSLightingShader_SetupMaterial(RE::BSLightingShader* a_shader, RE::BSLightingShaderMaterialBase const* a_material)
+void Tessellation::SetupMaterial(RE::BSShaderMaterial const* a_material)
 {
 	auto& tessellation = globals::features::tessellation;
-	tessellation.currentPassHasDisplacement = false;
 
-	// Vanilla parallax materials bind their heightmap at PS slot 3 in the
-	// game's SetupMaterial; the SRV check in SetupGeometry confirms it.
-	const auto technique = static_cast<SIE::ShaderCache::LightingShaderTechniques>(0x3F & (a_shader->currentRawTechnique >> 24));
-	if (technique == SIE::ShaderCache::LightingShaderTechniques::Parallax ||
-		technique == SIE::ShaderCache::LightingShaderTechniques::ParallaxOcc) {
-		tessellation.currentPassHasDisplacement = true;
-		tessellation.currentHeightmapSlot = 3;
+	if (!tessellation.settings.Enable)
 		return;
-	}
 
-	// PBR materials: mirror TruePBR's flag-based cast (TruePBR.cpp:782-783)
-	// and require an actual displacement texture, same as TruePBR.cpp:986.
-	if ((a_shader->currentRawTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::TruePbr)) != 0) {
-		auto* pbrMaterial = static_cast<BSLightingShaderMaterialPBR const*>(a_material);
-		tessellation.currentPassHasDisplacement = pbrMaterial->displacementTexture != nullptr &&
-			pbrMaterial->displacementTexture != globals::game::graphicsState->GetRuntimeData().defaultTextureBlack;
-		tessellation.currentHeightmapSlot = 4;
-	}
-}
-
-void Tessellation::BSUtilityShader_SetupMaterial([[maybe_unused]] RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material)
-{
-	auto& tessellation = globals::features::tessellation;
 	tessellation.currentPassHasDisplacement = false;
 
-	auto* material = static_cast<RE::BSLightingShaderMaterialBase const*>(a_material);
-	const auto feature = material->GetFeature();
-
-	// Vanilla parallax materials carry the heightmap as heightTexture; the
-	// utility pass never binds it, so bind it ourselves at PS slot 4 (the
-	// utility descriptor carries no technique flags, so the utility DS
-	// declares a single unconditional slot).
 	RE::NiSourceTexture* heightTexture = nullptr;
-	if (feature == RE::BSShaderMaterial::Feature::kParallax) {
-		heightTexture = static_cast<RE::BSLightingShaderMaterialParallax const*>(material)->heightTexture.get();
-	} else if (feature == RE::BSShaderMaterial::Feature::kParallaxOcc) {
-		heightTexture = static_cast<RE::BSLightingShaderMaterialParallaxOcc const*>(material)->heightTexture.get();
-	}
-	if (heightTexture) {
-		tessellation.currentPassHasDisplacement = true;
-		tessellation.currentHeightmapSlot = 4;
-		globals::game::shadowState->SetPSTexture(4, heightTexture->rendererTexture);
-		globals::game::shadowState->SetPSTextureAddressMode(4, RE::BSGraphics::TextureAddressMode::kWrapSWrapT);
-		globals::game::shadowState->SetPSTextureFilterMode(4, RE::BSGraphics::TextureFilterMode::kAnisotropic);
-		return;
-	}
+	int32_t clampMode = 0;
 
-	// PBR materials: identified via the global tracking map (membership check;
-	// the cast is never dereferenced unless the map says it is a PBR material).
-	auto* pbrCandidate = static_cast<BSLightingShaderMaterialPBR*>(const_cast<RE::BSShaderMaterial*>(a_material));
-	if (BSLightingShaderMaterialPBR::All.contains(pbrCandidate)) {
-		auto* pbr = static_cast<BSLightingShaderMaterialPBR const*>(a_material);
-		if (pbr->displacementTexture && pbr->displacementTexture != globals::game::graphicsState->GetRuntimeData().defaultTextureBlack) {
-			tessellation.currentPassHasDisplacement = true;
-			tessellation.currentHeightmapSlot = 4;
-			globals::game::shadowState->SetPSTexture(4, pbr->displacementTexture->rendererTexture);
-			globals::game::shadowState->SetPSTextureAddressMode(4, static_cast<RE::BSGraphics::TextureAddressMode>(pbr->textureClampMode));
-			globals::game::shadowState->SetPSTextureFilterMode(4, RE::BSGraphics::TextureFilterMode::kAnisotropic);
+	if (typeid(*a_material) == typeid(BSLightingShaderMaterialPBR)) {
+		auto* pbrMaterial = reinterpret_cast<BSLightingShaderMaterialPBR const*>(a_material);
+		heightTexture = pbrMaterial->displacementTexture.get();
+		clampMode = pbrMaterial->textureClampMode;
+	} else {
+		const auto feature = a_material->GetFeature();
+		if (feature == RE::BSShaderMaterial::Feature::kParallax || feature == RE::BSShaderMaterial::Feature::kParallaxOcc) {
+			auto* parallaxMaterial = reinterpret_cast<RE::BSLightingShaderMaterialParallax const*>(a_material);
+			heightTexture = parallaxMaterial->heightTexture.get();
+			clampMode = parallaxMaterial->textureClampMode;
 		}
 	}
+
+	const bool hasDisplacement = heightTexture != nullptr && heightTexture != globals::game::graphicsState->GetRuntimeData().defaultTextureBlack.get();
+	if (!hasDisplacement)
+		return;
+
+	tessellation.currentPassHasDisplacement = true;
+
+	auto context = globals::d3d::context;
+	context->DSSetShaderResources(0, 1, &heightTexture->rendererTexture->resourceView);
 }
 
 /** @brief Binds the feature CB, HS/DS shaders and patch topology for a stage. */
@@ -170,178 +120,91 @@ static void ApplyTessellationStage(const Tessellation::TessellationStage& stage)
 	auto& tessellation = globals::features::tessellation;
 	auto context = globals::d3d::context;
 
+	// Copy buffers from VS and PS
+	{
+		// PS PerMaterial (b1): ParallaxOccData at packoffset(c3)
+		ID3D11Buffer* psB1 = nullptr;
+		context->PSGetConstantBuffers(1, 1, &psB1);
+		if (psB1) {
+			context->DSSetConstantBuffers(1, 1, &psB1);
+			psB1->Release();
+		}
+
+		// VS PerGeometry (b2): EyePosition at packoffset(c6)
+		ID3D11Buffer* vsB2 = nullptr;
+		context->VSGetConstantBuffers(2, 1, &vsB2);
+		if (vsB2) {
+			context->HSSetConstantBuffers(2, 1, &vsB2);
+			context->DSSetConstantBuffers(2, 1, &vsB2);
+			vsB2->Release();
+		}
+
+		// VS_PerFrame (b12): ViewProj at packoffset(c8)
+		ID3D11Buffer* vsB12 = nullptr;
+		context->VSGetConstantBuffers(12, 1, &vsB12);
+		if (vsB12) {
+			context->HSSetConstantBuffers(12, 1, &vsB12);
+			context->DSSetConstantBuffers(12, 1, &vsB12);
+			vsB12->Release();
+		}
+
+		auto* heightSampler = tessellation.parallaxSampler.get();
+		context->DSSetSamplers(0, 1, &heightSampler);
+	}
+
 	auto buffer = tessellation.tessellationCb->CB();
 	context->HSSetConstantBuffers(0, 1, &buffer);
 	context->DSSetConstantBuffers(0, 1, &buffer);
+
 	context->HSSetShader(stage.hull.get(), nullptr, 0);
 	context->DSSetShader(stage.domain.get(), nullptr, 0);
+
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
 }
 
-/** @brief Unbinds the HS/DS shaders and the stage bindings applied by ApplyTessellationStage. */
-static void UnbindTessellationStage()
+void Tessellation::RestoreTechnique()
 {
+	if (!globals::features::tessellation.currentPassHasDisplacement)
+		return;
+
 	auto context = globals::d3d::context;
 	context->HSSetShader(nullptr, nullptr, 0);
 	context->DSSetShader(nullptr, nullptr, 0);
 
-	// Release the HS/DS stage bindings mirrored by MirrorParallaxBindings;
-	// otherwise the context keeps references to the game's buffers and the
-	// heightmap texture alive after the pass.
-	ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
-	context->DSSetShaderResources(3, 2, nullSRVs);
-	ID3D11SamplerState* nullSamplers[2] = { nullptr, nullptr };
-	context->DSSetSamplers(3, 2, nullSamplers);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->DSSetShaderResources(0, 1, &nullSRV);
+
+	ID3D11SamplerState* nullSampler = nullptr;
+	context->DSSetSamplers(0, 1, &nullSampler);
+
 	ID3D11Buffer* nullBuffers[13] = { nullptr };
 	context->HSSetConstantBuffers(0, 13, nullBuffers);
 	context->DSSetConstantBuffers(0, 13, nullBuffers);
 }
 
-void Tessellation::BSLightingShader_RestoreTechnique()
-{
-	if (!globals::features::tessellation.currentPassHasDisplacement)
-		return;
-
-	UnbindTessellationStage();
-}
-
-void Tessellation::BSUtilityShader_RestoreTechnique()
-{
-	if (!globals::features::tessellation.currentPassHasDisplacement)
-		return;
-
-	UnbindTessellationStage();
-}
-
-void Tessellation::BSLightingShader_SetupGeometry(RE::BSShader* a_shader)
+void Tessellation::SetupGeometry(RE::BSShader* a_shader)
 {
 	auto& tessellation = globals::features::tessellation;
 	if (!tessellation.settings.Enable)
+		return;
+
+	if (!tessellation.currentPassHasDisplacement)
 		return;
 
 	// Key on the modified pixel descriptor: it retains the technique bits (the
 	// vertex descriptor has them cleared for Parallax etc. by ModifyShaderLookup).
 	// The Deferred bit is masked out since it does not affect HS/DS code.
 	const auto descriptor = globals::state->modifiedPixelDescriptor & ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
-	if (!IsTessellatableTechnique(descriptor))
-		return;
-
-	// Only tessellate when the material actually has displacement (recorded in
-	// the SetupMaterial hook); PBR materials without a displacement texture
-	// render vanilla.
-	if (!tessellation.currentPassHasDisplacement)
-		return;
-
 	auto stage = tessellation.GetStage(*a_shader, descriptor);
 	if (!stage.hull || !stage.domain) {
 		logger::error("[Tessellation] Missing HS/DS stage for descriptor {:X}, pass renders vanilla", descriptor);
 		return;
 	}
 
-	if (!tessellation.MirrorParallaxBindings()) {
-		logger::error("[Tessellation] No heightmap bound at PS slot {} for descriptor {:X}, pass renders vanilla", tessellation.currentHeightmapSlot, descriptor);
-		return;
-	}
-
 	ApplyTessellationStage(stage);
 }
 
-void Tessellation::BSUtilityShader_SetupGeometry(RE::BSShader* a_shader)
-{
-	auto& tessellation = globals::features::tessellation;
-	if (!tessellation.settings.Enable)
-		return;
-
-	// Only tessellate utility passes for displacement materials (depth prepass
-	// matching the displaced lighting surface); the heightmap was bound in the
-	// SetupMaterial hook.
-	if (!tessellation.currentPassHasDisplacement)
-		return;
-
-	const auto descriptor = globals::state->modifiedPixelDescriptor & ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
-
-	auto stage = tessellation.GetStage(*a_shader, descriptor);
-	if (!stage.hull || !stage.domain) {
-		logger::error("[Tessellation] Missing Utility HS/DS stage for descriptor {:X}, pass renders vanilla", descriptor);
-		return;
-	}
-
-	if (!tessellation.MirrorParallaxBindings()) {
-		logger::error("[Tessellation] No heightmap bound at PS slot {} for utility descriptor {:X}, pass renders vanilla", tessellation.currentHeightmapSlot, descriptor);
-		return;
-	}
-
-	ApplyTessellationStage(stage);
-}
-
-bool Tessellation::MirrorParallaxBindings()
-{
-	// The heightmap slot is decided by the SetupMaterial hooks (3 for vanilla
-	// parallax, 4 for PBR and the utility path); the descriptor does not
-	// carry that information for utility passes.
-	const uint32_t heightSlot = currentHeightmapSlot;
-
-	auto context = globals::d3d::context;
-
-	// Heightmap SRV: when the material has no parallax heightmap bound, skip
-	// tessellation entirely and let the pass render vanilla.
-	ID3D11ShaderResourceView* heightSRV = nullptr;
-	context->PSGetShaderResources(heightSlot, 1, &heightSRV);
-	if (!heightSRV)
-		return false;
-	context->DSSetShaderResources(heightSlot, 1, &heightSRV);
-	heightSRV->Release();
-
-	// PS PerMaterial (b1): ParallaxOccData at packoffset(c3)
-	ID3D11Buffer* psB1 = nullptr;
-	context->PSGetConstantBuffers(1, 1, &psB1);
-	if (psB1) {
-		context->DSSetConstantBuffers(1, 1, &psB1);
-		psB1->Release();
-	}
-
-	// VS PerGeometry (b2): EyePosition at packoffset(c6)
-	ID3D11Buffer* vsB2 = nullptr;
-	context->VSGetConstantBuffers(2, 1, &vsB2);
-	if (vsB2) {
-		context->HSSetConstantBuffers(2, 1, &vsB2);
-		context->DSSetConstantBuffers(2, 1, &vsB2);
-		vsB2->Release();
-	}
-
-	// VS_PerFrame (b12): ViewProj at packoffset(c8)
-	ID3D11Buffer* vsB12 = nullptr;
-	context->VSGetConstantBuffers(12, 1, &vsB12);
-	if (vsB12) {
-		context->HSSetConstantBuffers(12, 1, &vsB12);
-		context->DSSetConstantBuffers(12, 1, &vsB12);
-		vsB12->Release();
-	}
-
-	// Sampler mirrored from the PS stage; the PS has no PARALLAX_OCC path, so
-	// fall back to our own sampler when none is bound.
-	ID3D11SamplerState* heightSampler = nullptr;
-	context->PSGetSamplers(heightSlot, 1, &heightSampler);
-	if (heightSampler) {
-		context->DSSetSamplers(heightSlot, 1, &heightSampler);
-		heightSampler->Release();
-	} else if (parallaxSampler) {
-		heightSampler = parallaxSampler.get();
-		context->DSSetSamplers(heightSlot, 1, &heightSampler);
-	}
-
-	return true;
-}
-
-void Tessellation::BSLightingShader_RestoreGeometry()
-{
-	if (!globals::features::tessellation.currentPassHasDisplacement)
-		return;
-
-	globals::d3d::context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-}
-
-void Tessellation::BSUtilityShader_RestoreGeometry()
+void Tessellation::RestoreGeometry()
 {
 	if (!globals::features::tessellation.currentPassHasDisplacement)
 		return;
@@ -370,67 +233,67 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSLightingShader* a_shader, RE::BSLightingShaderMaterialBase const* a_material)
 		{
 			func(a_shader, a_material);
-			Tessellation::BSLightingShader_SetupMaterial(a_shader, a_material);
+			Tessellation::SetupMaterial(a_material);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSLightingShader_RestoreTechnique
 	{
-		static void thunk(RE::BSShader* a_shader, uint32_t a_technique)
+		static void thunk(RE::BSLightingShader* a_shader, uint32_t a_technique)
 		{
 			func(a_shader, a_technique);
-			Tessellation::BSLightingShader_RestoreTechnique();
+			Tessellation::RestoreTechnique();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSLightingShader_SetupGeometry
 	{
-		static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
+		static void thunk(RE::BSLightingShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::BSLightingShader_SetupGeometry(a_shader);
+			Tessellation::SetupGeometry(a_shader);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSLightingShader_RestoreGeometry
 	{
-		static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
+		static void thunk(RE::BSLightingShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::BSLightingShader_RestoreGeometry();
+			Tessellation::RestoreGeometry();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSUtilityShader_SetupMaterial
 	{
-		static void thunk(RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material)
+		static void thunk(RE::BSUtilityShader* a_shader, RE::BSShaderMaterial const* a_material)
 		{
 			func(a_shader, a_material);
-			Tessellation::BSUtilityShader_SetupMaterial(a_shader, a_material);
+			Tessellation::SetupMaterial(a_material);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSUtilityShader_RestoreTechnique
 	{
-		static void thunk(RE::BSShader* a_shader, uint32_t a_technique)
+		static void thunk(RE::BSUtilityShader* a_shader, uint32_t a_technique)
 		{
 			func(a_shader, a_technique);
-			Tessellation::BSUtilityShader_RestoreTechnique();
+			Tessellation::RestoreTechnique();
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
 	struct BSUtilityShader_SetupGeometry
 	{
-		static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
+		static void thunk(RE::BSUtilityShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::BSUtilityShader_SetupGeometry(a_shader);
+			Tessellation::SetupGeometry(a_shader);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -440,7 +303,42 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::BSUtilityShader_RestoreGeometry();
+			Tessellation::RestoreGeometry();
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct DirtyStates_CreateInputLayout
+	{
+		// The game builds input layouts from the RendererData vertexDesc intersected with the shader's reflected vertexDesc. 
+		// The depth prepass RendererData vertexDesc omits the TEXCOORD0 element bit, so the layout is position-only regardless of
+		// the shader's input signature. Force the bit back in so tessellated utility passes get mesh UVs; the builder derives the element's byte
+		// offset from the descriptor's own offset bits, which are retained.
+		static ID3D11InputLayout* thunk(RE::BSGraphics::VertexDesc a_vertexDesc)
+		{
+			auto originalShader = globals::state->currentShader;
+			auto originalVertexShader = *globals::game::currentVertexShader;
+
+			const bool isUtility = originalShader && originalShader->shaderType.all(RE::BSShader::Type::Utility);
+			if (isUtility) {
+				if (!a_vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_UV)) {
+					a_vertexDesc.SetFlag(RE::BSGraphics::Vertex::VF_UV);
+
+					if (a_vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0) == 0)
+						a_vertexDesc.SetAttributeOffset(RE::BSGraphics::Vertex::VA_TEXCOORD0, 16);
+				}
+
+				// Override the original shader so the input layout gets TEXCOORD input from our custom shader
+				auto customShader = globals::shaderCache->GetVertexShader(*originalShader, globals::state->modifiedVertexDescriptor);
+				*globals::game::currentVertexShader = customShader;
+			}
+
+			auto result = func(a_vertexDesc);
+
+			if (isUtility)
+				*globals::game::currentVertexShader = originalVertexShader; 
+
+			return result;
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -451,14 +349,17 @@ struct Tessellation::Hooks
 		stl::write_vfunc<0x4, BSLightingShader_SetupMaterial>(RE::VTABLE_BSLightingShader[0]);
 		stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 		stl::write_vfunc<0x7, BSLightingShader_RestoreGeometry>(RE::VTABLE_BSLightingShader[0]);
+
 		stl::write_vfunc<0x3, BSUtilityShader_RestoreTechnique>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x4, BSUtilityShader_SetupMaterial>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x6, BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x7, BSUtilityShader_RestoreGeometry>(RE::VTABLE_BSUtilityShader[0]);
-		
+
+		stl::detour_thunk<DirtyStates_CreateInputLayout>(REL::RelocationID(75583, 77389));
+
 		stl::write_thunk_call<Main_RenderWorld>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x831, 0x841));
 
-		logger::info("[Tessellation] Installed hooks - BSLightingShader SetupMaterial/RestoreTechnique/SetupGeometry/RestoreGeometry + BSUtilityShader SetupMaterial/SetupGeometry/RestoreTechnique/RestoreGeometry + Main_RenderWorld");
+		logger::info("[Tessellation] Installed hooks");
 	}
 };
 

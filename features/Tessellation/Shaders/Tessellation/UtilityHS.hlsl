@@ -18,12 +18,9 @@
 struct UtilityInput
 {
 	float4 PositionCS : SV_POSITION0;
+	float4 TexCoord0 : TEXCOORD0;
 
 #if !(defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) && SHADOWFILTER != 2
-#	if (defined(ALPHA_TEST) && ((!defined(RENDER_DEPTH) && !defined(RENDER_SHADOWMAP)) || defined(RENDER_SHADOWMAP_PB))) || defined(RENDER_NORMAL) || defined(DEBUG_SHADOWSPLIT) || defined(RENDER_BASE_TEXTURE)
-	float4 TexCoord0 : TEXCOORD0;
-#	endif
-
 #	if defined(RENDER_NORMAL)
 	float4 Normal : TEXCOORD1;
 #	endif
