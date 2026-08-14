@@ -16,8 +16,10 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Tessellation::Settings,
 	Enable,
-	TessellationScale,
-	TessellationFactor)
+	Scale,
+	Factor,
+	FadeStart,
+	FadeDistance)
 
 ////////////////////////////////////////////////////////////////////////////////////
 void Tessellation::RestoreDefaultSettings()
@@ -38,8 +40,12 @@ void Tessellation::SaveSettings(json& o_json)
 void Tessellation::DrawSettings()
 {
 	ImGui::Checkbox(T(TKEY("tessellation_enable"), "Enable"), &settings.Enable);
-	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Tessellation Scale"), &settings.TessellationScale, 0.0f, 1.0f, "%.4f");
-	ImGui::SliderFloat(T(TKEY("tessellation_factor"), "Tessellation Factor"), &settings.TessellationFactor, 1.0f, 8.0f, "%.1f");
+	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Scale"), &settings.Scale, 0.0f, 1.0f, "%.4f");
+	ImGui::SliderFloat(T(TKEY("tessellation_factor"), "Factor"), &settings.Factor, 1.0f, 32.0f, "%.1f");
+	ImGui::SliderFloat(T(TKEY("tessellation_offset"), "Offset"), &settings.Offset, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+
+	ImGui::DragFloat(T(TKEY("tessellation_fade_start"), "Fade Start"), &settings.FadeStart, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::DragFloat(T(TKEY("tessellation_fade_distance"), "Fade Distance"), &settings.FadeDistance, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
 }
 
 Tessellation::TessellationStage Tessellation::GetStage(const RE::BSShader& shader, uint32_t descriptor)
@@ -94,7 +100,7 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 		auto* utilityShader = reinterpret_cast<RE::BSUtilityShader*>(a_shader);
 		const auto flags = stl::enumeration<Flags>(static_cast<Flags>(utilityShader->unk90));
 		
-		if (flags.none(Flags::RenderDepth))
+		if (flags.none(Flags::RenderDepth, Flags::RenderShadowmap, Flags::RenderShadowmap, Flags::RenderShadowmapPb))
 			return;
 	}
 
@@ -224,16 +230,19 @@ void Tessellation::RestoreGeometry()
 
 struct Tessellation::Hooks
 {
-	struct Main_RenderWorld
+	struct Main_RenderDepth
 	{
-		static void thunk(bool a1)
+		static void thunk(bool a1, bool a2)
 		{
 			auto& tessellation = globals::features::tessellation;
-			tessellation.tessellationData.TessellationScale = tessellation.settings.TessellationScale;
-			tessellation.tessellationData.TessellationFactor = tessellation.settings.TessellationFactor;
+			tessellation.tessellationData.Scale = tessellation.settings.Scale / Util::Units::GAME_UNIT_TO_M;
+			tessellation.tessellationData.Factor = tessellation.settings.Factor;
+			tessellation.tessellationData.Offset = tessellation.settings.Offset;
+			tessellation.tessellationData.FadeStart = tessellation.settings.FadeStart;
+			tessellation.tessellationData.FadeDistance = tessellation.settings.FadeDistance;
 			tessellation.tessellationCb->Update(tessellation.tessellationData);
 
-			func(a1);
+			func(a1, a2);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -375,9 +384,11 @@ struct Tessellation::Hooks
 		stl::write_vfunc<0x6, BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x7, BSUtilityShader_RestoreGeometry>(RE::VTABLE_BSUtilityShader[0]);
 
+		// Injects TEXCOORD into Utility shader input layouts
 		stl::detour_thunk<DirtyStates_CreateInputLayout>(REL::RelocationID(75583, 77389));
 
-		stl::write_thunk_call<Main_RenderWorld>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x831, 0x841));
+		// Updates constant buffer before depth is rendered
+		stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
 
 		logger::info("[Tessellation] Installed hooks");
 	}

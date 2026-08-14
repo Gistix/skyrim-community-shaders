@@ -1,15 +1,4 @@
-/*
- * Tessellation feature domain shader for the Lighting shader.
- *
- * Compiled by Tessellation::GetStage() with ds_5_0, keyed on the pass's
- * modified pixel descriptor. The DOMAINSHADER define is injected by
- * Util::CompileShader; all other permutation defines (SKINNED,
- * MODELSPACENORMALS, WORLD_MAP, EYE, LANDSCAPE, PROJECTED_UV, ...) come
- * from SIE::SShaderCache::GetShaderDefines, so the output struct matches the
- * Lighting shader's VS_OUTPUT layout (package/Shaders/Lighting.hlsl) and the
- * game pixel shader consumes it directly.
- */
-
+#include "Common/FrameBuffer.hlsli"
 #include "Tessellation/Common.hlsli"
 #include "Tessellation/LightingCommon.hlsli"
 
@@ -25,12 +14,6 @@ cbuffer PerGeometry : register(b2)
 {
 	float4 EyePosition : packoffset(c6);
 };
-
-cbuffer VS_PerFrame : register(b12)
-{
-	row_major float4x4 ViewProj : packoffset(c8);
-};
-
 
 Texture2D<float4> ParallaxHeightmap : register(t0);
 SamplerState ParallaxSampler : register(s0);
@@ -73,24 +56,16 @@ LightingInOut main(PatchConstantOutput a_patchConstant,
 	output.FogParam = Interpolate4(a_barycentric, a_patch[0].FogParam, a_patch[1].FogParam, a_patch[2].FogParam);
 	output.ModelPosition = Interpolate3(a_barycentric, a_patch[0].ModelPosition, a_patch[1].ModelPosition, a_patch[2].ModelPosition);
 
-	// True displacement: displace the interpolated world position along the
-	// patch's geometric normal (from the raw control point winding, edges
-	// normalized first for stability at camera-relative coordinates) by the
-	// parallax height (sampled like the PS does, .x channel), then recompute
-	// the clip-space position.
 	float3 e1 = normalize(a_patch[1].WorldPosition.xyz - a_patch[0].WorldPosition.xyz);
 	float3 e2 = normalize(a_patch[2].WorldPosition.xyz - a_patch[0].WorldPosition.xyz);
 	float3 faceNormal = normalize(cross(e1, e2));
 	
     float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;	
-	float3 displacedWorld = output.WorldPosition.xyz - faceNormal * height * TessellationScale;
+    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale;
 	
 	output.WorldPosition.xyz = displacedWorld;
 	
-	// Matrix-first mul to match the game's VS convention (mul(ViewProj, ...)
-	// in Lighting.hlsl); mul(v, M) would apply the transposed transform and
-	// collapse the geometry toward screen center.
-	output.Position = mul(ViewProj, float4(displacedWorld, 1.0));
+    output.Position = mul(FrameBuffer::CameraViewProj, float4(displacedWorld, 1.0));
 
 	return output;
 }

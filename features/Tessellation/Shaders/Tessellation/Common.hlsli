@@ -15,10 +15,14 @@
 // Feature constant buffer, bound to HS/DS slot 0 by Tessellation.
 cbuffer TessellationParams : register(b0)
 {
-	float TessellationScale;
-	float TessellationFactor;
-	float pad0;
-	float pad1;
+	float Scale;
+	float Factor;
+    float Offset;
+    float FadeStart;
+    float FadeDistance;
+    uint Pad0;
+    uint Pad1;
+    uint Pad2;
 };
 
 struct PatchConstantOutput

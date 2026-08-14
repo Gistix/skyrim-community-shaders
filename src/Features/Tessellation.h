@@ -49,16 +49,23 @@ struct Tessellation : public Feature
 	struct Settings
 	{
 		bool Enable = true;
-		float TessellationScale = 0.02f;
-		float TessellationFactor = 2.0f;
+		float Scale = 0.02f;
+		float Factor = 2.0f;
+		float Offset = 0.5f;
+		float FadeStart = 30.0f;
+		float FadeDistance = 20.0f;
 	} settings;
 
 	struct CbData
 	{
-		float TessellationScale;
-		float TessellationFactor;
-		float _pad0;
-		float _pad1;
+		float Scale;
+		float Factor;
+		float Offset;
+		float FadeStart;
+		float FadeDistance;
+		uint Pad0;
+		uint Pad1;
+		uint Pad2;
 	} tessellationData;
 	static_assert(sizeof(CbData) % 16 == 0,
 		"CbData must be aligned to 16 bytes. "

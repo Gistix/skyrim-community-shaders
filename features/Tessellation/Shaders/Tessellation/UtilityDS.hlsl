@@ -1,20 +1,7 @@
-/*
- * Tessellation feature domain shader for the Utility shader (depth prepass,
- * shadow maps, etc.).
- *
- * Compiled by Tessellation::GetStage() with ds_5_0, keyed on the pass's
- * modified pixel descriptor. The output struct mirrors the Utility shader's
- * VS_OUTPUT layout (package/Shaders/Utility.hlsl) so downstream stages
- * consume it directly.
- */
-
 #include "Common/FrameBuffer.hlsli"
 #include "Tessellation/Common.hlsli"
 #include "Tessellation/UtilityCommon.hlsli"
 
-// The utility path always binds the heightmap at PS slot 4 (see
-// Tessellation::BSUtilityShader_SetupMaterial); the utility descriptor
-// carries no technique flags, so this slot is unconditional.
 Texture2D<float4> ParallaxHeightmap : register(t0);
 SamplerState ParallaxSampler : register(s0);
 
@@ -72,7 +59,7 @@ UtilityInOut main(PatchConstantOutput a_patchConstant,
     float3 faceNormal = normalize(cross(e1, e2));
 	
     float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord2.xy, 0).x;
-    float3 displacedWorld = output.WorldPosition.xyz - faceNormal * height * TessellationScale;
+    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale;
 	
     output.WorldPosition.xyz = displacedWorld;
 	
