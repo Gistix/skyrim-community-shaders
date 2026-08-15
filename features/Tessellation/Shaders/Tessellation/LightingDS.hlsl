@@ -106,7 +106,7 @@ LightingInOut main(PatchConstantOutput a_patchConstant,
 #if defined(TRUE_PBR)
 	float materialScale = PBRParams1.y;
 #else	
-    float materialScale = 1.0f;
+    float materialScale = ParallaxOccData.x;
 #endif
 	
     float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale * materialScale;
@@ -114,6 +114,41 @@ LightingInOut main(PatchConstantOutput a_patchConstant,
 	output.WorldPosition.xyz = displacedWorld;
 	
     output.Position = mul(FrameBuffer::CameraViewProj, float4(displacedWorld, 1.0));
+
+#if defined(SKINNED) || !defined(MODELSPACENORMALS)
+	// World-space UV derivatives (meters per UV unit) from the patch corners.
+	float2 du1 = a_patch[1].TexCoord0.xy - a_patch[0].TexCoord0.xy;
+	float2 du2 = a_patch[2].TexCoord0.xy - a_patch[0].TexCoord0.xy;
+	float det = du1.x * du2.y - du2.x * du1.y;
+
+	if (PerturbationScale > 0.0f && abs(det) > 1e-8)
+	{
+		float2 texOffset = float2(0.002f, 0.002f);
+		float heightU = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy + float2(texOffset.x, 0), 0).x;
+		float heightV = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy + float2(0, texOffset.y), 0).x;
+
+		float3 dp1 = a_patch[1].WorldPosition.xyz - a_patch[0].WorldPosition.xyz;
+		float3 dp2 = a_patch[2].WorldPosition.xyz - a_patch[0].WorldPosition.xyz;
+		float invDet = 1.0f / det;
+		float3 Pu = (dp1 * du2.y - dp2 * du1.y) * invDet;
+		float3 Pv = (dp2 * du1.x - dp1 * du2.x) * invDet;
+
+		float slopeU = (heightU - height) * Scale * materialScale * PerturbationScale / (texOffset.x * length(Pu));
+		float slopeV = (heightV - height) * Scale * materialScale * PerturbationScale / (texOffset.y * length(Pv));
+
+		float3 T = normalize(output.TBN0);
+		float3 B = normalize(output.TBN1);
+		float3 N = normalize(output.TBN2);
+
+		float3 perturbedNormal = normalize(N - T * slopeU - B * slopeV);
+		T = normalize(T - dot(T, perturbedNormal) * perturbedNormal);
+		B = normalize(B - dot(B, perturbedNormal) * perturbedNormal);
+
+		output.TBN0 = T;
+		output.TBN1 = B;
+		output.TBN2 = perturbedNormal;
+	}
+#endif
 
 	return output;
 }

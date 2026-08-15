@@ -21,7 +21,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Offset,
 	FadeStart,
 	FadeDistance,
-	Density)
+	Density,
+	PerturbationScale)
 
 ////////////////////////////////////////////////////////////////////////////////////
 void Tessellation::RestoreDefaultSettings()
@@ -45,7 +46,8 @@ void Tessellation::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Scale"), &settings.Scale, 0.0f, 1.0f, "%.4f");
 	ImGui::SliderFloat(T(TKEY("tessellation_factor"), "Factor"), &settings.Factor, 1.0f, 32.0f, "%.1f");
 	ImGui::SliderFloat(T(TKEY("tessellation_offset"), "Offset"), &settings.Offset, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-
+	ImGui::SliderFloat(T(TKEY("tessellation_perturbation_scale"), "Normal Perturbation Scale"), &settings.PerturbationScale, 0.0f, 2.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+	
 	ImGui::DragFloat(T(TKEY("tessellation_fade_start"), "Fade Start"), &settings.FadeStart, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::DragFloat(T(TKEY("tessellation_fade_distance"), "Fade Distance"), &settings.FadeDistance, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::SliderFloat(T(TKEY("tessellation_density"), "Density"), &settings.Density, 0.0f, 2000.0f, "%.1f");
@@ -257,6 +259,7 @@ struct Tessellation::Hooks
 			tessellation.tessellationData.FadeStart = tessellation.settings.FadeStart / Util::Units::GAME_UNIT_TO_M;
 			tessellation.tessellationData.FadeDistance = tessellation.settings.FadeDistance / Util::Units::GAME_UNIT_TO_M;
 			tessellation.tessellationData.Density = tessellation.settings.Density;
+			tessellation.tessellationData.PerturbationScale = tessellation.settings.PerturbationScale;		
 			tessellation.tessellationCb->Update(tessellation.tessellationData);
 
 			func(a1, a2);

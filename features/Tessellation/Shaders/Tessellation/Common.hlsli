@@ -22,7 +22,7 @@ cbuffer TessellationParams : register(b0)
 	float FadeDistance;
 	float Density;
 	float MaterialScale;
-	uint Pad1;
+	float PerturbationScale;
 };
 
 struct PatchConstantOutput
