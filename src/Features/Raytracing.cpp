@@ -193,7 +193,7 @@ void Raytracing::DrawSettings()
 
 	// Show DLSS RR availability status
 	if (settings.CreationEngineRaytracingSettings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
-		if (!(Upscaling::streamline.loadedFeatures & Streamline::Features::kDLSS_RR)) {
+		if (Upscaling::streamline.availableFeatures.none(Streamline::Features::kDLSS_RR)) {
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s", T(TKEY("dlss_rr_not_available"), "DLSS Ray Reconstruction is not available on this system."));
 		} else if (globals::features::upscaling.settings.upscaleMethod != Upscaling::UpscaleMethod::kDLSS) {
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "%s", T(TKEY("set_upscaling_to_dlss"), "Set Upscaling method to DLSS to enable Ray Reconstruction."));

@@ -203,7 +203,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 void Upscaling::DrawSettings()
 {
-	const bool dlssAvailable = (streamline.loadedFeatures & Streamline::Features::kDLSS) != 0;
+	const bool dlssAvailable = streamline.availableFeatures.all(Streamline::Features::kDLSS);
 	const UpscaleMethod selectableMethods[] = {
 		UpscaleMethod::kNONE,
 		UpscaleMethod::kTAA,
@@ -410,9 +410,9 @@ void Upscaling::DrawSettings()
 
 	if (streamline.reflexSupportedOnCurrentAdapter && ImGui::TreeNodeEx(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		const bool reflexBlockedByFrameGeneration = frameGenerationDx12PathActive;
-		const bool reflexAvailable = streamline.initialized && streamline.featureReflex;
+		const bool reflexAvailable = streamline.initialized && streamline.availableFeatures.all(Streamline::Features::kReflex);
 		const bool reflexControlsAvailable = reflexAvailable && !reflexBlockedByFrameGeneration;
-		const bool markerOptimizationAvailable = reflexControlsAvailable && streamline.featurePCL;
+		const bool markerOptimizationAvailable = reflexControlsAvailable && streamline.availableFeatures.all(Streamline::Features::kPCL);
 		if (reflexBlockedByFrameGeneration) {
 			ImGui::TextDisabled("%s", T(TKEY("reflex_blocked_by_fg"), "Reflex is unavailable while the DX12 frame-generation swapchain is active."));
 		}
@@ -626,7 +626,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 		auto& rt = globals::features::raytracing;
 		if ((rt.Mode() != CreationEngineRaytracing::Mode::None) &&
 			rt.settings.CreationEngineRaytracingSettings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR &&
-			(streamline.loadedFeatures & Streamline::Features::kDLSS_RR)) {
+			streamline.availableFeatures.all(Streamline::Features::kDLSS_RR)) {
 			return UpscaleMethod::kDLSS_RR;
 		}
 	}
