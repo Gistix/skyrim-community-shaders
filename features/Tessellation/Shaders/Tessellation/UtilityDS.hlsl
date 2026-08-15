@@ -59,7 +59,7 @@ UtilityInOut main(PatchConstantOutput a_patchConstant,
     float3 faceNormal = normalize(cross(e1, e2));
 	
     float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord2.xy, 0).x;
-    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale;
+    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale * MaterialScale;
 	
     output.WorldPosition.xyz = displacedWorld;
 	

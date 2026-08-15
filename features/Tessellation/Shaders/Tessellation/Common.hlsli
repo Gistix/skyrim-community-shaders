@@ -21,7 +21,7 @@ cbuffer TessellationParams : register(b0)
 	float FadeStart;
 	float FadeDistance;
 	float Density;
-	uint Pad0;
+	float MaterialScale;
 	uint Pad1;
 };
 

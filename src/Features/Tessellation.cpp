@@ -97,7 +97,8 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 
 	tessellation.currentPassHasDisplacement = false;
 
-	if (a_shader->shaderType.all(RE::BSShader::Type::Utility)) {
+	const bool utility = a_shader->shaderType.all(RE::BSShader::Type::Utility);
+	if (utility) {
 		using Flags = RE::BSUtilityShader::Flags;
 
 		auto* utilityShader = reinterpret_cast<RE::BSUtilityShader*>(a_shader);
@@ -109,18 +110,25 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 
 	RE::NiSourceTexture* heightTexture = nullptr;
 	int32_t clampMode = 0;
+	float scale = 1.0f;
 
 	if (typeid(*a_material) == typeid(BSLightingShaderMaterialPBR)) {
 		auto* pbrMaterial = reinterpret_cast<BSLightingShaderMaterialPBR const*>(a_material);
 		heightTexture = pbrMaterial->displacementTexture.get();
 		clampMode = pbrMaterial->textureClampMode;
+		scale = pbrMaterial->GetDisplacementScale();
 	} else {
 		const auto feature = a_material->GetFeature();
-		if (feature == RE::BSShaderMaterial::Feature::kParallax || feature == RE::BSShaderMaterial::Feature::kParallaxOcc) {
+		if (feature == RE::BSShaderMaterial::Feature::kParallax) {
 			auto* parallaxMaterial = reinterpret_cast<RE::BSLightingShaderMaterialParallax const*>(a_material);
 			heightTexture = parallaxMaterial->heightTexture.get();
 			clampMode = parallaxMaterial->textureClampMode;
-		}
+		} else if (feature == RE::BSShaderMaterial::Feature::kParallaxOcc) {
+			auto* parallaxMaterial = reinterpret_cast<RE::BSLightingShaderMaterialParallaxOcc const*>(a_material);
+			heightTexture = parallaxMaterial->heightTexture.get();
+			clampMode = parallaxMaterial->textureClampMode;
+			scale = parallaxMaterial->parallaxOccScale;
+		} 
 	}
 
 	const bool hasDisplacement = heightTexture != nullptr && heightTexture != globals::game::graphicsState->GetRuntimeData().defaultTextureBlack.get();
@@ -128,6 +136,11 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 		return;
 
 	tessellation.currentPassHasDisplacement = true;
+
+	if (utility) {
+		tessellation.tessellationData.MaterialScale = scale;
+		tessellation.tessellationCb->Update(tessellation.tessellationData);
+	}
 
 	auto context = globals::d3d::context;
 	context->DSSetShaderResources(0, 1, &heightTexture->rendererTexture->resourceView);

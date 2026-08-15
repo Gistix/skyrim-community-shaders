@@ -7,7 +7,48 @@
 // matching packoffsets so the runtime maps them correctly.
 cbuffer PerMaterial : register(b1)
 {
-	float4 ParallaxOccData : packoffset(c3);
+    float4 LODTexParams : packoffset(c0); // TerrainTexOffset in xy, LodBlendingEnabled in z
+#if !(defined(LANDSCAPE) && defined(TRUE_PBR))
+    float4 TintColor : packoffset(c1);
+    float4 EnvmapData : packoffset(c2); // fEnvmapScale in x, 1 or 0 in y depending of if has envmask
+    float4 ParallaxOccData : packoffset(c3);
+    float4 SpecularColor : packoffset(c4); // Shininess in w, color in xyz
+    float4 SparkleParams : packoffset(c5);
+    float4 MultiLayerParallaxData : packoffset(c6); // Layer thickness in x, refraction scale in y, uv scale in zw
+#else
+	float4 LandscapeTexture1GlintParameters : packoffset(c1);
+	float4 LandscapeTexture2GlintParameters : packoffset(c2);
+	float4 LandscapeTexture3GlintParameters : packoffset(c3);
+	float4 LandscapeTexture4GlintParameters : packoffset(c4);
+	float4 LandscapeTexture5GlintParameters : packoffset(c5);
+	float4 LandscapeTexture6GlintParameters : packoffset(c6);
+#endif
+    float4 LightingEffectParams : packoffset(c7); // fSubSurfaceLightRolloff in x, fRimLightPower in y
+    float4 IBLParams : packoffset(c8);
+
+#if !defined(TRUE_PBR)
+    float4 LandscapeTexture1to4IsSnow : packoffset(c9);
+    float4 LandscapeTexture5to6IsSnow : packoffset(c10); // bEnableSnowMask in z, inverse iLandscapeMultiNormalTilingFactor in w
+    float4 LandscapeTexture1to4IsSpecPower : packoffset(c11);
+    float4 LandscapeTexture5to6IsSpecPower : packoffset(c12);
+    float4 SnowRimLightParameters : packoffset(c13); // fSnowRimLightIntensity in x, fSnowGeometrySpecPower in y, fSnowNormalSpecPower in z, bEnableSnowRimLighting in w
+#endif
+
+#if defined(TRUE_PBR) && defined(LANDSCAPE)
+	float3 LandscapeTexture2PBRParams : packoffset(c9);
+	float3 LandscapeTexture3PBRParams : packoffset(c10);
+	float3 LandscapeTexture4PBRParams : packoffset(c11);
+	float3 LandscapeTexture5PBRParams : packoffset(c12);
+	float3 LandscapeTexture6PBRParams : packoffset(c13);
+#endif
+
+    float4 CharacterLightParams : packoffset(c14);
+
+    uint PBRFlags : packoffset(c15.x);
+    float3 PBRParams1 : packoffset(c15.y); // roughness scale, displacement scale, specular level
+    float4 PBRParams2 : packoffset(c16); // subsurface color, subsurface opacity
+
+    float3 MaterialObjectRGBScale : packoffset(c17); // RGB multipliers for material objects
 };
 
 cbuffer PerGeometry : register(b2)
@@ -60,8 +101,15 @@ LightingInOut main(PatchConstantOutput a_patchConstant,
 	float3 e2 = normalize(a_patch[2].WorldPosition.xyz - a_patch[0].WorldPosition.xyz);
 	float3 faceNormal = normalize(cross(e1, e2));
 	
-    float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;	
-    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale;
+    float height = ParallaxHeightmap.SampleLevel(ParallaxSampler, output.TexCoord0.xy, 0).x;
+
+#if defined(TRUE_PBR)
+	float materialScale = PBRParams1.y;
+#else	
+    float materialScale = 1.0f;
+#endif
+	
+    float3 displacedWorld = output.WorldPosition.xyz + faceNormal * (height - Offset) * Scale * materialScale;
 	
 	output.WorldPosition.xyz = displacedWorld;
 	

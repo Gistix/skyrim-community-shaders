@@ -65,7 +65,7 @@ struct Tessellation : public Feature
 		float FadeStart;
 		float FadeDistance;
 		float Density;
-		uint Pad0;
+		float MaterialScale;
 		uint Pad1;
 	} tessellationData;
 	static_assert(sizeof(CbData) % 16 == 0,
