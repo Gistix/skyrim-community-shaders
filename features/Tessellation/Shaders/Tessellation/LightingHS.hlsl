@@ -4,13 +4,9 @@
 
 PatchConstantOutput PatchConstant(InputPatch<LightingInOut, INPUT_PATCH_SIZE> a_patch)
 {
-	PatchConstantOutput output;
-	float factor = max(Factor, 1.0);
-	output.tessFactor[0] = factor;
-	output.tessFactor[1] = factor;
-	output.tessFactor[2] = factor;
-	output.insideTessFactor = factor;
-	return output;
+	return CalculateTessFactors(
+		a_patch[0].Position, a_patch[1].Position, a_patch[2].Position,
+		a_patch[0].WorldPosition.xyz, a_patch[1].WorldPosition.xyz, a_patch[2].WorldPosition.xyz);
 }
 
 [domain("tri")]

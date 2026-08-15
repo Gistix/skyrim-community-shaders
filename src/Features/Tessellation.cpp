@@ -18,8 +18,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Enable,
 	Scale,
 	Factor,
+	Offset,
 	FadeStart,
-	FadeDistance)
+	FadeDistance,
+	Density)
 
 ////////////////////////////////////////////////////////////////////////////////////
 void Tessellation::RestoreDefaultSettings()
@@ -46,6 +48,7 @@ void Tessellation::DrawSettings()
 
 	ImGui::DragFloat(T(TKEY("tessellation_fade_start"), "Fade Start"), &settings.FadeStart, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::DragFloat(T(TKEY("tessellation_fade_distance"), "Fade Distance"), &settings.FadeDistance, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("tessellation_density"), "Density"), &settings.Density, 0.0f, 2000.0f, "%.1f");
 }
 
 Tessellation::TessellationStage Tessellation::GetStage(const RE::BSShader& shader, uint32_t descriptor)
@@ -238,8 +241,9 @@ struct Tessellation::Hooks
 			tessellation.tessellationData.Scale = tessellation.settings.Scale / Util::Units::GAME_UNIT_TO_M;
 			tessellation.tessellationData.Factor = tessellation.settings.Factor;
 			tessellation.tessellationData.Offset = tessellation.settings.Offset;
-			tessellation.tessellationData.FadeStart = tessellation.settings.FadeStart;
-			tessellation.tessellationData.FadeDistance = tessellation.settings.FadeDistance;
+			tessellation.tessellationData.FadeStart = tessellation.settings.FadeStart / Util::Units::GAME_UNIT_TO_M;
+			tessellation.tessellationData.FadeDistance = tessellation.settings.FadeDistance / Util::Units::GAME_UNIT_TO_M;
+			tessellation.tessellationData.Density = tessellation.settings.Density;
 			tessellation.tessellationCb->Update(tessellation.tessellationData);
 
 			func(a1, a2);

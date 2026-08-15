@@ -17,12 +17,12 @@ cbuffer TessellationParams : register(b0)
 {
 	float Scale;
 	float Factor;
-    float Offset;
-    float FadeStart;
-    float FadeDistance;
-    uint Pad0;
-    uint Pad1;
-    uint Pad2;
+	float Offset;
+	float FadeStart;
+	float FadeDistance;
+	float Density;
+	uint Pad0;
+	uint Pad1;
 };
 
 struct PatchConstantOutput
@@ -30,6 +30,46 @@ struct PatchConstantOutput
 	float tessFactor[3] : SV_TessFactor;
 	float insideTessFactor : SV_InsideTessFactor;
 };
+
+// Fades tessellation from FadeStart to FadeStart + FadeDistance (smoothstep).
+float DistanceFade(float a_distance)
+{
+	float fadeRange = max(FadeDistance, 0.001);
+	float fade = 1.0 - saturate((a_distance - FadeStart) / fadeRange);
+	return fade * fade * (3.0 - 2.0 * fade);
+}
+
+// Per-edge tessellation factor from projected screen-space edge length and
+// distance fade. Falls back to the max factor when an endpoint is behind the
+// camera (clip w <= 0) to avoid NaN from the perspective divide.
+float EdgeTessFactor(float4 a_p0, float4 a_p1, float3 a_w0, float3 a_w1)
+{
+	if (a_p0.w <= 0.0 || a_p1.w <= 0.0)
+		return Factor;
+	float2 ndc0 = a_p0.xy / a_p0.w;
+	float2 ndc1 = a_p1.xy / a_p1.w;
+	float edgeLength = length(ndc1 - ndc0) * 0.5 * Density;
+	float fade = min(DistanceFade(length(a_w0)), DistanceFade(length(a_w1)));
+	return clamp(edgeLength * fade, 1.0, Factor);
+}
+
+// Computes adaptive edge factors (screen-space length * distance fade) and an
+// inside factor from their average. Shared edges get identical factors from
+// both adjacent patches, so the result stays watertight with integer
+// partitioning.
+PatchConstantOutput CalculateTessFactors(float4 a_p0, float4 a_p1, float4 a_p2,
+	float3 a_w0, float3 a_w1, float3 a_w2)
+{
+	PatchConstantOutput output;
+	float e0 = EdgeTessFactor(a_p0, a_p1, a_w0, a_w1);
+	float e1 = EdgeTessFactor(a_p1, a_p2, a_w1, a_w2);
+	float e2 = EdgeTessFactor(a_p2, a_p0, a_w2, a_w0);
+	output.tessFactor[0] = e0;
+	output.tessFactor[1] = e1;
+	output.tessFactor[2] = e2;
+	output.insideTessFactor = clamp((e0 + e1 + e2) / 3.0, 1.0, Factor);
+	return output;
+}
 
 float Interpolate1(float3 a_barycentric, float a0, float a1, float a2)
 {
