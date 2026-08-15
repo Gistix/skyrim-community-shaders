@@ -35,8 +35,6 @@ public:
 	bool initialized = false;
 	bool triedInitialization = false;
 
-	bool featureReflex = false;
-	bool featurePCL = false;
 	bool reflexSupportedOnCurrentAdapter = false;
 
 	eastl::vector<sl::Feature> features;
@@ -45,8 +43,13 @@ public:
 	{
 		kNone = 0,
 		kDLSS = 1 << 0,
-		kDLSS_RR = 1 << 1
-	} loadedFeatures = Features::kNone;
+		kDLSS_RR = 1 << 1,
+		kReflex = 1 << 2,
+		kPCL = 1 << 3
+	};
+
+	stl::enumeration<Features> availableFeatures = Features::kNone;
+	eastl::vector<Features> featuresFlags;
 
 	bool d3d12Mode = false;
 

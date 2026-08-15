@@ -98,13 +98,15 @@ void Streamline::LoadInterposer(bool a_d3d12Mode)
 
 	logger::info("[Streamline] Initializing Streamline");
 
-	sl::Preferences pref;
-
 	features = { sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL };
+	featuresFlags = { Features::kDLSS, Features::kReflex, Features::kPCL };
 
-	if (globals::features::raytracing.loaded && d3d12Mode)
+	if (globals::features::raytracing.loaded && d3d12Mode) {
 		features.push_back(sl::kFeatureDLSS_RR);
+		featuresFlags.push_back(Features::kDLSS_RR);
+	}
 
+	sl::Preferences pref;
 	pref.featuresToLoad = features.data();
 	pref.numFeaturesToLoad = static_cast<uint32_t>(features.size());
 
@@ -165,8 +167,6 @@ void Streamline::LoadInterposer(bool a_d3d12Mode)
 		logger::critical("[Streamline] Failed to initialize Streamline");
 	} else {
 		initialized = true;
-		featureReflex = false;
-		featurePCL = false;
 		reflexSupportedOnCurrentAdapter = false;
 		reflexOptionsCache = {};
 		lastReflexSleepFrame = UINT32_MAX;
@@ -177,7 +177,7 @@ void Streamline::LoadInterposer(bool a_d3d12Mode)
 void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 {
 	logger::info("[Streamline] Checking features");
-	loadedFeatures = Features::kNone;
+	availableFeatures.reset();
 
 	DXGI_ADAPTER_DESC adapterDesc;
 	a_adapter->GetDesc(&adapterDesc);
@@ -187,13 +187,14 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 	adapterInfo.deviceLUID = (uint8_t*)&adapterDesc.AdapterLuid;
 	adapterInfo.deviceLUIDSizeInBytes = sizeof(LUID);
 
-	auto checkFeatureAvailability = [&](sl::Feature feature, const char* featureName, bool& outAvailable) {
-		outAvailable = false;
+	auto checkFeatureAvailability = [&](sl::Feature feature, const char* featureName) {
 		bool loaded = false;
+
 		if (SL_FAILED(result, slIsFeatureLoaded(feature, loaded))) {
 			logger::warn("[Streamline] {} load-state query failed: {}", featureName, magic_enum::enum_name(result));
-			return;
+			return false ;
 		}
+
 		if (!loaded) {
 			logger::info("[Streamline] {} feature is not loaded", featureName);
 			sl::FeatureRequirements featureRequirements;
@@ -201,54 +202,24 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 			if (requirementsResult != sl::Result::eOk) {
 				logger::info("[Streamline] {} feature failed to load due to: {}", featureName, magic_enum::enum_name(requirementsResult));
 			}
-			return;
+			return false;
 		}
 
 		logger::info("[Streamline] {} feature is loaded", featureName);
-		outAvailable = slIsFeatureSupported(feature, adapterInfo) == sl::Result::eOk;
+		return slIsFeatureSupported(feature, adapterInfo) == sl::Result::eOk;
 	};
 
-	// Check DLSS features using loadedFeatures bitmask
-	bool dlssAvailable = false;
-	checkFeatureAvailability(sl::kFeatureDLSS, "DLSS", dlssAvailable);
-	if (dlssAvailable) {
-		loadedFeatures |= Features::kDLSS;
+	// Check DLSS features using availableFeatures bitmask
+	for (size_t i = 0; i < features.size(); i++) {
+		const auto featureFlag = featuresFlags[i];
+		const auto featureName = magic_enum::enum_name(featureFlag);
+		const bool isAvailable = checkFeatureAvailability(features[i], featureName.data());
 
-		isRTXBelow40series = IsRTXAndBelow40Series(a_adapter);
+		availableFeatures.set(isAvailable, featureFlag);
 
-		if (isRTXBelow40series)
-			logger::info("[Streamline] Older RTX GPU detected, DLSS 4.0 will be used instead of DLSS 4.5");
-		else
-			logger::info("[Streamline] Newer RTX GPU detected, DLSS 4.5 will be used instead of DLSS 4.0");
+		logger::info("[Streamline] {} {} available", featureName, isAvailable ? "is" : "is not");
 	}
 
-	bool dlssRRAvailable = false;
-	for (auto& feature : features) {
-		if (feature == sl::kFeatureDLSS_RR) {
-			checkFeatureAvailability(sl::kFeatureDLSS_RR, "DLSS_RR", dlssRRAvailable);
-			if (dlssRRAvailable)
-				loadedFeatures |= Features::kDLSS_RR;
-			break;
-		}
-	}
-
-	// Check Reflex/PCL
-	if (reflexSupportedOnCurrentAdapter) {
-		checkFeatureAvailability(sl::kFeatureReflex, "Reflex", featureReflex);
-		checkFeatureAvailability(sl::kFeaturePCL, "PCL", featurePCL);
-	} else {
-		featureReflex = false;
-		featurePCL = false;
-	}
-
-	logger::info("[Streamline] DLSS {} available", dlssAvailable ? "is" : "is not");
-	logger::info("[Streamline] DLSS_RR {} available", dlssRRAvailable ? "is" : "is not");
-	if (reflexSupportedOnCurrentAdapter) {
-		logger::info("[Streamline] Reflex {} available", featureReflex ? "is" : "is not");
-		logger::info("[Streamline] PCL {} available", featurePCL ? "is" : "is not");
-	} else {
-		logger::info("[Streamline] Reflex/PCL disabled on non-NVIDIA adapter");
-	}
 	reflexOptionsCache = {};
 	lastReflexSleepFrame = UINT32_MAX;
 }
@@ -256,15 +227,35 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 void Streamline::PostDevice()
 {
 	// Hook up all of the feature functions using the sl function slGetFeatureFunction
+	const auto bindFeatureFn = [&](sl::Feature feature, const char* functionName, void*& fn) {
+		fn = nullptr;
+		const sl::Result bindResult = slGetFeatureFunction(feature, functionName, fn);
+		if (bindResult != sl::Result::eOk)
+			logger::warn("[Streamline] {} bind failed with {}", functionName, magic_enum::enum_name(bindResult));
+		return bindResult == sl::Result::eOk && fn != nullptr;
+	};
 
-	if (loadedFeatures & Features::kDLSS) {
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", (void*&)slDLSSGetOptimalSettings);
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetState", (void*&)slDLSSGetState);
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", (void*&)slDLSSSetOptions);
+	const auto checkBound = [&](bool result, Features feature) {
+		const auto featureName = magic_enum::enum_name(feature);
+		if (result) {
+			logger::info("[Streamline] {} functions are available.", featureName);
+		} else {
+			availableFeatures.reset(feature);
+			logger::warn("[Streamline] {} functions are missing; feature disabled.", featureName);
+		}
+	};
+
+	if (availableFeatures.all(Features::kDLSS)) {
+		bool dlssFnsBound = bindFeatureFn(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", (void*&)slDLSSGetOptimalSettings);
+		dlssFnsBound &= bindFeatureFn(sl::kFeatureDLSS, "slDLSSGetState", (void*&)slDLSSGetState);
+		dlssFnsBound &= bindFeatureFn(sl::kFeatureDLSS, "slDLSSSetOptions", (void*&)slDLSSSetOptions);
+		checkBound(dlssFnsBound && slDLSSGetOptimalSettings && slDLSSGetState && slDLSSSetOptions, Features::kDLSS);
 	}
 
-	if (loadedFeatures & Features::kDLSS_RR)
-		SL_FEATURE_FUN_IMPORT(sl::kFeatureDLSS_RR, slDLSSDSetOptions);
+	if (availableFeatures.all(Features::kDLSS_RR)) {
+		bool dlssrrFnsBound = bindFeatureFn(sl::kFeatureDLSS_RR, "slDLSSDSetOptions", (void*&)slDLSSDSetOptions);
+		checkBound(dlssrrFnsBound && slDLSSDSetOptions, Features::kDLSS_RR);
+	}
 
 	// DX12
 	if (d3d12Mode) {
@@ -276,8 +267,6 @@ void Streamline::PostDevice()
 	slReflexSleep = nullptr;
 	slReflexSetOptions = nullptr;
 	slPCLSetMarker = nullptr;
-	featureReflex = false;
-	featurePCL = false;
 
 	if (slGetFeatureFunction && reflexSupportedOnCurrentAdapter) {
 		if (slSetFeatureLoaded) {
@@ -292,34 +281,14 @@ void Streamline::PostDevice()
 			requestFeatureLoad(sl::kFeaturePCL, "PCL");
 		}
 
-		const auto bindFeatureFn = [&](sl::Feature feature, const char* functionName, void*& fn) {
-			fn = nullptr;
-			const sl::Result bindResult = slGetFeatureFunction(feature, functionName, fn);
-			if (bindResult != sl::Result::eOk)
-				logger::warn("[Streamline] {} bind failed with {}", functionName, magic_enum::enum_name(bindResult));
-			return bindResult == sl::Result::eOk && fn != nullptr;
-		};
-
 		// Keep runtime controls strict: only advertise Reflex/PCL as available when required entry points bind.
-		bool reflexFnsBound = true;
-		reflexFnsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexGetState", (void*&)slReflexGetState);
+		bool reflexFnsBound = bindFeatureFn(sl::kFeatureReflex, "slReflexGetState", (void*&)slReflexGetState);
 		reflexFnsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexSleep", (void*&)slReflexSleep);
 		reflexFnsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexSetOptions", (void*&)slReflexSetOptions);
-		featureReflex = reflexFnsBound && slReflexSetOptions && slReflexSleep;
-
-		if (!featureReflex) {
-			logger::warn("[Streamline] Reflex functions are missing; Reflex runtime controls will be disabled");
-		} else {
-			logger::info("[Streamline] Reflex runtime controls are available");
-		}
+		checkBound(reflexFnsBound && slReflexSetOptions && slReflexSleep, Features::kReflex);
 
 		bool pclFnBound = bindFeatureFn(sl::kFeaturePCL, "slPCLSetMarker", (void*&)slPCLSetMarker);
-		featurePCL = pclFnBound && slPCLSetMarker;
-		if (!featurePCL) {
-			logger::warn("[Streamline] PCL marker function is unavailable; marker optimization requests will be ignored");
-		} else {
-			logger::info("[Streamline] PCL marker interface is available");
-		}
+		checkBound(pclFnBound && slPCLSetMarker, Features::kPCL);
 	} else if (!reflexSupportedOnCurrentAdapter) {
 		logger::info("[Streamline] Skipping Reflex/PCL binding on non-NVIDIA adapter");
 	}
@@ -608,7 +577,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	const bool emitPCLMarkers =
 		globals::features::upscaling.settings.reflexUseMarkersToOptimize &&
 		reflexOptionsCache.useMarkersToOptimize &&
-		featurePCL;
+		availableFeatures.all(Features::kPCL);
 	const auto emitPCLMarker = [&](sl::PCLMarker marker, const char* stageName, uint32_t stageIndex) {
 		if (!emitPCLMarkers || !slPCLSetMarker || !frameToken)
 			return;
@@ -850,7 +819,7 @@ void Streamline::DenoiseUpscale(ID3D12GraphicsCommandList4* a_commandList, ID3D1
 
 void Streamline::UpdateReflex()
 {
-	if (!initialized || !reflexSupportedOnCurrentAdapter || !featureReflex || !slReflexSetOptions)
+	if (!initialized || !reflexSupportedOnCurrentAdapter || availableFeatures.none(Features::kReflex) || !slReflexSetOptions)
 		return;
 
 	const auto applyReflexOptionsIfChanged = [&](const sl::ReflexOptions& options, const char* onFailMessage) {
@@ -901,7 +870,7 @@ void Streamline::UpdateReflex()
 	}
 	const float fpsLimit = std::clamp(reflexFPSLimit, 20.0f, 240.0f);
 	options.frameLimitUs = settings.reflexUseFPSLimit ? static_cast<uint32_t>(std::lround(1000000.0 / static_cast<double>(fpsLimit))) : 0u;
-	options.useMarkersToOptimize = settings.reflexUseMarkersToOptimize && featurePCL;
+	options.useMarkersToOptimize = settings.reflexUseMarkersToOptimize && availableFeatures.all(Features::kPCL);
 
 	applyReflexOptionsIfChanged(options, "Failed to apply Reflex options");
 
