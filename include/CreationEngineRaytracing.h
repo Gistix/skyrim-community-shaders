@@ -483,6 +483,16 @@ struct CreationEngineRaytracing
 			DebugSettings)
 	};
 
+	struct RendererSettings
+	{
+		bool UseRayQuery = true;
+		bool ValidationLayer = false;
+
+		bool operator==(const RendererSettings&) const = default;
+
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(RendererSettings, UseRayQuery, ValidationLayer)
+	};
+
 	struct SharedTexture
 	{
 		ID3D12Resource* native = nullptr;
@@ -493,8 +503,8 @@ struct CreationEngineRaytracing
 
 	HMODULE handle = nullptr;
 
-	using InitializeRendererFn = bool (*)(ID3D11Device5*, ID3D12Device5*, ID3D12CommandQueue*, ID3D12CommandQueue*, ID3D12CommandQueue*);
-	using InitializeVulkanRendererFn = bool (*)(void* instance, void* physicalDevice, void* device, void* graphicsQueue, int graphicsQueueIndex, void* transferQueue, int transferQueueIndex, void* computeQueue, int computeQueueIndex);
+	using InitializeRendererFn = bool (*)(RendererSettings*, ID3D11Device5*, ID3D12Device5*, ID3D12CommandQueue*, ID3D12CommandQueue*, ID3D12CommandQueue*);
+	using InitializeVulkanRendererFn = bool (*)(RendererSettings*, void* instance, void* physicalDevice, void* device, void* graphicsQueue, int graphicsQueueIndex, void* transferQueue, int transferQueueIndex, void* computeQueue, int computeQueueIndex);
 	using InitializeFn = void (*)(Settings);
 	using UpdateCameraFn = void (*)();
 	using ExecuteFn = void (*)();
