@@ -315,6 +315,7 @@ struct CreationEngineRaytracing
 		bool VariableUpdateRate = true;
 		bool GGXEnergyConservation = true;
 		bool PerLightTLAS = false;
+		bool ShaderExecutionReordering = true;
 		RISSettings RIS;
 		HairBSDF HairBSDF = HairBSDF::FarFieldBCSDF;
 		DiffuseBRDF DiffuseBRDF = DiffuseBRDF::Burley;
@@ -330,6 +331,7 @@ struct CreationEngineRaytracing
 			VariableUpdateRate,
 			GGXEnergyConservation,
 			PerLightTLAS,
+			ShaderExecutionReordering,
 			RIS,
 			HairBSDF,
 			DiffuseBRDF,

@@ -570,6 +570,8 @@ void Raytracing::DrawAdvancedSettings()
 
 	ImGui::Checkbox(T(TKEY("ggx_energy_conservation"), "GGX Energy Conservation"), &advSettings.GGXEnergyConservation);
 
+	ImGui::Checkbox(T(TKEY("shader_execution_reordering"), "Shader Execution Reordering"), &advSettings.ShaderExecutionReordering);
+	
 	ImGui::Checkbox(T(TKEY("ris_enabled"), "Resampled Importance Sampling"), &advSettings.RIS.Enabled);
 
 	ImGui::SliderInt(T(TKEY("ris_max_candidates"), "RIS Max Candidates"), &advSettings.RIS.MaxCandidates, 2, 16);
