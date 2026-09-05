@@ -822,9 +822,9 @@ void Raytracing::DrawDebugSettings()
 		const auto diffuseAlbedoLabel = StableLabel(T(TKEY("debug_diffuse_albedo"), "Diffuse Albedo"), "DiffuseAlbedo");
 		if (ImGui::TreeNode(diffuseAlbedoLabel.c_str())) {
 			D3D11_TEXTURE2D_DESC desc;
-			diffuseAlbedoTexture[GetDiffuseAlbedoIndex()]->resource11->GetDesc(&desc);
+			diffuseAlbedoTexture->resource11->GetDesc(&desc);
 
-			ImGui::Image(diffuseAlbedoTexture[GetDiffuseAlbedoIndex()]->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
+			ImGui::Image(diffuseAlbedoTexture->srv, { desc.Width * debugRescale, desc.Height * debugRescale });
 			ImGui::TreePop();
 		}
 
@@ -1150,6 +1150,9 @@ void Raytracing::SetupResources()
 		// Normal Roughness Texture
 		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		normalRoughnessTexture = eastl::make_unique<WrappedResource>(texDesc);
+
+		// Diffuse Albedo Texture
+		diffuseAlbedoTexture = eastl::make_unique<WrappedResource>(texDesc);
 	}
 
 	if (initialized) {
@@ -1165,14 +1168,12 @@ void Raytracing::SetupResources()
 			CreationEngineRaytracing::SharedTexture depth[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT];
 			CreationEngineRaytracing::SharedTexture motionVector[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT];
 			CreationEngineRaytracing::SharedTexture main[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT];
-			CreationEngineRaytracing::SharedTexture diffuseAlbedo[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT];
-			creationEngineRaytracing->GetSharedTextures(depth, motionVector, main, diffuseAlbedo);
+			creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
 
 			for (size_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
 				depthTexture[i] = eastl::make_unique<WrappedResource>(depth[i].native, depth[i].shared);
 				motionVectorsTexture[i] = eastl::make_unique<WrappedResource>(motionVector[i].native, motionVector[i].shared);
 				mainTexture[i] = eastl::make_unique<WrappedResource>(main[i].native, main[i].shared);
-				diffuseAlbedoTexture[i] = eastl::make_unique<WrappedResource>(diffuseAlbedo[i].native, diffuseAlbedo[i].shared);
 			}
 		}
 	}
@@ -1566,7 +1567,7 @@ void Raytracing::ConvertTextures()
 
 	ID3D11UnorderedAccessView* uavs[] = {
 		normalRoughnessTexture->uav,
-		diffuseAlbedoTexture[GetDiffuseAlbedoIndex()]->uav
+		diffuseAlbedoTexture->uav
 	};
 
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
@@ -1809,13 +1810,19 @@ void Raytracing::DeferredPasses()
 
 void Raytracing::GetRayReconstructionInputs(ID3D12Resource*& diffuseAlbedo, ID3D12Resource*& specularAlbedo, ID3D12Resource*& normalRoughness, ID3D12Resource*& specHitDist)
 {
-	if (Mode() != CreationEngineRaytracing::Mode::GlobalIllumination && Mode() != CreationEngineRaytracing::Mode::PathTracing)
+	const bool gi = (Mode() == CreationEngineRaytracing::Mode::GlobalIllumination);
+	const bool pt = (Mode() == CreationEngineRaytracing::Mode::PathTracing);
+
+	if (!gi && !pt)
 		return;
 
-	diffuseAlbedo = diffuseAlbedoTexture[GetDiffuseAlbedoIndex()]->GetResource();
+	creationEngineRaytracing->GetRRInput(diffuseAlbedo, specularAlbedo, specHitDist);
+
 	normalRoughness = normalRoughnessTexture->GetResource();
 
-	creationEngineRaytracing->GetRRInput(specularAlbedo, specHitDist);
+	// CERT diffuse albedo is only available during Path Tracing
+	if (gi)
+		diffuseAlbedo = diffuseAlbedoTexture->GetResource();
 }
 
 RE::BSEventNotifyControl Raytracing::BGSActorCellEventHandler::ProcessEvent(const RE::BGSActorCellEvent* a_event, RE::BSTEventSource<RE::BGSActorCellEvent>*)

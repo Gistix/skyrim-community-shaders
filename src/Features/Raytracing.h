@@ -150,15 +150,6 @@ struct Raytracing : public OverlayFeature
 			&& settings.CreationEngineRaytracingSettings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
 	}
 
-	inline uint32_t GetDiffuseAlbedoIndex() const
-	{
-		// Use only the first texture since the only use will be as DLSS RR input
-		if (Mode() == CreationEngineRaytracing::Mode::GlobalIllumination)
-			return 0;
-
-		return currentFrame;
-	}
-
 	enum struct OverlayMode
 	{
 		None,
@@ -224,7 +215,8 @@ struct Raytracing : public OverlayFeature
 
 	// Available for both GI and PT
 	eastl::array<eastl::unique_ptr<WrappedResource>, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> mainTexture;
-	eastl::array<eastl::unique_ptr<WrappedResource>, CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT> diffuseAlbedoTexture;
+
+	eastl::unique_ptr<WrappedResource> diffuseAlbedoTexture = nullptr;
 
 	winrt::com_ptr<ID3D12Resource> albedoTexture = nullptr;
 	eastl::unique_ptr<WrappedResource> normalRoughnessTexture = nullptr;
