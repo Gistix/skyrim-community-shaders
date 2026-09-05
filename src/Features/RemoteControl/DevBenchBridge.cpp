@@ -14,6 +14,7 @@
 #ifdef DEVBENCH_BRIDGE_ENABLED
 
 #	include "Feature.h"
+#	include "Features/Raytracing.h"
 #	include "Features/RenderDoc.h"
 #	include "Features/ScreenshotFeature.h"
 #	include "Globals.h"
@@ -395,7 +396,109 @@ namespace
 				{ "frame_count", EnqueuedFrame() },
 			};
 		}
-		return json{ { "error", "unknown kind" }, { "kind", kind }, { "supported", json::array({ "state", "shadercache", "profiler" }) } };
+		if (kind == "raytracing") {
+			const bool triggerScreenshot = a_args.value("screenshot", false);
+			return RunOnMainThread([triggerScreenshot]() -> json {
+				auto& rt = globals::features::raytracing;
+				json out{
+					{ "frame_count", EnqueuedFrame() },
+					{ "loaded", rt.loaded },
+					{ "initialized", rt.initialized },
+					{ "forcedDisabled", rt.forcedDisabled },
+				};
+
+				if (!rt.loaded || !rt.initialized) {
+					out["available"] = false;
+					if (triggerScreenshot) {
+						auto* shot = &globals::features::screenshotFeature;
+						if (shot->loaded) {
+							shot->captureRequested.store(true, std::memory_order_release);
+							out["screenshotQueued"] = true;
+						} else {
+							out["screenshotQueued"] = false;
+							out["screenshotError"] = "Screenshot feature is not loaded";
+						}
+					}
+					return out;
+				}
+				out["available"] = rt.Available();
+
+				std::string modeStr = "None";
+				switch (rt.Mode()) {
+				case CreationEngineRaytracing::Mode::GlobalIllumination:
+					modeStr = "GlobalIllumination";
+					break;
+				case CreationEngineRaytracing::Mode::PathTracing:
+					modeStr = "PathTracing";
+					break;
+				case CreationEngineRaytracing::Mode::Debug:
+					modeStr = "Debug";
+					break;
+				default:
+					break;
+				}
+				out["mode"] = modeStr;
+
+				std::string overlayModeStr = "None";
+				switch (rt.settings.PerfOverlay) {
+				case Raytracing::OverlayMode::Simple:
+					overlayModeStr = "Simple";
+					break;
+				case Raytracing::OverlayMode::Complete:
+					overlayModeStr = "Complete";
+					break;
+				case Raytracing::OverlayMode::Extended:
+					overlayModeStr = "Extended";
+					break;
+				default:
+					break;
+				}
+				out["perfOverlayMode"] = overlayModeStr;
+
+				json passes = json::array();
+				for (const auto& pt : rt.passTimings) {
+					passes.push_back(json{
+						{ "name", std::string(pt.name.c_str()) },
+						{ "cpuMs", pt.cpuTiming },
+						{ "gpuMs", pt.gpuTiming }
+					});
+				}
+				out["passTimings"] = passes;
+
+				if (rt.creationEngineRaytracing && rt.creationEngineRaytracing->GetSceneGraphCounters) {
+					uint32_t textures = 0, models = 0, instances = 0;
+					rt.creationEngineRaytracing->GetSceneGraphCounters(textures, models, instances);
+					out["sceneGraph"] = json{
+						{ "textures", textures },
+						{ "models", models },
+						{ "instances", instances }
+					};
+				}
+
+				if (rt.creationEngineRaytracing && rt.creationEngineRaytracing->GetAccumulatedFrameCount) {
+					out["accumulatedFrames"] = rt.creationEngineRaytracing->GetAccumulatedFrameCount();
+				}
+
+				out["resolution"] = json{
+					{ "width", rt.m_Resolution.x },
+					{ "height", rt.m_Resolution.y }
+				};
+
+				if (triggerScreenshot) {
+					auto* shot = &globals::features::screenshotFeature;
+					if (shot->loaded) {
+						shot->captureRequested.store(true, std::memory_order_release);
+						out["screenshotQueued"] = true;
+					} else {
+						out["screenshotQueued"] = false;
+						out["screenshotError"] = "Screenshot feature is not loaded";
+					}
+				}
+
+				return out;
+			});
+		}
+		return json{ { "error", "unknown kind" }, { "kind", kind }, { "supported", json::array({ "state", "shadercache", "profiler", "raytracing" }) } };
 	}
 
 	/**
@@ -436,8 +539,13 @@ namespace
 		// the in-memory maps, so with the disk cache enabled shaders reload from Data/ShaderCache
 		// rather than recompiling — only deleteDisk guarantees a cold recompile.
 		if (action == "clear") {
-			task->AddTask([cache]() { cache->Clear(); });
-			return json{ { "action", "clear" }, { "queued", true }, { "enqueued_at_frame", frame }, { "note", "in-memory cache dropped; shaders reload from the disk cache if present, else recompile (use deleteDisk to force a cold recompile)" } };
+			task->AddTask([cache]() {
+				cache->Clear();
+				if (globals::features::raytracing.loaded) {
+					globals::features::raytracing.ReloadShaders();
+				}
+			});
+			return json{ { "action", "clear" }, { "queued", true }, { "enqueued_at_frame", frame }, { "note", "in-memory cache dropped; shaders reload from the disk cache if present, else recompile; raytracing shaders reloaded if loaded" } };
 		}
 		if (action == "deleteDisk") {
 			// Delete on disk AND drop the in-memory cache — otherwise existing variants keep
@@ -446,10 +554,21 @@ namespace
 			task->AddTask([cache]() {
 				cache->DeleteDiskCache();
 				cache->Clear();
+				if (globals::features::raytracing.loaded) {
+					globals::features::raytracing.ReloadShaders();
+				}
 			});
-			return json{ { "action", "deleteDisk" }, { "queued", true }, { "enqueued_at_frame", frame }, { "note", "on-disk + in-memory shader cache cleared; a full recompile follows (cold-compile benchmark)" } };
+			return json{ { "action", "deleteDisk" }, { "queued", true }, { "enqueued_at_frame", frame }, { "note", "on-disk + in-memory shader cache cleared; a full recompile follows (cold-compile benchmark); raytracing shaders reloaded if loaded" } };
 		}
-		return json{ { "error", "unknown action (clear|deleteDisk)" }, { "action", action } };
+		if (action == "reload" || action == "raytracing") {
+			task->AddTask([]() {
+				if (globals::features::raytracing.loaded) {
+					globals::features::raytracing.ReloadShaders();
+				}
+			});
+			return json{ { "action", action }, { "queued", true }, { "enqueued_at_frame", frame }, { "note", "raytracing shaders reloaded on main thread" } };
+		}
+		return json{ { "error", "unknown action (clear|deleteDisk|reload|raytracing)" }, { "action", action } };
 	}
 
 	/**
@@ -641,11 +760,11 @@ namespace DevBenchBridge
 		dvb->RegisterTool("communityshaders.feature", featureDesc, &FeatureToolHandler, nullptr);
 
 		static constexpr const char* inspectDesc =
-			R"({"description":"Read non-feature Community Shaders engine state. Kind-dispatched; response is a JSON object. kind=state -> {plugin,frame_count}. kind=shadercache -> {compiling,completedTasks,totalTasks,failedTasks,currentFailedCount,frame_count}. kind=profiler -> {totalGpuMs,totalCpuMs,frame_count,passes:[{name,gpuMs,gpuAvgMs,gpuP95Ms,gpuP99Ms,cpuMs,cpuAvgMs,gpuHistory:[...]}]}; optional filter param to match pass names.","readOnly":true,"inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["state","shadercache","profiler"]},"filter":{"type":"string"}},"required":["kind"]}})";
+			R"({"description":"Read non-feature Community Shaders engine state or feature-specific runtime metrics. Kind-dispatched; response is a JSON object. kind=state -> {plugin,frame_count}. kind=shadercache -> {compiling,completedTasks,totalTasks,failedTasks,currentFailedCount,frame_count}. kind=profiler -> {totalGpuMs,totalCpuMs,frame_count,passes:[{name,gpuMs,gpuAvgMs,gpuP95Ms,gpuP99Ms,cpuMs,cpuAvgMs,gpuHistory:[...]}]}; optional filter param. kind=raytracing -> {frame_count,loaded,initialized,available,mode,perfOverlayMode,passTimings:[{name,cpuMs,gpuMs}],sceneGraph:{textures,models,instances},accumulatedFrames,resolution:{width,height}}; optional boolean param 'screenshot' to simultaneously request a screenshot capture.","readOnly":true,"inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["state","shadercache","profiler","raytracing"]},"filter":{"type":"string"},"screenshot":{"type":"boolean"}},"required":["kind"]}})";
 		dvb->RegisterTool("communityshaders.inspect", inspectDesc, &InspectToolHandler, nullptr);
 
 		static constexpr const char* shadercacheDesc =
-			R"({"description":"Manage Community Shaders' compiled shader cache. Action-dispatched, fire-and-forget on the main thread. clear: drop the IN-MEMORY cache only; with the disk cache enabled shaders reload from Data/ShaderCache rather than recompiling, so this does NOT guarantee a recompile. deleteDisk: delete the on-disk cache AND drop the in-memory cache, forcing a full cold recompile (use this for compile benchmarks). Watch progress via communityshaders.inspect kind=shadercache and the communityshaders.shaderRecompiled event. Read-only status is communityshaders.inspect kind=shadercache.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["clear","deleteDisk"]}},"required":["action"]}})";
+			R"({"description":"Manage Community Shaders' compiled shader cache. Action-dispatched, fire-and-forget on the main thread. clear: drop the IN-MEMORY cache and reload Raytracing shaders; with the disk cache enabled shaders reload from Data/ShaderCache rather than recompiling. deleteDisk: delete the on-disk cache, drop in-memory cache, and reload Raytracing shaders (forcing a full cold recompile). reload: reload Raytracing shaders on the main thread via Raytracing::ReloadShaders. Read-only status is communityshaders.inspect kind=shadercache.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["clear","deleteDisk","reload","raytracing"]}},"required":["action"]}})";
 		dvb->RegisterTool("communityshaders.shadercache", shadercacheDesc, &ShadercacheToolHandler, nullptr);
 
 		static constexpr const char* captureDesc =

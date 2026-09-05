@@ -1045,6 +1045,14 @@ void Raytracing::CompileShaders()
 	}
 }
 
+void Raytracing::ReloadShaders()
+{
+	if (forcedDisabled)
+		return;
+
+	creationEngineRaytracing->ReloadShaders();
+}
+
 void Raytracing::InitializeCERaytracing(ID3D11Device5* d3d11Device, ID3D12Device5* d3d12Device, ID3D12CommandQueue* commandQueue, ID3D12CommandQueue* computeCommandQueue, ID3D12CommandQueue* copyCommandQueue)
 {
 	if (forcedDisabled)
@@ -1171,7 +1179,7 @@ void Raytracing::SetupResources()
 
 	auto& d3d11Device = globals::dx12Interop->d3d11Device;
 
-	featureData = eastl::make_unique<FeatureData>();
+	featureData = eastl::make_unique<CreationEngineRaytracing::FeatureData>();
 
 	screenCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<ScreenData>());
 
@@ -1290,27 +1298,177 @@ void Raytracing::UpdateFeatureData()
 	auto linearLighting = globals::features::linearLighting.GetCommonBufferData();
 	auto skinData = globals::features::skin.GetCommonBufferData();
 
-	std::memcpy(&featureData->ExtendedMaterials, &globals::features::extendedMaterials.settings, sizeof(ExtendedMaterials::Settings));
-	std::memcpy(&featureData->WetnessEffects, &wetnessEffect, sizeof(WetnessEffects::PerFrame));
-	std::memcpy(&featureData->CloudShadows, &globals::features::cloudShadows.settings, sizeof(CloudShadows::Settings));
-	std::memcpy(&featureData->HairSpecular, &globals::features::hairSpecular.settings, sizeof(HairSpecular::Settings));
-	std::memcpy(&featureData->ExtendedTranslucency, &globals::features::extendedTranslucency.GetCommonBufferData(), sizeof(ExtendedTranslucency::PerFrame));
-	std::memcpy(&featureData->LinearLighting, &linearLighting, sizeof(LinearLighting::PerFrameData));
-	std::memcpy(&featureData->ExponentialHeightFog, &globals::features::exponentialHeightFog.settings, sizeof(ExponentialHeightFog::Settings));
-	std::memcpy(&featureData->LODBlending, &globals::features::lodBlending.settings, sizeof(LODBlending::Settings));
-	std::memcpy(&featureData->Skin, &skinData, sizeof(Skin::SkinData));
+	// Extended Material
+	const auto& em = globals::features::extendedMaterials.settings;
+	featureData->ExtendedMaterial.EnableComplexMaterial = em.EnableComplexMaterial;
+	featureData->ExtendedMaterial.EnableParallax = em.EnableParallax;
+	featureData->ExtendedMaterial.EnableTerrainParallax = em.EnableTerrain;
+	featureData->ExtendedMaterial.EnableHeightBlending = em.EnableHeightBlending;
+	featureData->ExtendedMaterial.EnableShadows = em.EnableShadows;
+	featureData->ExtendedMaterial.ExtendShadows = FALSE;
+	featureData->ExtendedMaterial.EnableParallaxWarpingFix = em.EnableParallaxWarpingFix;
+	featureData->ExtendedMaterial.pad0 = 0;
 
-	static_assert(sizeof(FeatureData::ExtendedMaterials) == sizeof(ExtendedMaterials::Settings));
-	static_assert(sizeof(FeatureData::WetnessEffects) == sizeof(WetnessEffects::PerFrame));
-	static_assert(sizeof(FeatureData::CloudShadows) == sizeof(CloudShadows::Settings));
-	static_assert(sizeof(FeatureData::HairSpecular) == sizeof(HairSpecular::Settings));
-	static_assert(sizeof(FeatureData::ExtendedTranslucency) == sizeof(ExtendedTranslucency::PerFrame));
-	static_assert(sizeof(FeatureData::LinearLighting) == sizeof(LinearLighting::PerFrameData));
-	static_assert(sizeof(FeatureData::ExponentialHeightFog) == sizeof(ExponentialHeightFog::Settings));
-	static_assert(sizeof(FeatureData::LODBlending) == sizeof(LODBlending::Settings));
-	static_assert(sizeof(FeatureData::Skin) == sizeof(Skin::SkinData));
+	// Wetness Effects
+	std::memcpy(&featureData->WetnessEffects.OcclusionViewProj, &wetnessEffect.OcclusionViewProj, sizeof(featureData->WetnessEffects.OcclusionViewProj));
+	featureData->WetnessEffects.Time = wetnessEffect.Time;
+	featureData->WetnessEffects.Raining = wetnessEffect.Raining;
+	featureData->WetnessEffects.Wetness = wetnessEffect.Wetness;
+	featureData->WetnessEffects.PuddleWetness = wetnessEffect.PuddleWetness;
 
-	creationEngineRaytracing->UpdateFeatureData(featureData.get(), sizeof(FeatureData));
+	const auto& weSettings = wetnessEffect.settings;
+	featureData->WetnessEffects.EnableWetnessEffects = weSettings.EnableWetnessEffects;
+	featureData->WetnessEffects.MaxRainWetness = weSettings.MaxRainWetness;
+	featureData->WetnessEffects.MaxPuddleWetness = weSettings.MaxPuddleWetness;
+	featureData->WetnessEffects.MaxShoreWetness = weSettings.MaxShoreWetness;
+	featureData->WetnessEffects.ShoreRange = weSettings.ShoreRange;
+	featureData->WetnessEffects.PuddleRadius = weSettings.PuddleRadius;
+	featureData->WetnessEffects.PuddleMaxAngle = weSettings.PuddleMaxAngle;
+	featureData->WetnessEffects.PuddleMinWetness = weSettings.PuddleMinWetness;
+	featureData->WetnessEffects.MinRainWetness = weSettings.MinRainWetness;
+	featureData->WetnessEffects.SkinWetness = weSettings.SkinWetness;
+	featureData->WetnessEffects.WeatherTransitionSpeed = weSettings.WeatherTransitionSpeed;
+	featureData->WetnessEffects.EnableRaindropFx = weSettings.EnableRaindropFx;
+	featureData->WetnessEffects.EnableSplashes = weSettings.EnableSplashes;
+	featureData->WetnessEffects.EnableRipples = weSettings.EnableRipples;
+	featureData->WetnessEffects.EnableVanillaRipples = weSettings.EnableVanillaRipples;
+	featureData->WetnessEffects.RaindropFxRange = weSettings.RaindropFxRange;
+	featureData->WetnessEffects.RaindropGridSizeRcp = weSettings.RaindropGridSize;
+	featureData->WetnessEffects.RaindropIntervalRcp = weSettings.RaindropInterval;
+	featureData->WetnessEffects.RaindropChance = weSettings.RaindropChance;
+	featureData->WetnessEffects.SplashesLifetime = weSettings.SplashesLifetime;
+	featureData->WetnessEffects.SplashesStrength = weSettings.SplashesStrength;
+	featureData->WetnessEffects.SplashesMinRadius = weSettings.SplashesMinRadius;
+	featureData->WetnessEffects.SplashesMaxRadius = weSettings.SplashesMaxRadius;
+	featureData->WetnessEffects.RippleStrength = weSettings.RippleStrength;
+	featureData->WetnessEffects.RippleRadius = weSettings.RippleRadius;
+	featureData->WetnessEffects.RippleBreadth = weSettings.RippleBreadth;
+	featureData->WetnessEffects.RippleLifetimeRcp = weSettings.RippleLifetime;
+	featureData->WetnessEffects.pad0 = 0.0f;
+
+	// Cloud Shadows
+	featureData->CloudShadows.Opacity = globals::features::cloudShadows.settings.Opacity;
+	featureData->CloudShadows.pad0 = { 0.0f, 0.0f, 0.0f };
+
+	// Hair Specular
+	const auto& hs = globals::features::hairSpecular.settings;
+	featureData->HairSpecular.Enabled = hs.Enabled;
+	featureData->HairSpecular.HairGlossiness = hs.HairGlossiness;
+	featureData->HairSpecular.SpecularMult = hs.SpecularMult;
+	featureData->HairSpecular.DiffuseMult = hs.DiffuseMult;
+	featureData->HairSpecular.EnableTangentShift = hs.EnableTangentShift;
+	featureData->HairSpecular.PrimaryTangentShift = hs.PrimaryTangentShift;
+	featureData->HairSpecular.SecondaryTangentShift = hs.SecondaryTangentShift;
+	featureData->HairSpecular.HairSaturation = hs.HairSaturation;
+	featureData->HairSpecular.SpecularIndirectMult = hs.SpecularIndirectMult;
+	featureData->HairSpecular.DiffuseIndirectMult = hs.DiffuseIndirectMult;
+	featureData->HairSpecular.BaseColorMult = hs.BaseColorMult;
+	featureData->HairSpecular.Transmission = hs.Transmission;
+	featureData->HairSpecular.EnableSelfShadow = hs.EnableSelfShadow;
+	featureData->HairSpecular.SelfShadowStrength = hs.SelfShadowStrength;
+	featureData->HairSpecular.SelfShadowExponent = hs.SelfShadowExponent;
+	featureData->HairSpecular.SelfShadowScale = hs.SelfShadowScale;
+	featureData->HairSpecular.HairMode = hs.HairMode;
+	featureData->HairSpecular.pad1 = 0;
+	featureData->HairSpecular.pad2 = 0;
+	featureData->HairSpecular.pad3 = 0;
+
+	// Extended Translucency
+	const auto& et = globals::features::extendedTranslucency.GetCommonBufferData();
+	featureData->ExtendedTranslucency.MaterialModel = et.AlphaMode;
+	featureData->ExtendedTranslucency.Reduction = et.AlphaReduction;
+	featureData->ExtendedTranslucency.Softness = et.AlphaSoftness;
+	featureData->ExtendedTranslucency.Strength = et.AlphaStrength;
+
+	// Linear Lighting
+	featureData->LinearLighting.enableLinearLighting = linearLighting.enableLinearLighting;
+	featureData->LinearLighting.isDirLightLinear = linearLighting.isDirLightLinear;
+	featureData->LinearLighting.dirLightMult = linearLighting.dirLightMult;
+	featureData->LinearLighting.lightGamma = linearLighting.lightGamma;
+	featureData->LinearLighting.colorGamma = linearLighting.colorGamma;
+	featureData->LinearLighting.emitColorGamma = linearLighting.emitColorGamma;
+	featureData->LinearLighting.glowmapGamma = linearLighting.glowmapGamma;
+	featureData->LinearLighting.ambientGamma = linearLighting.ambientGamma;
+	featureData->LinearLighting.fogGamma = linearLighting.fogGamma;
+	featureData->LinearLighting.fogAlphaGamma = linearLighting.fogAlphaGamma;
+	featureData->LinearLighting.effectGamma = linearLighting.effectGamma;
+	featureData->LinearLighting.effectAlphaGamma = linearLighting.effectAlphaGamma;
+	featureData->LinearLighting.skyGamma = linearLighting.skyGamma;
+	featureData->LinearLighting.waterGamma = linearLighting.waterGamma;
+	featureData->LinearLighting.vlGamma = linearLighting.vlGamma;
+	featureData->LinearLighting.vanillaDiffuseColorMult = linearLighting.vanillaDiffuseColorMult;
+	featureData->LinearLighting.directionalLightMult = linearLighting.directionalLightMult;
+	featureData->LinearLighting.pointLightMult = linearLighting.pointLightMult;
+	featureData->LinearLighting.ambientMult = linearLighting.ambientMult;
+	featureData->LinearLighting.emitColorMult = linearLighting.emitColorMult;
+	featureData->LinearLighting.glowmapMult = linearLighting.glowmapMult;
+	featureData->LinearLighting.effectLightingMult = linearLighting.effectLightingMult;
+	featureData->LinearLighting.membraneEffectMult = linearLighting.membraneEffectMult;
+	featureData->LinearLighting.bloodEffectMult = linearLighting.bloodEffectMult;
+	featureData->LinearLighting.projectedEffectMult = linearLighting.projectedEffectMult;
+	featureData->LinearLighting.deferredEffectMult = linearLighting.deferredEffectMult;
+	featureData->LinearLighting.otherEffectMult = linearLighting.otherEffectMult;
+	featureData->LinearLighting.pad0 = 0;
+
+	// Exponential Height Fog
+	const auto& ehf = globals::features::exponentialHeightFog.settings;
+	featureData->ExponentialHeightFog.enabled = ehf.enabled;
+	featureData->ExponentialHeightFog.useDynamicCubemaps = ehf.useDynamicCubemaps;
+	featureData->ExponentialHeightFog.startDistance = ehf.startDistance;
+	featureData->ExponentialHeightFog.fogHeight = ehf.fogHeight;
+	featureData->ExponentialHeightFog.fogHeightFalloff = ehf.fogHeightFalloff;
+	featureData->ExponentialHeightFog.fogDensity = ehf.fogDensity;
+	featureData->ExponentialHeightFog.directionalInscatteringMultiplier = ehf.directionalInscatteringMultiplier;
+	featureData->ExponentialHeightFog.directionalInscatteringAnisotropy = ehf.directionalInscatteringAnisotropy;
+	featureData->ExponentialHeightFog.inscatteringTint = ehf.inscatteringTint;
+	featureData->ExponentialHeightFog.cubemapMipLevel = ehf.cubemapMipLevel;
+	featureData->ExponentialHeightFog.sunlightAttenuationAmount = ehf.sunlightAttenuationAmount;
+	featureData->ExponentialHeightFog.respectVanillaFogFade = ehf.respectVanillaFogFade;
+	featureData->ExponentialHeightFog.disableVanillaFog = ehf.disableVanillaFog;
+	featureData->ExponentialHeightFog.fogInscatteringColor = ehf.fogInscatteringColor;
+	featureData->ExponentialHeightFog.originalFogColorAmount = ehf.originalFogColorAmount;
+	featureData->ExponentialHeightFog.volumetricFogEnabled = ehf.volumetricFogEnabled;
+	featureData->ExponentialHeightFog.volumetricGridPixelSize = ehf.volumetricGridPixelSize;
+	featureData->ExponentialHeightFog.volumetricGridSizeZ = ehf.volumetricGridSizeZ;
+	featureData->ExponentialHeightFog.volumetricFogDistance = ehf.volumetricFogDistance;
+	featureData->ExponentialHeightFog.volumetricFogStartDistance = ehf.volumetricFogStartDistance;
+	featureData->ExponentialHeightFog.volumetricFogNearFadeInDistance = ehf.volumetricFogNearFadeInDistance;
+	featureData->ExponentialHeightFog.volumetricFogExtinctionScale = ehf.volumetricFogExtinctionScale;
+	featureData->ExponentialHeightFog.volumetricFogAlbedo = ehf.volumetricFogAlbedo;
+	featureData->ExponentialHeightFog.volumetricFogEmissive = ehf.volumetricFogEmissive;
+	featureData->ExponentialHeightFog.volumetricDirectionalScatteringIntensity = ehf.volumetricDirectionalScatteringIntensity;
+	featureData->ExponentialHeightFog.volumetricShadowBias = ehf.volumetricShadowBias;
+	featureData->ExponentialHeightFog.volumetricDepthDistributionScale = ehf.volumetricDepthDistributionScale;
+	featureData->ExponentialHeightFog.volumetricSkyLightingIntensity = ehf.volumetricSkyLightingIntensity;
+	featureData->ExponentialHeightFog.volumetricFogScatteringDistribution = ehf.volumetricFogScatteringDistribution;
+	featureData->ExponentialHeightFog.volumetricHistoryWeight = ehf.volumetricHistoryWeight;
+	featureData->ExponentialHeightFog.volumetricHistoryMissSampleCount = ehf.volumetricHistoryMissSampleCount;
+	featureData->ExponentialHeightFog.volumetricSampleJitterMultiplier = ehf.volumetricSampleJitterMultiplier;
+	featureData->ExponentialHeightFog.volumetricUpsampleJitterMultiplier = ehf.volumetricUpsampleJitterMultiplier;
+	featureData->ExponentialHeightFog.volumetricLocalLightScatteringIntensity = ehf.volumetricLocalLightScatteringIntensity;
+	featureData->ExponentialHeightFog.pad0 = ehf.pad0;
+
+	// LOD Blending
+	const auto& lod = globals::features::lodBlending.settings;
+	featureData->LODBlending.LODTerrainBrightness = lod.LODTerrainBrightness;
+	featureData->LODBlending.LODObjectBrightness = lod.LODObjectBrightness;
+	featureData->LODBlending.LODObjectSnowBrightness = lod.LODObjectSnowBrightness;
+	featureData->LODBlending.DisableTerrainVertexColors = lod.DisableTerrainVertexColors;
+	featureData->LODBlending.LODTerrainGamma = lod.LODTerrainGamma;
+	featureData->LODBlending.LODObjectGamma = lod.LODObjectGamma;
+	featureData->LODBlending.LODObjectSnowGamma = lod.LODObjectSnowGamma;
+	featureData->LODBlending.pad = lod.pad;
+
+	// Skin
+	featureData->Skin.skinParams = skinData.skinParams;
+	featureData->Skin.skinParams2 = skinData.skinParams2;
+	featureData->Skin.skinDetailParams = skinData.skinDetailParams;
+	featureData->Skin.sssParams = skinData.sssParams;
+	featureData->Skin.fuzzParams = skinData.fuzzParams;
+	featureData->Skin.physicalParams = skinData.physicalParams;
+	featureData->Skin.wetParams = skinData.wetParams;
+
+	creationEngineRaytracing->UpdateFeatureData(featureData.get(), sizeof(CreationEngineRaytracing::FeatureData));
 }
 
 void Raytracing::UpdateSkinDetailNormal(ID3D11Texture2D* skinDetailNormalTextureD3D11)

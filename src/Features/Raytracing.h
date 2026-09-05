@@ -112,6 +112,7 @@ struct Raytracing : public OverlayFeature
 	void DrawDebugSettings();
 
 	void CompileShaders();
+	void ReloadShaders();
 
 	uint64_t GetSharedVRAMOffset() const
 	{
@@ -198,20 +199,7 @@ struct Raytracing : public OverlayFeature
 		InitFailed,
 	} disableReason = DisableReason::None;
 
-	struct alignas(16) FeatureData
-	{
-		ExtendedMaterials::Settings ExtendedMaterials;
-		WetnessEffects::PerFrame WetnessEffects;
-		CloudShadows::Settings CloudShadows;
-		HairSpecular::Settings HairSpecular;
-		ExtendedTranslucency::PerFrame ExtendedTranslucency;
-		LinearLighting::PerFrameData LinearLighting;
-		ExponentialHeightFog::Settings ExponentialHeightFog;
-		LODBlending::Settings LODBlending;
-		Skin::SkinData Skin;
-	};
-
-	eastl::unique_ptr<FeatureData> featureData;
+	eastl::unique_ptr<CreationEngineRaytracing::FeatureData> featureData;
 
 	struct alignas(16) SharedData
 	{

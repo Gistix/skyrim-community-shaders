@@ -129,8 +129,8 @@ void RemoteControl::DrawSettings()
 	ImGui::Separator();
 	ImGui::TextUnformatted("Tools exposed through devbench:");
 	ImGui::BulletText("communityshaders.feature — list / get / set / reset / toggle features");
-	ImGui::BulletText("communityshaders.inspect — engine state and shader-cache status");
-	ImGui::BulletText("communityshaders.shadercache — clear / delete the compiled cache");
+	ImGui::BulletText("communityshaders.inspect — engine state, raytracing metrics, and shader-cache status");
+	ImGui::BulletText("communityshaders.shadercache — clear / delete compiled cache / reload raytracing shaders");
 	ImGui::BulletText("communityshaders.capture — RenderDoc / screenshot capture");
 	ImGui::BulletText("communityshaders.settings — save / load / reset the global config");
 	ImGui::TextDisabled(
