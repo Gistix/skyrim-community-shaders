@@ -27,12 +27,14 @@ namespace Aftermath
 	[[nodiscard]] bool IsEnabled();
 
 	/**
-	 * @brief Whether the Vulkan device should request the NV diagnostics extensions.
+	 * @brief Whether the Vulkan device should be created with GPU crash analysis support.
 	 *
-	 * Aftermath produces a dump without them, but one carrying no shader mapping, no resource
-	 * tracking and no automatic checkpoints -- which is to say a dump that names no cause.
+	 * True whenever crash analysis is compiled in, on any vendor. Aftermath itself is Nvidia-only,
+	 * but the debug-utils labels this turns on are what give AMD's Radeon GPU Detective the [APP]
+	 * half of its execution marker tree, and on Nvidia they name the pass in the Aftermath dump.
+	 * Which vendor-specific extensions to enable is DXVK's decision, not ours.
 	 */
-	[[nodiscard]] bool WantsDeviceDiagnostics();
+	[[nodiscard]] bool WantsCrashAnalysis();
 
 	/** @brief Disarms collection. Safe to call when never enabled. */
 	void Disable();

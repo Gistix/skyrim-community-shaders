@@ -203,9 +203,12 @@ bool Aftermath::IsEnabled()
 	return g_enabled.load(std::memory_order_acquire);
 }
 
-bool Aftermath::WantsDeviceDiagnostics()
+bool Aftermath::WantsCrashAnalysis()
 {
-	return g_enabled.load(std::memory_order_acquire);
+	// Deliberately not gated on g_enabled: on AMD the SDK never arms, and that is exactly the
+	// case where the markers matter most, because Radeon GPU Detective is the tool that will read
+	// them.
+	return true;
 }
 
 void Aftermath::Disable()
@@ -219,7 +222,7 @@ void Aftermath::Disable()
 
 bool Aftermath::Enable() { return false; }
 bool Aftermath::IsEnabled() { return false; }
-bool Aftermath::WantsDeviceDiagnostics() { return false; }
+bool Aftermath::WantsCrashAnalysis() { return false; }
 void Aftermath::Disable() {}
 
 #endif

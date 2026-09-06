@@ -58,15 +58,31 @@ namespace DxvkLoader
 			logger::warn("[DXVK] Failed to enable HDR color-space support (error {})", ::GetLastError());
 		}
 
-		// Aftermath is armed by now (Hooks::InstallEarlyHooks calls it first), and DXVK reads
-		// DXVK_DEBUG once at instance creation. Without this the crash dump still arrives, but with
-		// no shader mapping, no resource tracking and no checkpoints -- it reports that the GPU
-		// faulted and nothing about where.
-		if (Aftermath::WantsDeviceDiagnostics()) {
-			if (::SetEnvironmentVariableW(L"DXVK_DEBUG", L"aftermath"))
-				logger::info("[DXVK] DXVK_DEBUG=aftermath -- requesting NV device diagnostics for crash dumps");
+		// DXVK reads DXVK_DEBUG once at instance creation, so the request has to be in place before
+		// the game creates its device.
+		//
+		// Not conditional on Aftermath having armed. Aftermath is Nvidia-only, but AMD's Radeon GPU
+		// Detective reads the same debug-utils labels as the [APP] half of its execution marker
+		// tree, and on both vendors those labels are what turn "the GPU faulted" into "the GPU
+		// faulted during this pass". The vendor-specific parts are DXVK's business: it knows which
+		// GPU it is talking to and enables only what that GPU supports.
+		// Put DXVK's own output where the rest of a bug report already is. DXVK defaults to the
+		// directory holding the exe, so SkyrimSE_d3d11.log, SkyrimSE_dxgi.log and -- on a device
+		// loss with VK_EXT_device_fault -- SkyrimSE_device_fault.bin all land in the game folder,
+		// somewhere separate from CommunityShaders.log that nobody thinks to send. Pointing DXVK at
+		// the SKSE log directory means "zip your SKSE logs folder" collects every artifact we
+		// produce, the GPU crash dumps included.
+		if (const auto logDir = logger::log_directory()) {
+			const auto path = logDir->wstring();
+			if (!::SetEnvironmentVariableW(L"DXVK_LOG_PATH", path.c_str()))
+				logger::warn("[DXVK] Failed to redirect DXVK logs to the SKSE log folder (error {})", ::GetLastError());
+		}
+
+		if (Aftermath::WantsCrashAnalysis()) {
+			if (::SetEnvironmentVariableW(L"DXVK_DEBUG", L"crashanalysis"))
+				logger::info("[DXVK] DXVK_DEBUG=crashanalysis -- requesting GPU crash analysis support");
 			else
-				logger::warn("[DXVK] Failed to request NV device diagnostics (error {})", ::GetLastError());
+				logger::warn("[DXVK] Failed to request GPU crash analysis (error {})", ::GetLastError());
 		}
 
 		const auto dir = GetRuntimeDir();
