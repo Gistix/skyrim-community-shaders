@@ -558,12 +558,19 @@ void Streamline::SetVulkanDevice()
 		// is a materially softer image at the same quality preset -- that is XeSS behaving as
 		// designed, not the integration misbehaving, and it is worth saying so in the UI.
 		isIntelGPU = props.vendorID == 0x8086;
-		isRTXBelow40Series = isNvidiaGPU &&
-		                     ((props.deviceID >= 0x2200 && props.deviceID <= 0x2600) ||   // RTX 30 (Ampere)
-								(props.deviceID >= 0x1E00 && props.deviceID <= 0x1FFF));   // RTX 20 (Turing w/ RT)
+		// Ada (RTX 40) and everything after it carry device IDs from 0x2600 up -- AD102 0x2684,
+		// AD103 0x2704, AD107 0x2882, Blackwell GB202 0x2B85 -- while Ampere tops out in 0x25xx
+		// and Turing sits in 0x1Exx-0x1Fxx. Test for Ada-or-newer directly. Allowlisting the
+		// Ampere and Turing ranges instead meant every ID outside them fell through to "RTX 40+",
+		// so Pascal, Maxwell and the tensor-less GTX 16xx were all reported as RTX 40+ and handed
+		// preset M: a GTX 1080 Ti (0x1B06) logged as "RTX 40+ (M)".
+		constexpr uint32_t kFirstAdaDeviceID = 0x2600;
+		isRTXBelow40Series = isNvidiaGPU && props.deviceID < kFirstAdaDeviceID;
 		logger::info("[Streamline] GPU vendor=0x{:04X} device=0x{:04X} -> DLSS preset group: {}",
 			props.vendorID, props.deviceID,
-			isNvidiaGPU ? (isRTXBelow40Series ? "RTX 20/30 (J)" : "RTX 40+ (M)") : "non-NVIDIA (default)");
+			!isNvidiaGPU        ? "non-NVIDIA (default)" :
+				isRTXBelow40Series ? "Ampere or older (J)" :
+									 "Ada or newer (M)");
 	}
 }
 

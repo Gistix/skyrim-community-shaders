@@ -888,8 +888,17 @@ void Upscaling::CreateHudlessTexture()
 			format = DXGI_FORMAT_R10G10B10A2_UNORM;
 	}
 	if (format == DXGI_FORMAT_UNKNOWN) {
-		logger::error("[Upscaling] Unsupported HUD-less presenter format {} for encoding {}",
-			static_cast<int>(presenterFormat), static_cast<int>(encoding));
+		// The presenter publishes its format asynchronously and reports kUnknown /
+		// VK_FORMAT_UNDEFINED until it has committed one -- at startup, and again across every
+		// colour-space transition. That is "not yet", not "unsupported": CaptureHudlessColor
+		// calls this every frame and copes with a null texture, so a later frame picks it up.
+		// Reporting it as an error put a spurious "Unsupported HUD-less presenter format 0 for
+		// encoding 0" in every session's log.
+		if (encoding != DXVKInterop::PresenterEncoding::kUnknown &&
+			presenterFormat != VK_FORMAT_UNDEFINED) {
+			logger::error("[Upscaling] Unsupported HUD-less presenter format {} for encoding {}",
+				static_cast<int>(presenterFormat), static_cast<int>(encoding));
+		}
 		return;
 	}
 
