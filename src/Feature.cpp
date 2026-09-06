@@ -50,6 +50,8 @@
 
 #include "State.h"
 #include "TruePBR.h"
+#include "Raytracing.h"
+#include "Features/PathTracing.h"
 
 void Feature::Load(json& o_json)
 {
@@ -221,6 +223,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 {
 	static std::vector<Feature*> features = {
 		&globals::features::truePBR,
+		&globals::features::raytracing,
+		&globals::features::pathTracing,
 		&globals::features::volumetricShadows,
 		&globals::features::grassLighting,
 		&globals::features::grassCollision,

@@ -40,6 +40,8 @@ struct ExponentialHeightFog;
 struct HDRDisplay;
 struct ScreenshotFeature;
 struct Skin;
+struct Raytracing;
+struct PathTracing;
 
 class State;
 class Deferred;
@@ -132,6 +134,8 @@ namespace globals
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
 		extern Skin skin;
+		extern Raytracing raytracing;
+		extern PathTracing pathTracing;
 
 	}
 

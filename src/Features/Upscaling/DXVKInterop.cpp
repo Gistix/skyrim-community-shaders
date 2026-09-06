@@ -509,6 +509,26 @@ bool DXVKInterop::Initialize()
 	return true;
 }
 
+bool DXVKInterop::GetSubmissionQueue1(VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const
+{
+	if (!interopDevice)
+		return false;
+
+	winrt::com_ptr<IDXGIVkInteropDevice1> interopDevice1;
+	if (SUCCEEDED(interopDevice->QueryInterface(__uuidof(IDXGIVkInteropDevice1), interopDevice1.put_void()))) {
+		interopDevice1->GetSubmissionQueue1(a_outQueue, a_outQueueIndex, a_outQueueFamilyIndex);
+		return true;
+	}
+
+	if (a_outQueue)
+		*a_outQueue = queue;
+	if (a_outQueueIndex)
+		*a_outQueueIndex = 0;
+	if (a_outQueueFamilyIndex)
+		*a_outQueueFamilyIndex = queueFamilyIndex;
+	return true;
+}
+
 bool DXVKInterop::GetVkImage(ID3D11Resource* a_resource, VkImage* a_outImage,
 	VkImageLayout* a_outLayout, VkImageCreateInfo* a_outInfo) const
 {

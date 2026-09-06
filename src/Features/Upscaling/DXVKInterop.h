@@ -43,6 +43,21 @@ IDXGIVkInteropDevice : public IUnknown
 	virtual void STDMETHODCALLTYPE ReleaseSubmissionQueue() = 0;
 };
 
+struct D3D11_TEXTURE2D_DESC1;
+
+MIDL_INTERFACE("e2ef5fa5-dc21-4af7-90c4-f67ef6a09324")
+IDXGIVkInteropDevice1 : public IDXGIVkInteropDevice
+{
+	virtual void STDMETHODCALLTYPE GetSubmissionQueue1(
+		VkQueue * pQueue,
+		uint32_t * pQueueIndex,
+		uint32_t * pQueueFamilyIndex) = 0;
+	virtual HRESULT STDMETHODCALLTYPE CreateTexture2DFromVkImage(
+		const D3D11_TEXTURE2D_DESC1* pDesc,
+		VkImage vkImage,
+		ID3D11Texture2D** ppTexture2D) = 0;
+};
+
 /** @brief Accesses DXVK's Vulkan device through its D3D11 interop interfaces. */
 class DXVKInterop
 {
@@ -117,6 +132,10 @@ public:
 	VkInstance GetInstance() const { return instance; }
 	VkPhysicalDevice GetPhysicalDevice() const { return physicalDevice; }
 	VkDevice GetDevice() const { return device; }
+	VkQueue GetQueue() const { return queue; }
+	uint32_t GetQueueFamilyIndex() const { return queueFamilyIndex; }
+	IDXGIVkInteropDevice* GetInteropDevice() const { return interopDevice.get(); }
+	bool GetSubmissionQueue1(VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const;
 	PFN_vkGetInstanceProcAddr GetInstanceProcAddr() const { return vkGetInstanceProcAddr; }
 	PFN_vkGetDeviceProcAddr GetDeviceProcAddr() const { return vkGetDeviceProcAddr; }
 

@@ -45,6 +45,8 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "TruePBR.h"
+#include "Raytracing.h"
+#include "Features/PathTracing.h"
 #include "Utils/Game.h"
 #include "WeatherManager.h"
 
@@ -99,6 +101,8 @@ namespace globals
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
 		Skin skin{};
+		Raytracing raytracing{};
+		PathTracing pathTracing{};
 
 		namespace llf
 		{

@@ -1,0 +1,85 @@
+#include "Features/PathTracing.h"
+
+#include "Globals.h"
+#include "Menu.h"
+#include "Raytracing.h"
+
+#define I18N_KEY_PREFIX "feature.path_tracing."
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PathTracing::Settings,
+	Enabled,
+	RaytracingSettings,
+	GeneralSettings)
+
+void PathTracing::RestoreDefaultSettings()
+{
+	settings = {};
+}
+
+void PathTracing::LoadSettings(json& o_json)
+{
+	settings = o_json;
+	UpdateSettings();
+}
+
+void PathTracing::SaveSettings(json& o_json)
+{
+	o_json = settings;
+}
+
+bool PathTracing::Available() const
+{
+	return loaded && settings.Enabled && globals::features::raytracing.Available();
+}
+
+void PathTracing::UpdateSettings()
+{
+	globals::features::raytracing.UpdateSettings();
+}
+
+void PathTracing::DrawSettings()
+{
+	auto& rt = globals::features::raytracing;
+	if (!rt.Available(false)) {
+		ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+			T(TKEY("requires_raytracing"), "Creation Engine Raytracing runtime is not available. Ensure CreationEngineRaytracing.dll is installed."));
+		return;
+	}
+
+	bool changed = false;
+
+	if (ImGui::Checkbox(T(TKEY("enabled"), "Enabled"), &settings.Enabled)) {
+		changed = true;
+	}
+
+	if (ImGui::SliderInt(T(TKEY("bounces"), "Bounces"), &settings.RaytracingSettings.Bounces, 1, 8)) {
+		changed = true;
+	}
+
+	if (ImGui::SliderInt(T(TKEY("samples_per_pixel"), "Samples Per Pixel"), &settings.RaytracingSettings.SamplesPerPixel, 1, 16)) {
+		changed = true;
+	}
+
+	if (ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.RaytracingSettings.ResolutionScale, 0.25f, 1.0f, "%.2f")) {
+		changed = true;
+	}
+
+	const char* rrNames[] = { "Disabled", "Standard", "Enhanced" };
+	int currentRR = static_cast<int>(settings.RaytracingSettings.RussianRoulette);
+	if (ImGui::Combo(T(TKEY("russian_roulette"), "Russian Roulette"), &currentRR, rrNames, IM_ARRAYSIZE(rrNames))) {
+		settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
+		changed = true;
+	}
+
+	const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
+	int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
+	if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
+		settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
+		changed = true;
+	}
+
+	if (changed) {
+		UpdateSettings();
+	}
+}

@@ -2244,5 +2244,21 @@
     "ui.copy": "Copy",
     "ui.dont_ask_again": "Don't ask me again",
     "ui.search": "Search...",
-    "ui.search_features": "Search Features..."
+    "ui.search_features": "Search Features...",
+    "feature.raytracing.name": "Raytracing",
+    "feature.raytracing.disable_reason_missing_plugin": "Missing 'CreationEngineRaytracing.dll', check your mod manager.",
+    "feature.raytracing.disable_reason_init_failed": "Initialization Failed, check CreationEngineRaytracing.txt log",
+    "feature.raytracing.enabled": "Enabled",
+    "feature.raytracing.mode": "Mode",
+    "feature.raytracing.denoiser": "Denoiser",
+    "feature.raytracing.status_initialized": "CreationEngineRaytracing runtime is active and initialized.",
+    "feature.raytracing.active_mode": "Active Mode",
+    "feature.path_tracing.name": "Path Tracing",
+    "feature.path_tracing.requires_raytracing": "Creation Engine Raytracing runtime is not available. Ensure CreationEngineRaytracing.dll is installed.",
+    "feature.path_tracing.enabled": "Enabled",
+    "feature.path_tracing.bounces": "Bounces",
+    "feature.path_tracing.samples_per_pixel": "Samples Per Pixel",
+    "feature.path_tracing.resolution_scale": "Resolution Scale",
+    "feature.path_tracing.russian_roulette": "Russian Roulette",
+    "feature.path_tracing.denoiser": "Denoiser"
 }
