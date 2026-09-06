@@ -86,8 +86,7 @@ namespace FrameGen
 		if (faultRecoveryRequested) {
 			if (!faultRecoveryRequested) {
 				auto* dxvk = DXVKInterop::GetSingleton();
-				const bool completionProven = dxvk->IsDeviceLost() ||
-				                              (dxvk->HasPendingPresentWaitSemaphore() ?
+				const bool completionProven = (dxvk->HasPendingPresentWaitSemaphore() ?
 				                                      dxvk->DiscardPendingPresentWaitSemaphore() :
 				                                      dxvk->WaitDeviceIdle());
 				if (!completionProven) {
@@ -192,9 +191,7 @@ namespace FrameGen
 			// A lost device has nothing left in flight to drain, and waiting on it can never
 			// succeed, so deferring here spins forever -- 17.6k of these in one session even after
 			// the wait itself was latched. Treat the mode as torn down and let the controller move
-			// on; the loss is reported once by DXVKInterop.
-			if (!DXVKInterop::GetSingleton()->IsDeviceLost() &&
-				!DXVKInterop::GetSingleton()->WaitDeviceIdle()) {
+			if (!DXVKInterop::GetSingleton()->WaitDeviceIdle()) {
 				static bool deferralReported = false;
 				if (!std::exchange(deferralReported, true))
 					logger::error("[FrameGen] DLSS-G teardown deferred because device idle could not be proven");
@@ -207,7 +204,10 @@ namespace FrameGen
 
 		if (fsrDelivered == FSRDeliveryState::kDelivered && a_target != Method::kFSR) {
 			if (!DXVKInterop::GetSingleton()->DrainCommandRing()) {
-				logger::error("[FrameGen] FSR-FG teardown deferred because command completion could not be proven");
+				// Once only: this re-enters every reconcile.
+				static bool fsrDeferralReported = false;
+				if (!std::exchange(fsrDeferralReported, true))
+					logger::error("[FrameGen] FSR-FG teardown deferred because command completion could not be proven");
 				return false;
 			}
 			const auto& s = globals::features::upscaling.settings;

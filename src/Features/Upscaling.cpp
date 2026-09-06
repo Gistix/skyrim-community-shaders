@@ -540,10 +540,7 @@ void Upscaling::BeginRenderFrame()
 	// and IsFrameGenerationActive() already returns false while the ring is faulted.
 	static bool ringRecoveryReported = false;
 	if (dxvk->HasCommandRingFault()) {
-		if (dxvk->IsDeviceLost()) {
-			if (!std::exchange(ringRecoveryReported, true))
-				logger::error("[Upscaling] device lost; frame generation is unavailable for this session");
-		} else if (!dxvk->RecoverCommandRing()) {
+		if (!dxvk->RecoverCommandRing()) {
 			if (!std::exchange(ringRecoveryReported, true))
 				logger::error("[Upscaling] Vulkan command-ring recovery failed; falling back to TAA");
 		} else {
@@ -719,17 +716,6 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 	auto* dxvk = DXVKInterop::GetSingleton();
 	auto* streamline = Streamline::GetSingleton();
 	auto requestFaultTeardown = [&](const char* a_reason) -> HRESULT {
-		// A lost device can never prove completion, so the deferral below would suppress every
-		// present for the rest of the session -- the screen stops updating while the log fills.
-		// That is the frame-generation freeze: measured 243k vkDeviceWaitIdle(-4) and 638k log
-		// lines in one session, the game hammering a device that was already gone. Nothing here can
-		// recover it, so stop trying and let the present through; the runtime reports the loss.
-		if (dxvk->IsDeviceLost()) {
-			static bool deviceLossReported = false;
-			if (!std::exchange(deviceLossReported, true))
-				logger::critical("[Upscaling] device lost ({}); presenting without frame generation", a_reason);
-			return a_present(a_swapChain, 0, a_flags);
-		}
 		logger::error("[Upscaling] {} - disabling frame generation", a_reason);
 		settings.frameGeneration = false;
 		const uint32_t displayWidth = globals::game::graphicsState ? globals::game::graphicsState->screenWidth : 0;

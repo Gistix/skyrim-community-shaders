@@ -534,13 +534,13 @@ bool DXVKInterop::WaitDeviceIdle()
 	std::lock_guard lock(commandRingMutex);
 	if (!interopDevice || !vkGetDeviceProcAddr || device == VK_NULL_HANDLE)
 		return false;
-	// A lost device never comes back, so every caller that waits on idle to prove completion will
-	// fail forever. Returning early keeps that from becoming a per-frame retry: the callers above
-	// this one re-enter on the next frame, and without the latch a single loss produced 243k
-	// vkDeviceWaitIdle(-4) lines and 638k log lines in one session while the game hammered a dead
-	// device. Fail fast and silently instead; the loss itself is reported once, below.
+	// A lost device has abandoned every submission it held, so "all outstanding work has
+	// completed" is vacuously true and there is nothing left to wait for. Reporting failure here
+	// made every caller defer its teardown forever -- the frame-generation freeze: the screen
+	// stops updating while the log fills with "could not be proven". Say idle, once, and let
+	// teardown run; destroying Vulkan objects is both legal and required after a device loss.
 	if (deviceLost)
-		return false;
+		return true;
 
 	const DeviceIdleAttempt attempt = WaitDeviceIdleSEH(interopDevice.get(), vkGetDeviceProcAddr, device,
 		releaseQueuedPresentWaitSemaphoresAfterIdle);
@@ -562,10 +562,10 @@ bool DXVKInterop::WaitDeviceIdle()
 			deviceLost = true;
 			commandRingFaulted = true;
 			enqueueInteropCommandBuffer = nullptr;
-			logger::critical("[DXVKInterop] device lost; Vulkan interop is quarantined for this session");
-		} else {
-			logger::error("[DXVKInterop] vkDeviceWaitIdle failed ({})", static_cast<int>(attempt.result));
+			logger::critical("[DXVKInterop] device lost; Vulkan interop is unavailable for this session");
+			return true;
 		}
+		logger::error("[DXVKInterop] vkDeviceWaitIdle failed ({})", static_cast<int>(attempt.result));
 		return false;
 	}
 	if (attempt.releasedPresentWaitCount)
@@ -911,12 +911,6 @@ bool DXVKInterop::HasCommandRingFault() const
 {
 	std::lock_guard lock(commandRingMutex);
 	return commandRingFaulted;
-}
-
-bool DXVKInterop::IsDeviceLost() const
-{
-	std::lock_guard lock(commandRingMutex);
-	return deviceLost;
 }
 
 bool DXVKInterop::IsPresentWaitUnattachedForSwapchain() const

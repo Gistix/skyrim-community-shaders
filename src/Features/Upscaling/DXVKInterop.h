@@ -145,7 +145,6 @@ public:
 	/** @brief Forgets the unattached verdict; call when the swapchain is recreated. */
 	void ResetPresentWaitUnattachedForSwapchain();
 	/** @brief True once VK_ERROR_DEVICE_LOST has been observed. Terminal for the session. */
-	bool IsDeviceLost() const;
 	/** @brief Recreates a quarantined command ring after proving the Vulkan device idle. */
 	[[nodiscard]] bool RecoverCommandRing();
 	/** @brief Whether a tag submission can be GPU-ordered before DXVK's next present. */
