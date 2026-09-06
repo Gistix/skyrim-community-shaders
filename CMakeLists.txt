@@ -37,6 +37,11 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # ########################################################################################################################
 message("Options:")
 option(
+    AFTERMATH
+    "Integrate the NVIDIA Nsight Aftermath SDK so a GPU fault writes a decodable crash dump instead of a bare device-lost. Requires the SDK; pass -DAFTERMATH=OFF to build without it."
+    ON
+)
+option(
     AUTO_PLUGIN_DEPLOYMENT
     "Copy the build output and addons to env:CommunityShadersOutputDir."
     OFF
@@ -107,6 +112,55 @@ find_library(DETOURS_LIBRARY detours REQUIRED)
 
 # Vulkan headers must match across the DXVK and upscaler interop boundary.
 find_package(Vulkan REQUIRED)
+
+# NVIDIA Nsight Aftermath. A GPU fault otherwise surfaces only as VK_ERROR_DEVICE_LOST with
+# nothing to attribute it to; Aftermath turns that into a dump naming the faulting shader and
+# the last markers the GPU reached. Searched in order: -DAFTERMATH_SDK_DIR, the
+# NSIGHT_AFTERMATH_SDK environment variable, a vendored extern/aftermath, then the default
+# install location.
+if(AFTERMATH)
+    set(AFTERMATH_SDK_DIR "" CACHE PATH "Root of the Nsight Aftermath SDK (the directory holding include/ and lib/).")
+    set(_AFTERMATH_CANDIDATES
+        "${AFTERMATH_SDK_DIR}"
+        "$ENV{NSIGHT_AFTERMATH_SDK}"
+        "${CMAKE_SOURCE_DIR}/extern/aftermath"
+        "D:/dev/aftermath"
+    )
+    set(_AFTERMATH_ROOT "")
+    foreach(_candidate IN LISTS _AFTERMATH_CANDIDATES)
+        if(_candidate AND EXISTS "${_candidate}/include/GFSDK_Aftermath.h")
+            set(_AFTERMATH_ROOT "${_candidate}")
+            break()
+        endif()
+    endforeach()
+
+    if(NOT _AFTERMATH_ROOT)
+        message(
+            FATAL_ERROR
+            "AFTERMATH is ON but the Nsight Aftermath SDK was not found. Searched: ${_AFTERMATH_CANDIDATES}. "
+            "Install it, point -DAFTERMATH_SDK_DIR or NSIGHT_AFTERMATH_SDK at it, or build with -DAFTERMATH=OFF."
+        )
+    endif()
+
+    set(_AFTERMATH_LIB "${_AFTERMATH_ROOT}/lib/x64/GFSDK_Aftermath_Lib.x64.lib")
+    set(AFTERMATH_RUNTIME_DLL "${_AFTERMATH_ROOT}/lib/x64/GFSDK_Aftermath_Lib.x64.dll")
+    foreach(_required IN ITEMS "${_AFTERMATH_LIB}" "${AFTERMATH_RUNTIME_DLL}")
+        if(NOT EXISTS "${_required}")
+            message(FATAL_ERROR "Nsight Aftermath SDK at ${_AFTERMATH_ROOT} is missing ${_required}")
+        endif()
+    endforeach()
+
+    message(STATUS "Nsight Aftermath: ${_AFTERMATH_ROOT}")
+    target_include_directories(${PROJECT_NAME} PRIVATE "${_AFTERMATH_ROOT}/include")
+    target_link_libraries(${PROJECT_NAME} PRIVATE "${_AFTERMATH_LIB}" delayimp)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE CS_ENABLE_AFTERMATH)
+
+    # Delay-load it. The SDK runtime ships in CommunityShaders/bin, which is not on the DLL search
+    # path, so an ordinary import would stop CommunityShaders.dll loading at all whenever the file
+    # is missing -- a diagnostic aid must never be able to do that. Aftermath::Enable() loads it by
+    # full path first and touches no imported symbol if that fails.
+    target_link_options(${PROJECT_NAME} PRIVATE "/DELAYLOAD:GFSDK_Aftermath_Lib.x64.dll")
+endif()
 
 # Streamline is linked as headers and loaded through its Vulkan interposer at runtime.
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
@@ -538,6 +592,24 @@ install(
     DESTINATION SKSE/Plugins/CommunityShaders/bin
     COMPONENT Streamline
 )
+
+if(AFTERMATH)
+    install(
+        FILES "${AFTERMATH_RUNTIME_DLL}"
+        DESTINATION SKSE/Plugins/CommunityShaders/bin
+        COMPONENT Aftermath
+    )
+
+    # Ship the SDK's terms alongside its runtime, as we do for every other bundled binary.
+    if(EXISTS "${_AFTERMATH_ROOT}/LICENSE")
+        install(
+            FILES "${_AFTERMATH_ROOT}/LICENSE"
+            DESTINATION SKSE/Plugins/CommunityShaders/bin
+            RENAME aftermath.license.txt
+            COMPONENT Aftermath
+        )
+    endif()
+endif()
 
 set(_DXVK_LICENSE "${CMAKE_SOURCE_DIR}/extern/dxvk/LICENSE")
 set(_FFX_LICENSE "${CMAKE_SOURCE_DIR}/extern/Streamline/external/fidelityfx-sdk/LICENSE.txt")

@@ -130,11 +130,15 @@ jobs:
                   path: extern/dxvk/build
                   key: ${{ runner.os }}-dxvk-trusted-v1-avxndebug-vksdk-${{ steps.dxvk_sha.outputs.sha }}
 
+            # The Nsight Aftermath SDK is not redistributable, so runners do not have it and the
+            # AFTERMATH option (on by default for local builds) has to be turned off here. GPU crash
+            # dumps are a developer aid; CI only needs the build to be exercised without them.
             - name: Build using run-cmake
               uses: lukka/run-cmake@v10
               with:
                   configurePreset: ${{ matrix.compiler.cmake-preset }}
                   buildPreset: ${{ matrix.compiler.cmake-preset }}
+                  configurePresetAdditionalArgs: "['-DAFTERMATH=OFF']"
 
             - name: Verify packaged Vulkan runtimes
               shell: pwsh

@@ -1,5 +1,7 @@
 #include "DxvkLoader.h"
 
+#include "Aftermath.h"
+
 #include <filesystem>
 
 namespace DxvkLoader
@@ -54,6 +56,17 @@ namespace DxvkLoader
 
 		if (!::SetEnvironmentVariableW(L"DXVK_HDR", L"1")) {
 			logger::warn("[DXVK] Failed to enable HDR color-space support (error {})", ::GetLastError());
+		}
+
+		// Aftermath is armed by now (Hooks::InstallEarlyHooks calls it first), and DXVK reads
+		// DXVK_DEBUG once at instance creation. Without this the crash dump still arrives, but with
+		// no shader mapping, no resource tracking and no checkpoints -- it reports that the GPU
+		// faulted and nothing about where.
+		if (Aftermath::WantsDeviceDiagnostics()) {
+			if (::SetEnvironmentVariableW(L"DXVK_DEBUG", L"aftermath"))
+				logger::info("[DXVK] DXVK_DEBUG=aftermath -- requesting NV device diagnostics for crash dumps");
+			else
+				logger::warn("[DXVK] Failed to request NV device diagnostics (error {})", ::GetLastError());
 		}
 
 		const auto dir = GetRuntimeDir();
