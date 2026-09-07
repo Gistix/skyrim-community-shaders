@@ -2031,8 +2031,14 @@ void PerformanceOverlay::UpdateMetrics()
 				if (deltaPresented > 0u) {
 					state.postFGFrameTimeMs = (deltaTime * 1000.0f) / static_cast<float>(deltaPresented);
 					state.postFGFps = state.postFGFrameTimeMs > 0.0f ? 1000.0f / state.postFGFrameTimeMs : 0.0f;
-				} else if (state.postFGFrameTimeMs <= 0.0f) {
-					// No count published yet: fall back to the reported multiplier rather than zero.
+					state.presentedStalledSeconds = 0.0f;
+				} else if (state.postFGFrameTimeMs <= 0.0f ||
+					(state.presentedStalledSeconds += deltaTime) > 0.5f) {
+					// Either nothing has been published yet, or the counter has stopped advancing --
+					// a swapchain recreate (a vsync toggle, an FG method switch) leaves it frozen, and
+					// holding the last derived rate then reports a stale figure indefinitely. Observed
+					// after toggling vsync: Post-FG pinned at 2485.4 fps for minutes while the render
+					// rate sat at a correct 60. Fall back to the reported multiplier instead.
 					const float fsrMultiplier = static_cast<float>(
 						std::max(streamline->GetFrameGenerationMultiplier(), 2u));
 					state.postFGFps = state.fps * fsrMultiplier;

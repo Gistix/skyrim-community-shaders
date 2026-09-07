@@ -238,6 +238,9 @@ struct PerformanceOverlay : OverlayFeature
 		float smoothFps = 0.0f;
 		float smoothFrameTimeMs = 0.0f;
 		uint64_t lastPresentedFrames = 0;
+		/// Seconds the FSR-FG presented-frame counter has not advanced. A swapchain recreate stops
+		/// it permanently, and holding the last derived rate then reports a stale figure forever.
+		float presentedStalledSeconds = 0.0f;
 		float presentedAccum = 0.0f;
 		float presentedElapsed = 0.0f;
 		float postFGSmoothFps = 0.0f;
