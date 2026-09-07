@@ -82,6 +82,12 @@ void Raytracing::Execute()
 	if (!Available() || Mode() == CreationEngineRaytracing::Mode::None)
 		return;
 
+	if (auto* dxvk = DXVKInterop::GetSingleton()) {
+		if (auto* interopDevice = dxvk->GetInteropDevice()) {
+			interopDevice->FlushRenderingCommands();
+		}
+	}
+
 	creationEngineRaytracing->Execute();
 	creationEngineRaytracing->PostExecution();
 }
