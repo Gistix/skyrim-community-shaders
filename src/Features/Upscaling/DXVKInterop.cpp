@@ -549,6 +549,19 @@ bool DXVKInterop::GetVkImage(ID3D11Resource* a_resource, VkImage* a_outImage,
 	return SUCCEEDED(surface->GetVulkanImageInfo(a_outImage, a_outLayout, info));
 }
 
+bool DXVKInterop::GetVkBuffer(ID3D11Resource* a_resource, VkBuffer* a_outBuffer,
+	VkDeviceSize* a_outOffset, VkDeviceSize* a_outLength, VkDeviceAddress* a_outGpuAddress) const
+{
+	if (!available || !a_resource)
+		return false;
+
+	winrt::com_ptr<IDXGIVkInteropBuffer> buffer;
+	if (FAILED(a_resource->QueryInterface(__uuidof(IDXGIVkInteropBuffer), buffer.put_void())))
+		return false;
+
+	return SUCCEEDED(buffer->GetVulkanBufferInfo(a_outBuffer, a_outOffset, a_outLength, a_outGpuAddress));
+}
+
 bool DXVKInterop::WaitDeviceIdle()
 {
 	std::lock_guard lock(commandRingMutex);

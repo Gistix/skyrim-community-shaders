@@ -23,6 +23,17 @@ IDXGIVkInteropSurface : public IUnknown
 		VkImageCreateInfo * pInfo) = 0;
 };
 
+MIDL_INTERFACE("b7b13df1-5364-4e94-81d3-6e3e5c9f91a0")
+IDXGIVkInteropBuffer : public IUnknown
+{
+	virtual HRESULT STDMETHODCALLTYPE GetDevice(IDXGIVkInteropDevice * *ppDevice) = 0;
+	virtual HRESULT STDMETHODCALLTYPE GetVulkanBufferInfo(
+		VkBuffer * pBuffer,
+		VkDeviceSize * pOffset,
+		VkDeviceSize * pLength,
+		VkDeviceAddress * pGpuAddress) = 0;
+};
+
 MIDL_INTERFACE("e2ef5fa5-dc21-4af7-90c4-f67ef6a09323")
 IDXGIVkInteropDevice : public IUnknown
 {
@@ -142,6 +153,11 @@ public:
 	/** @brief Maps a D3D11 resource to its backing DXVK image. */
 	bool GetVkImage(ID3D11Resource* a_resource, VkImage* a_outImage,
 		VkImageLayout* a_outLayout = nullptr, VkImageCreateInfo* a_outInfo = nullptr) const;
+
+	/** @brief Maps a D3D11 resource to its backing DXVK buffer. */
+	bool GetVkBuffer(ID3D11Resource* a_resource, VkBuffer* a_outBuffer,
+		VkDeviceSize* a_outOffset = nullptr, VkDeviceSize* a_outLength = nullptr,
+		VkDeviceAddress* a_outGpuAddress = nullptr) const;
 
 	/** @brief Drains DXVK submissions without racing its queue thread. */
 	[[nodiscard]] bool WaitDeviceIdle();
