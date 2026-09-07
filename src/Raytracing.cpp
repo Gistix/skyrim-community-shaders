@@ -89,7 +89,184 @@ void Raytracing::Execute()
 	}
 
 	creationEngineRaytracing->Execute();
-	creationEngineRaytracing->PostExecution();
+	const uint32_t completedSlot = creationEngineRaytracing->PostExecution();
+
+	if (completedSlot >= CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT)
+		return;
+
+	auto* renderer = globals::game::renderer;
+	if (!renderer)
+		return;
+
+	auto* context = globals::d3d::context;
+	if (!context)
+		return;
+
+	const auto& renderTargets = renderer->GetRuntimeData().renderTargets;
+	auto& main = renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	const bool pathtracing = (Mode() == CreationEngineRaytracing::Mode::PathTracing);
+	const bool debug = (Mode() == CreationEngineRaytracing::Mode::Debug);
+
+	if (pathtracing || debug) {
+		static bool loggedPointersOnce = false;
+		if (!loggedPointersOnce) {
+			loggedPointersOnce = true;
+			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+			auto depthStencils = renderer->GetDepthStencilData().depthStencils;
+			auto& mainDepth = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+			auto& mainDepthCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
+			auto& zPrePassCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+
+			logger::info("[Raytracing] Execute Pointers Check:");
+			logger::info("  main.texture: {}, main.UAV: {}", static_cast<void*>(main.texture), static_cast<void*>(main.UAV));
+			logger::info("  mv.texture: {}, mv.UAV: {}", static_cast<void*>(mv.texture), static_cast<void*>(mv.UAV));
+			logger::info("  mainDepth.views[0]: {}, mainDepth.texture: {}", static_cast<void*>(mainDepth.views[0]), static_cast<void*>(mainDepth.texture));
+			logger::info("  mainDepthCopy.views[0]: {}, mainDepthCopy.texture: {}", static_cast<void*>(mainDepthCopy.views[0]), static_cast<void*>(mainDepthCopy.texture));
+			logger::info("  zPrePassCopy.views[0]: {}, zPrePassCopy.texture: {}", static_cast<void*>(zPrePassCopy.views[0]), static_cast<void*>(zPrePassCopy.texture));
+			logger::info("  sharedMainTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedMainTextures[completedSlot].srv.get()));
+			logger::info("  sharedMotionVectorTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedMotionVectorTextures[completedSlot].srv.get()));
+			logger::info("  sharedDepthTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedDepthTextures[completedSlot].srv.get()));
+			logger::info("  ptCompositeCS: {}, copyDepthVS: {}, copyDepthPS: {}", static_cast<void*>(ptCompositeCS.get()), static_cast<void*>(copyDepthVS.get()), static_cast<void*>(copyDepthPS.get()));
+			D3D11_TEXTURE2D_DESC mainDesc{}, mvDesc{};
+			if (main.texture) main.texture->GetDesc(&mainDesc);
+			if (mv.texture) mv.texture->GetDesc(&mvDesc);
+
+			D3D11_UNORDERED_ACCESS_VIEW_DESC mainUavDesc{}, mvUavDesc{};
+			if (main.UAV) main.UAV->GetDesc(&mainUavDesc);
+			if (mv.UAV) mv.UAV->GetDesc(&mvUavDesc);
+
+			D3D11_SHADER_RESOURCE_VIEW_DESC mainSrvDesc{}, mvSrvDesc{}, depthSrvDesc{};
+			if (sharedMainTextures[completedSlot].srv) sharedMainTextures[completedSlot].srv->GetDesc(&mainSrvDesc);
+			if (sharedMotionVectorTextures[completedSlot].srv) sharedMotionVectorTextures[completedSlot].srv->GetDesc(&mvSrvDesc);
+			if (sharedDepthTextures[completedSlot].srv) sharedDepthTextures[completedSlot].srv->GetDesc(&depthSrvDesc);
+
+			logger::info("[Raytracing] Formats Check:");
+			logger::info("  main.texture format: {}, main.UAV format: {}", (int)mainDesc.Format, (int)mainUavDesc.Format);
+			logger::info("  mv.texture format: {}, mv.UAV format: {}", (int)mvDesc.Format, (int)mvUavDesc.Format);
+			logger::info("  sharedMain SRV format: {}", (int)mainSrvDesc.Format);
+			logger::info("  sharedMV SRV format: {}", (int)mvSrvDesc.Format);
+			logger::info("  sharedDepth SRV format: {}", (int)depthSrvDesc.Format);
+		}
+
+		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
+		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
+
+		if (screenCB && screenData) {
+			screenData->Resolution = { static_cast<uint32_t>(screenSize.x), static_cast<uint32_t>(screenSize.y) };
+			screenData->DynamicResolution = { static_cast<uint32_t>(dynamicScreenSize.x), static_cast<uint32_t>(dynamicScreenSize.y) };
+			screenCB->Update(screenData.get(), sizeof(ScreenData));
+		}
+
+		// Blend pathtracing and sky (colors and motion vectors)
+		if (ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
+			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+
+			context->CSSetShader(ptCompositeCS.get(), nullptr, 0);
+
+			ID3D11Buffer* cb = screenCB->CB();
+			context->CSSetConstantBuffers(0, 1, &cb);
+
+			ID3D11ShaderResourceView* srvs[] = {
+				sharedMainTextures[completedSlot].srv.get(),
+				sharedMotionVectorTextures[completedSlot].srv.get()
+			};
+			context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+			ID3D11UnorderedAccessView* uavs[] = {
+				main.UAV,
+				mv.UAV
+			};
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+			auto dispatchCount = Util::GetScreenDispatchCount(true);
+			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+
+			uavs[0] = nullptr;
+			uavs[1] = nullptr;
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+		} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
+			context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
+		}
+
+		// Copy Depth buffer
+		if (copyDepthVS && copyDepthPS && sharedDepthTextures[completedSlot].srv) {
+			auto depthStencils = renderer->GetDepthStencilData().depthStencils;
+
+			auto& mainDepth = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+			auto& mainDepthCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
+			auto& zPrePassCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+
+			context->ClearDepthStencilView(mainDepth.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+			context->ClearDepthStencilView(mainDepthCopy.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+			context->ClearDepthStencilView(zPrePassCopy.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+
+			ID3D11DepthStencilState* oldDSS = nullptr;
+			UINT oldRef = 0;
+			context->OMGetDepthStencilState(&oldDSS, &oldRef);
+
+			ID3D11RenderTargetView* oldRTV = nullptr;
+			ID3D11DepthStencilView* oldDSV = nullptr;
+			context->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+
+			UINT numViewports = 1;
+			D3D11_VIEWPORT oldViewport = {};
+			context->RSGetViewports(&numViewports, &oldViewport);
+
+			D3D11_VIEWPORT viewport = {};
+			viewport.TopLeftX = 0.0f;
+			viewport.TopLeftY = 0.0f;
+			viewport.Width = screenSize.x;
+			viewport.Height = screenSize.y;
+			viewport.MinDepth = 0.0f;
+			viewport.MaxDepth = 1.0f;
+			context->RSSetViewports(1, &viewport);
+
+			context->IASetInputLayout(nullptr);
+			context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+			context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+			context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+			context->OMSetRenderTargets(0, nullptr, mainDepth.views[0]);
+			context->OMSetDepthStencilState(depthStencilState.get(), 0);
+
+			context->RSSetState(copyRasterizerState.get());
+			context->OMSetBlendState(copyBlendState.get(), nullptr, 0xffffffff);
+
+			context->VSSetShader(copyDepthVS.get(), nullptr, 0);
+			context->PSSetShader(copyDepthPS.get(), nullptr, 0);
+
+			ID3D11ShaderResourceView* srvs[] = { sharedDepthTextures[completedSlot].srv.get() };
+			context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+			context->Draw(3, 0);
+
+			context->OMSetDepthStencilState(oldDSS, oldRef);
+			context->OMSetRenderTargets(1, &oldRTV, oldDSV);
+			context->RSSetViewports(1, &oldViewport);
+
+			if (oldDSS) {
+				oldDSS->Release();
+				oldDSS = nullptr;
+			}
+			if (oldRTV) {
+				oldRTV->Release();
+				oldRTV = nullptr;
+			}
+			if (oldDSV) {
+				oldDSV->Release();
+				oldDSV = nullptr;
+			}
+
+			context->PSSetShader(nullptr, nullptr, 0);
+			context->VSSetShader(nullptr, nullptr, 0);
+
+			context->CopyResource(mainDepthCopy.texture, mainDepth.texture);
+			context->CopyResource(zPrePassCopy.texture, mainDepth.texture);
+		}
+	} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
+		context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
+	}
 }
 
 void Raytracing::Load()
@@ -191,6 +368,47 @@ void Raytracing::SetupResources()
 		return;
 
 	creationEngineRaytracing->Initialize(GetSettings());
+
+	auto* device = globals::d3d::device;
+	if (!screenCB)
+		screenCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ScreenData>());
+	if (!screenData)
+		screenData = std::make_unique<ScreenData>();
+
+	if (device) {
+		if (!copyBlendState) {
+			D3D11_BLEND_DESC blendDesc = {};
+			blendDesc.AlphaToCoverageEnable = false;
+			blendDesc.IndependentBlendEnable = false;
+			blendDesc.RenderTarget[0].BlendEnable = false;
+			blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+			DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, copyBlendState.put()));
+		}
+
+		if (!copyRasterizerState) {
+			D3D11_RASTERIZER_DESC rasterizerDesc = {};
+			rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+			rasterizerDesc.CullMode = D3D11_CULL_NONE;
+			rasterizerDesc.FrontCounterClockwise = false;
+			rasterizerDesc.DepthBias = 0;
+			rasterizerDesc.DepthBiasClamp = 0.0f;
+			rasterizerDesc.SlopeScaledDepthBias = 0.0f;
+			rasterizerDesc.DepthClipEnable = false;
+			rasterizerDesc.ScissorEnable = false;
+			rasterizerDesc.MultisampleEnable = false;
+			rasterizerDesc.AntialiasedLineEnable = false;
+			DX::ThrowIfFailed(device->CreateRasterizerState(&rasterizerDesc, copyRasterizerState.put()));
+		}
+
+		if (!depthStencilState) {
+			D3D11_DEPTH_STENCIL_DESC dsDesc = {};
+			dsDesc.DepthEnable = TRUE;
+			dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+			dsDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+			dsDesc.StencilEnable = false;
+			DX::ThrowIfFailed(device->CreateDepthStencilState(&dsDesc, depthStencilState.put()));
+		}
+	}
 
 	SetupSkyHemisphere();
 	SetupWaterFlowMap();
@@ -358,6 +576,43 @@ void Raytracing::SetupSharedTextures()
 	logger::info("SetSharedTextures");
 
 	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTexture.get(), gnmaoTex);
+
+	if (creationEngineRaytracing->GetSharedTextures) {
+		CreationEngineRaytracing::SharedTexture depth[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+		CreationEngineRaytracing::SharedTexture motionVector[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+		CreationEngineRaytracing::SharedTexture main[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+		creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
+
+		auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
+			wrapper.texture = st;
+			wrapper.srv = nullptr;
+			if (st.shared) {
+				D3D11_TEXTURE2D_DESC desc{};
+				st.shared->GetDesc(&desc);
+				if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+					D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+					srvDesc.Format = desc.Format;
+					srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+					srvDesc.Texture2D.MostDetailedMip = 0;
+					srvDesc.Texture2D.MipLevels = 1;
+					DX::ThrowIfFailed(device->CreateShaderResourceView(st.shared, &srvDesc, wrapper.srv.put()));
+				}
+			}
+		};
+
+		for (uint32_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
+			setupSharedWrapper(sharedDepthTextures[i], depth[i]);
+			setupSharedWrapper(sharedMotionVectorTextures[i], motionVector[i]);
+			setupSharedWrapper(sharedMainTextures[i], main[i]);
+
+			logger::info("[Raytracing] SharedTexture[{}]: Depth native={}, shared={}, srv={}",
+				i, static_cast<void*>(depth[i].native), static_cast<void*>(depth[i].shared), static_cast<void*>(sharedDepthTextures[i].srv.get()));
+			logger::info("[Raytracing] SharedTexture[{}]: MotionVector native={}, shared={}, srv={}",
+				i, static_cast<void*>(motionVector[i].native), static_cast<void*>(motionVector[i].shared), static_cast<void*>(sharedMotionVectorTextures[i].srv.get()));
+			logger::info("[Raytracing] SharedTexture[{}]: Main native={}, shared={}, srv={}",
+				i, static_cast<void*>(main[i].native), static_cast<void*>(main[i].shared), static_cast<void*>(sharedMainTextures[i].srv.get()));
+		}
+	}
 }
 
 void Raytracing::CompileShaders()
@@ -368,6 +623,29 @@ void Raytracing::CompileShaders()
 			{ { "RESOLUTION", skyHemiSize.c_str() } },
 			"cs_5_0"))) {
 		cubeToHemiCS.attach(rawPtr);
+	}
+
+	if (auto* rawPtr = static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+			L"Data\\Shaders\\Raytracing\\PTCompositeCS.hlsl",
+			{},
+			"cs_5_0"))) {
+		ptCompositeCS.attach(rawPtr);
+	}
+
+	if (auto* rawPtr = static_cast<ID3D11VertexShader*>(Util::CompileShader(
+			L"Data\\Shaders\\Raytracing\\CopyDepth.hlsl",
+			{},
+			"vs_5_0",
+			"MainVS"))) {
+		copyDepthVS.attach(rawPtr);
+	}
+
+	if (auto* rawPtr = static_cast<ID3D11PixelShader*>(Util::CompileShader(
+			L"Data\\Shaders\\Raytracing\\CopyDepth.hlsl",
+			{},
+			"ps_5_0",
+			"MainPS"))) {
+		copyDepthPS.attach(rawPtr);
 	}
 }
 

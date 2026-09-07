@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Buffer.h"
 #include "CreationEngineRaytracing.h"
 #include "Feature.h"
 #include "FeatureCategories.h"
@@ -117,6 +118,33 @@ public:
 	winrt::com_ptr<ID3D11Texture2D> normalRoughnessTexture = nullptr;
 	winrt::com_ptr<ID3D11ShaderResourceView> normalRoughnessSRV = nullptr;
 	winrt::com_ptr<ID3D11UnorderedAccessView> normalRoughnessUAV = nullptr;
+
+	struct SharedTextureWrapper
+	{
+		CreationEngineRaytracing::SharedTexture texture{};
+		winrt::com_ptr<ID3D11ShaderResourceView> srv = nullptr;
+	};
+
+	SharedTextureWrapper sharedDepthTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	SharedTextureWrapper sharedMotionVectorTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	SharedTextureWrapper sharedMainTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+
+	struct alignas(16) ScreenData
+	{
+		uint2 Resolution;
+		uint2 DynamicResolution;
+	};
+	static_assert(sizeof(ScreenData) % 16 == 0);
+
+	std::unique_ptr<ConstantBuffer> screenCB = nullptr;
+	std::unique_ptr<ScreenData> screenData = nullptr;
+
+	winrt::com_ptr<ID3D11ComputeShader> ptCompositeCS = nullptr;
+	winrt::com_ptr<ID3D11VertexShader> copyDepthVS = nullptr;
+	winrt::com_ptr<ID3D11PixelShader> copyDepthPS = nullptr;
+	winrt::com_ptr<ID3D11BlendState> copyBlendState = nullptr;
+	winrt::com_ptr<ID3D11RasterizerState> copyRasterizerState = nullptr;
+	winrt::com_ptr<ID3D11DepthStencilState> depthStencilState = nullptr;
 
 	struct Hooks
 	{
