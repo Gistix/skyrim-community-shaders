@@ -422,12 +422,6 @@ struct IDXGISwapChain_Present
 		const bool presentSucceeded = SUCCEEDED(retval);
 		if (presentSucceeded)
 			dxvk->RefreshPresenterSurfaceState();
-		// Resolve the pushed present-wait registration after every successful present, whoever
-		// owns it. Gating this on the FSR-FG owner left the slot latched forever under DLSS-G:
-		// SubmitFrameCommandBuffer then refused every subsequent present-wait submission and
-		// DLSS-G was starved of its input tags for the rest of the session.
-		if (presentSucceeded)
-			dxvk->NotifyPresentWaitQueued();
 		streamline->CaptureDLSSGPresentState();
 
 		// Collect the overlay's frame metrics here rather than from its draw path, so hiding the

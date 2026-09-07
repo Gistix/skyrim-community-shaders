@@ -134,9 +134,11 @@ public:
 
 	void ClearDLSSGTags();
 	[[nodiscard]] bool EnsureDLSSGPresentTag();
+	/** @brief FSR-FG counterpart: passes frames through when the render pass prepared none. */
+	bool EnsureFSRFGPresentState();
 
-	/** @brief Registers Streamline ownership of DXVK present pacing. */
-	static void RegisterDxvkOwnershipPredicate();
+	/** @brief Registers the swapchain-torn-down callback frame-generation switching needs. */
+	static void RegisterDxvkSwapchainCallbacks();
 
 	/** @brief Requests a Vulkan swapchain recreation. */
 	static void RequestDxvkSwapchainRecreate(const char* a_reason = "FG method switch");

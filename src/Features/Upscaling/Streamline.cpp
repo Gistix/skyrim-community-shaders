@@ -99,6 +99,12 @@ namespace
 		// Present requires either a valid or passthrough tag every frame.
 		bool dlssgTaggedThisFrame = false;
 		std::atomic<bool> dlssgCloneTagsPrimed{ false };
+
+		// Whether the render pass prepared an interpolation frame for FSR-FG this present.
+		// Written from the render thread in EvaluateFSRFrameGen and read at present, so it is
+		// atomic rather than a plain bool like the DLSS-G flag above.
+		std::atomic<bool> fsrfgPreparedThisFrame{ false };
+
 	} g_sl;
 
 	// All DXVK exports used by Streamline, resolved once at device setup.
@@ -106,17 +112,17 @@ namespace
 	{
 		using RequestSwapchainRecreateFn = void (*)();
 		using SetSyncPresentFn = void (*)(uint32_t);
-		using SetSwapchainTornDownCallbackFn = void (*)(bool (*)());
 		using SetPresentQueueDepthFn = void (*)(uint32_t);
 		using SetTearingPreferenceFn = void (*)(uint32_t);
+		using SetSwapchainTornDownCallbackFn = void (*)(bool (*)());
 
 		HMODULE module = nullptr;
 		RequestSwapchainRecreateFn requestSwapchainRecreate = nullptr;
 		SetSyncPresentFn setSyncPresent = nullptr;
-		bool presenterSurfaceStateAvailable = false;
-		SetSwapchainTornDownCallbackFn setSwapchainTornDownCallback = nullptr;
 		SetPresentQueueDepthFn setPresentQueueDepth = nullptr;
 		SetTearingPreferenceFn setTearingPreference = nullptr;
+		bool presenterSurfaceStateAvailable = false;
+		SetSwapchainTornDownCallbackFn setSwapchainTornDownCallback = nullptr;
 
 		void Resolve()
 		{
@@ -127,14 +133,14 @@ namespace
 				GetProcAddress(module, "dxvkRequestSwapchainRecreate"));
 			setSyncPresent = reinterpret_cast<SetSyncPresentFn>(
 				GetProcAddress(module, "dxvkSetSyncPresent"));
-			presenterSurfaceStateAvailable =
-				GetProcAddress(module, "dxvkGetPresenterSurfaceState") != nullptr;
-			setSwapchainTornDownCallback = reinterpret_cast<SetSwapchainTornDownCallbackFn>(
-				GetProcAddress(module, "dxvkSetSwapchainTornDownCallback"));
 			setPresentQueueDepth = reinterpret_cast<SetPresentQueueDepthFn>(
 				GetProcAddress(module, "dxvkSetPresentQueueDepth"));
 			setTearingPreference = reinterpret_cast<SetTearingPreferenceFn>(
 				GetProcAddress(module, "dxvkSetTearingPreference"));
+			presenterSurfaceStateAvailable =
+				GetProcAddress(module, "dxvkGetPresenterSurfaceState") != nullptr;
+			setSwapchainTornDownCallback = reinterpret_cast<SetSwapchainTornDownCallbackFn>(
+				GetProcAddress(module, "dxvkSetSwapchainTornDownCallback"));
 		}
 
 		[[nodiscard]] bool HasFrameGenerationInterop() const
@@ -183,11 +189,7 @@ namespace
 	// Runs between DXVK swapchain destruction and creation.
 	bool DxvkSwapchainTornDownCallback()
 	{
-		// A new swapchain gets a fresh frame-generation ownership latch, so any earlier verdict
-		// that the presenter would not attach present-wait semaphores no longer applies.
-		DXVKInterop::GetSingleton()->ResetPresentWaitUnattachedForSwapchain();
-
-		// Per-swapchain options and semaphores are invalid after teardown.
+		// Per-swapchain options are invalid after teardown.
 		g_sl.dlssgModeCached = false;
 		g_sl.dlssgModeOn = false;
 
@@ -526,10 +528,7 @@ void Streamline::SetVulkanDevice()
 
 	g_dxvk.Resolve();
 	const bool frameGenerationInteropReady = g_dxvk.HasFrameGenerationInterop();
-	// DXVK skips its frame-latency throttle unconditionally now: it never runs a present-wait
-	// worker, so whatever owns the present loop owns the pacing.
-	const bool dlssgInteropReady = frameGenerationInteropReady;
-	featureDLSSG = featureDLSSG && dlssgHardware && dlssgInteropReady && dxvk->PresentWaitInteropReady();
+	featureDLSSG = featureDLSSG && dlssgHardware && frameGenerationInteropReady;
 	featureFSRFG = featureFSRFG && frameGenerationInteropReady &&
 	               dxvk->FrameGenerationQueueInteropReady();
 
@@ -651,6 +650,7 @@ void Streamline::BeginRenderFrame()
 	const uint32_t next = g_sl.renderFrameId.load(std::memory_order_acquire) + 1u;
 	g_sl.renderFrameId.store(latched == next ? latched : next, std::memory_order_release);
 	g_sl.dlssgTaggedThisFrame = false;
+	g_sl.fsrfgPreparedThisFrame.store(false, std::memory_order_release);
 }
 
 bool Streamline::DiscardFSRFrameGenerationPreparedFrame()
@@ -1122,19 +1122,11 @@ static bool cs_BarrierUpscalerOutput(VkCommandBuffer a_commandBuffer, const sl::
 	return barrierAttempt.completed;
 }
 
-// Whether a DLSS-G tag submission should carry a present-wait signal. Only DLSS-G presents consume
-// one, and only on a swapchain the presenter has not already shown it will leave unattached.
-static bool cs_WantPresentWaitSignal(const DXVKInterop* a_dxvk)
-{
-	return g_dlssgCurrentlyLoaded.load(std::memory_order_acquire) &&
-	       !a_dxvk->IsPresentWaitUnattachedForSwapchain();
-}
-
 static bool cs_SubmitPresentTags(DXVKInterop* a_dxvk, sl::FrameToken& a_token,
 	const sl::ViewportHandle& a_viewport, const sl::ResourceTag* a_tags, uint32_t a_tagCount,
 	const VkImageView* a_views, uint32_t a_viewCount,
 	ID3D11Resource* const* a_resources, uint32_t a_resourceCount, sl::Result& a_tagResult,
-	bool& a_lifetimesRetained, bool a_signalForPresent)
+	bool& a_lifetimesRetained)
 {
 	a_lifetimesRetained = false;
 	auto transaction = a_dxvk->BeginFrameCommandBuffer();
@@ -1150,15 +1142,8 @@ static bool cs_SubmitPresentTags(DXVKInterop* a_dxvk, sl::FrameToken& a_token,
 			static_cast<int>(a_tagResult));
 		return false;
 	}
-	// Always request the present-wait signal: these tags are only ever submitted on the
-	// DLSS-G path, and the presenter attaches the semaphore whenever the ownership query
-	// reports a DLSS-G-owned swapchain. Gating this on "already loaded" deadlocks the
-	// first present of a transition, because loading cannot complete until presents do.
-	if (!a_dxvk->SubmitFrameCommandBuffer(transaction, a_signalForPresent)) {
-		// The tags themselves succeeded; the submission is what failed. Reporting a_tagResult
-		// here previously produced the nonsensical "tag submission failed (result 0)".
-		logger::error("[Streamline] present tags: interop submit failed (signalForPresent={})",
-			a_signalForPresent);
+	if (!a_dxvk->SubmitFrameCommandBuffer(transaction)) {
+		logger::error("[Streamline] present tags: interop submit failed");
 		if (transaction.SubmissionMayBeInFlight()) {
 			a_dxvk->QueueViewsForDeferredDelete(transaction, a_views, a_viewCount);
 			a_dxvk->QueueResourcesForDeferredRelease(transaction, a_resources, a_resourceCount);
@@ -1658,6 +1643,9 @@ bool Streamline::EvaluateFSRFrameGen(ID3D11Resource* a_depth, ID3D11Resource* a_
 
 	bool evaluationSubmitted = false;
 	bool accepted = false;
+	// FSR-FG interpolates on its own viewport, separate from the viewport that carries the
+	// swapchain-level options. Evaluating on the options viewport instead was measured worse:
+	// present rate ran away to 85 fps against a 10 fps render and the image got darker still.
 	const sl::ViewportHandle fgViewport{ 1 };
 	const sl::Result evalRes = cs_EvaluateFeatureCore(sl::kFeatureFSR_G, fgViewport,
 		nullptr, nullptr, a_depth, a_motionVectors,
@@ -1665,12 +1653,58 @@ bool Streamline::EvaluateFSRFrameGen(ID3D11Resource* a_depth, ID3D11Resource* a_
 		a_hudlessColor, &evaluationSubmitted);
 	accepted = evalRes == sl::Result::eOk && evaluationSubmitted;
 
+	if (accepted)
+		g_sl.fsrfgPreparedThisFrame.store(true, std::memory_order_release);
+
 	static sl::Result s_loggedRes = sl::Result::eErrorNotInitialized;
 	if (evalRes != s_loggedRes) {
 		s_loggedRes = evalRes;
 		logger::info("[Streamline] FSR FG-prepare result={} render={}x{}", static_cast<int>(evalRes), a_renderWidth, a_renderHeight);
 	}
 	return accepted;
+}
+
+bool Streamline::EnsureFSRFGPresentState()
+{
+	// The FSR-FG counterpart to EnsureDLSSGPresentTag.
+	//
+	// BeginRenderFrame discards any stale prepared frame, but it is driven from
+	// Main_UpdateJitter, a 3D render-path hook that does not run on the main menu or while the
+	// game is otherwise not rendering a scene. EvaluateFSRFrameGen does not run there either --
+	// there is no hudless colour, depth or motion vector to hand FFX. So on those frames nothing
+	// discards and nothing prepares, and FFX happily keeps interpolating whatever it last held:
+	// measured on the main menu as a black screen presenting at 113 fps against a 10 fps render,
+	// which also reads as severe input lag.
+	//
+	// Discard whatever FFX still holds so it does not keep re-presenting a stale interpolation.
+	//
+	// Two alternatives were measured and are worse: gating sl.fsr_g's `enabled` option off drove
+	// the FFX swapchain to 642 fps against a 10 fps render, and doing nothing at all left it at
+	// 113 fps. This keeps it at a clean 2x.
+	//
+	// Note none of these fix the HDR darkness -- that is independent of interpolation entirely
+	// (it reproduces with interpolation disabled). See cs-fsrfg-hdr-black in memory.
+	if (!initialized || !featureFSRFG ||
+		!g_fsrfgCurrentlyLoaded.load(std::memory_order_acquire))
+		return false;
+
+	const bool prepared = g_sl.fsrfgPreparedThisFrame.load(std::memory_order_acquire);
+
+	{
+		static bool s_lastPrepared = true;
+		if (s_lastPrepared != prepared) {
+			s_lastPrepared = prepared;
+			if (prepared)
+				logger::info("[Streamline] FSR-FG interpolation inputs restored");
+			else
+				logger::warn("[Streamline] FSR-FG has no interpolation inputs - discarding prepared frames");
+		}
+	}
+
+	if (!prepared)
+		(void)DiscardFSRFrameGenerationPreparedFrame();
+
+	return prepared;
 }
 
 bool Streamline::SetDLSSGMode(bool a_enable, uint32_t a_displayWidth, uint32_t a_displayHeight,
@@ -1781,7 +1815,8 @@ bool Streamline::SetFSRFrameGen(bool a_enable, bool a_hdr,
 		g_fsrfgOwnsPresent.store(a_enable, std::memory_order_release);
 		if (!a_enable)
 			g_sl.frameGenerationMultiplier.store(1, std::memory_order_release);
-		logger::info("[Streamline] FSR frame generation {}", a_enable ? "enabled" : "disabled");
+		logger::info("[Streamline] FSR frame generation {} (colorBuffersHDR={})",
+			a_enable ? "enabled" : "disabled", a_hdr);
 	}
 	return ok;
 }
@@ -1991,7 +2026,7 @@ ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
 	bool lifetimesRetained = false;
 	if (cs_SubmitPresentTags(dxvk, *token, g_sl.viewport, tags, tagCount,
 			views, viewCount, resources, static_cast<uint32_t>(std::size(resources)), tagResult,
-			lifetimesRetained, cs_WantPresentWaitSignal(dxvk))) {
+			lifetimesRetained)) {
 		g_sl.dlssgTaggedThisFrame = true;
 		cs_NoteDlssgTagSkip(nullptr);
 	} else {
@@ -2025,7 +2060,7 @@ void Streamline::ClearDLSSGTags()
 	bool lifetimesRetained = false;
 	if (cs_SubmitPresentTags(dxvk, *token, g_sl.viewport, tags,
 			static_cast<uint32_t>(std::size(tags)), nullptr, 0, nullptr, 0, tagResult,
-			lifetimesRetained, cs_WantPresentWaitSignal(dxvk))) {
+			lifetimesRetained)) {
 		g_sl.dlssgTaggedThisFrame = true;
 	} else {
 		logger::error("[Streamline] DLSS-G passthrough tag submission failed (result {})",
@@ -2036,12 +2071,6 @@ void Streamline::ClearDLSSGTags()
 bool Streamline::EnsureDLSSGPresentTag()
 {
 	// Supply passthrough tags when the render pass did not provide interpolation inputs.
-	//
-	// featureDLSSG only says DLSS-G is SUPPORTED. Tagging here while it is not the present owner
-	// registers a present-wait semaphore that no present will ever consume, so DXVK reports it
-	// still pending and the ring is quarantined and rebuilt -- behind a vkDeviceWaitIdle -- once
-	// per frame. That is what made the game stutter and flicker after frame generation was turned
-	// off, and across a method switch.
 	if (!initialized || !featureDLSSG ||
 		!g_dlssgCurrentlyLoaded.load(std::memory_order_acquire))
 		return false;
@@ -2065,10 +2094,8 @@ bool Streamline::EnsureDLSSGPresentTag()
 	return g_sl.dlssgTaggedThisFrame;
 }
 
-void Streamline::RegisterDxvkOwnershipPredicate()
+void Streamline::RegisterDxvkSwapchainCallbacks()
 {
-	// DXVK no longer asks who owns the present loop: it always presents as though something may
-	// have interposed, so there is no ownership predicate to register any more.
 	if (!g_dxvk.module) {
 		logger::warn("[Streamline] DXVK module not loaded — cannot register swapchain callbacks");
 		return;
@@ -2146,13 +2173,9 @@ void Streamline::PushDxvkSyncPresent(bool a_sync)
 
 void Streamline::PushDxvkPresentQueueDepth(uint32_t a_depth)
 {
-	// Bounded overlap for a steady-state frame-generation proxy. dxvkSetSyncPresent(true) pins the
-	// depth to zero, which makes D3D11SwapChain::PresentImage drain its own present status every
-	// frame -- the render thread blocks in waitForSubmission until the proxy's intercepted
-	// vkQueuePresentKHR returns. Sampling the render thread with FSR-FG active showed 23% of it
-	// parked in SleepConditionVariableSRW for exactly that reason, with the GPU idle 33% of the
-	// frame. A small depth lets the next frame be recorded while the proxy finishes presenting the
-	// previous one, without unbounding the overlap.
+	// Bounded overlap for a steady frame-generation proxy. Neither extreme of
+	// dxvkSetSyncPresent substitutes for this: fully synchronous wedges the swapchain
+	// recreate that installs the FFX wrap, and unrestricted wedges shortly after it.
 	if (g_dxvk.setPresentQueueDepth) {
 		g_dxvk.setPresentQueueDepth(a_depth);
 	} else {
@@ -2166,22 +2189,14 @@ void Streamline::PushDxvkPresentQueueDepth(uint32_t a_depth)
 
 void Streamline::PushDxvkTearingPreference(uint32_t a_preference)
 {
-	// 0 = tear-free (MAILBOX), 1 = tearing (IMMEDIATE), anything else = defer to dxvk.conf.
-	// Read in Presenter::pickPresentMode, so it must be set before the swapchain recreate that
-	// installs a frame-generation proxy.
-	//
-	// DLSS-G needs tear-free flips: NVIDIA's flip metering cannot space the generated frame when
-	// presents tear, and with IMMEDIATE the real and generated frames land back to back -- measured
-	// 49.6% of present intervals at 0.0 ms with the rest near 48.5 ms instead of an even 24.2 ms,
-	// costing 5.1% of presents to drops. Nothing else wants it: MAILBOX caps at the refresh rate, so
-	// a target equal to the refresh has no headroom and loses ~3%.
+	// Presenter::pickPresentMode reads this at swapchain creation, so it must be set before the
+	// recreate that installs a frame-generation proxy. 0 = tear-free, 1 = tearing, anything else
+	// defers to DXVK configuration.
 	if (g_dxvk.setTearingPreference) {
 		g_dxvk.setTearingPreference(a_preference);
 	} else {
 		static bool s_warned = false;
-		if (!s_warned) {
-			s_warned = true;
+		if (!std::exchange(s_warned, true))
 			logger::warn("[Streamline] dxvkSetTearingPreference not found - present-mode control inactive");
-		}
 	}
 }

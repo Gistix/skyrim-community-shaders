@@ -86,9 +86,7 @@ namespace FrameGen
 		if (faultRecoveryRequested) {
 			if (!faultRecoveryRequested) {
 				auto* dxvk = DXVKInterop::GetSingleton();
-				const bool completionProven = (dxvk->HasPendingPresentWaitSemaphore() ?
-				                                      dxvk->DiscardPendingPresentWaitSemaphore() :
-				                                      dxvk->WaitDeviceIdle());
+				const bool completionProven = dxvk->WaitDeviceIdle();
 				if (!completionProven) {
 					// Once only: this re-enters every reconcile, and a fault that cannot prove
 					// completion would otherwise log on every frame for the rest of the session.
@@ -162,6 +160,10 @@ namespace FrameGen
 		// the switch itself into a bounded overlap. Depth zero blocks the render thread in
 		// waitForSubmission on every present; measured with FSR-FG that left the GPU idle 33% of the
 		// frame while the CPU was the limiter.
+		//
+		// This needs the bounded middle regime specifically -- neither extreme of dxvkSetSyncPresent
+		// works. Fully synchronous wedges the swapchain recreate that installs the FFX wrap, and
+		// unrestricted wedges shortly after it; both present a black screen with a frozen log.
 		if (owner == Method::kFSR)
 			Streamline::PushDxvkPresentQueueDepth(2u);
 	}

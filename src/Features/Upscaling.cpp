@@ -724,8 +724,7 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 			!streamline->SetDLSSGMode(false, displayWidth, displayHeight)) {
 			logger::error("[Upscaling] DLSS-G mode-off failed; continuing with device-idle teardown");
 		}
-		const bool completionProven = dxvk->HasPendingPresentWaitSemaphore() ?
-			dxvk->DiscardPendingPresentWaitSemaphore() : dxvk->WaitDeviceIdle();
+		const bool completionProven = dxvk->WaitDeviceIdle();
 		if (!completionProven) {
 			// Deferring suppresses this present. That is correct for a transient fault, but only
 			// while the wait can still succeed -- see the device-lost check at the top, which is
@@ -751,33 +750,29 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 	};
 	if (dxvk->HasCommandRingFault()) {
 		settings.frameGeneration = false;
-		if (streamline->IsDLSSGLoaded() || streamline->IsFSRFGLoaded() ||
-			dxvk->HasPendingPresentWaitSemaphore())
+		if (streamline->IsDLSSGLoaded() || streamline->IsFSRFGLoaded())
 			return requestFaultTeardown("Vulkan frame-generation dispatch fault");
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 	}
 
-	if (!IsFrameGenerationActive()) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
+	if (!IsFrameGenerationActive())
 		return a_present(a_swapChain, a_syncInterval, a_flags);
-	}
 
 	// Relax the fully-synchronous present once a proxy actually owns the swapchain. The switch
 	// itself needs depth zero, and the proxy install re-asserts it, so this has to be (re)applied
-	// from the steady-state present rather than once at settle. Depth zero makes
-	// D3D11SwapChain::PresentImage drain its own status every frame, blocking the render thread in
-	// waitForSubmission until the proxy's intercepted vkQueuePresentKHR returns.
+	// from the steady-state present rather than once at settle.
 	// FSR-FG only. DLSS-G paces by blocking inside its own present (eBlockPresentingClientQueue);
-	// adding a second waiting gate on top deadlocks the pipeline -- measured as a main-thread hang
-	// that only a process restart clears.
+	// adding a second waiting gate on top deadlocks the pipeline.
 	if (streamline->IsFSRFGPresentOwner())
 		Streamline::PushDxvkPresentQueueDepth(2u);
 
 	auto fgMethod = GetFrameGenMethod();
 	if (fgMethod != FrameGenMethod::kDLSSG) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
+		// FSR-FG needs the same every-present guarantee DLSS-G gets below: on frames where the
+		// render pass prepared no interpolation frame -- the main menu, load screens, anywhere
+		// Main_UpdateJitter does not run -- discard whatever FFX still holds so it passes the real
+		// frame through instead of interpolating stale contents onto a black screen.
+		(void)streamline->EnsureFSRFGPresentState();
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 	}
 
@@ -785,17 +780,11 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 	// the present. Between selecting it and sl.dlss_g being loaded (a swapchain recreate apart), the
 	// tag path legitimately has nothing to do, and treating that as a fault tore frame generation
 	// down on every enable.
-	if (!streamline->IsDLSSGLoaded()) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
-		return a_present(a_swapChain, a_syncInterval, a_flags);
-	}
-
-	if ((dxvk->HasPendingPresentWaitSemaphore() || streamline->EnsureDLSSGPresentTag()) &&
-		dxvk->PushPendingPresentWaitSemaphore())
+	if (!streamline->IsDLSSGLoaded())
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 
-	return requestFaultTeardown("DLSS-G present synchronization failed");
+	(void)streamline->EnsureDLSSGPresentTag();
+	return a_present(a_swapChain, a_syncInterval, a_flags);
 }
 
 void Upscaling::CreateUpscaledTexture()
@@ -1298,7 +1287,7 @@ void Upscaling::SetupResources()
 		auto* streamline = Streamline::GetSingleton();
 		if (streamline->Initialize()) {
 			streamline->SetVulkanDevice();
-			Streamline::RegisterDxvkOwnershipPredicate();
+			Streamline::RegisterDxvkSwapchainCallbacks();
 		}
 
 		ApplyHardwareDefaults();

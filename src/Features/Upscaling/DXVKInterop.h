@@ -100,10 +100,7 @@ public:
 	bool RefreshPresenterSurfaceState();
 	/** @brief Latches a presenter state for the render frame at a render boundary. */
 	void CommitPresenterSurfaceStateForRenderFrame();
-	/** @brief Starts a color-space transition before changing or recreating the swap chain.
-	 *  @param a_hdr The output mode the recreated presenter must report.
-	 *  @param a_requireNewSerial Whether an explicit recreation must advance the presenter serial.
-	 */
+	/** @brief Starts a color-space transition before changing or recreating the swap chain. */
 	void BeginPresenterColorSpaceTransition(bool a_hdr, bool a_requireNewSerial = false);
 	/** @brief Cancels a failed color-space transition for the requested output mode. */
 	void CancelPresenterColorSpaceTransition(bool a_hdr);
@@ -140,15 +137,9 @@ public:
 	bool CommandResourcesReady() const;
 	/** @brief Whether an ambiguous submission fault quarantined the command ring. */
 	bool HasCommandRingFault() const;
-	/** @brief True once a present has completed without consuming its registered one-shot semaphore. */
-	[[nodiscard]] bool IsPresentWaitUnattachedForSwapchain() const;
-	/** @brief Forgets the unattached verdict; call when the swapchain is recreated. */
-	void ResetPresentWaitUnattachedForSwapchain();
 	/** @brief True once VK_ERROR_DEVICE_LOST has been observed. Terminal for the session. */
 	/** @brief Recreates a quarantined command ring after proving the Vulkan device idle. */
 	[[nodiscard]] bool RecoverCommandRing();
-	/** @brief Whether a tag submission can be GPU-ordered before DXVK's next present. */
-	bool PresentWaitInteropReady() const;
 	/** @brief Whether frame generation shares DXVK's game submission queue. */
 	bool FrameGenerationQueueInteropReady() const;
 
@@ -156,17 +147,7 @@ public:
 	CommandTransaction BeginFrameCommandBuffer();
 
 	/** @brief Submits a ring command buffer on DXVK's queue. */
-	bool SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
-		bool a_signalForNextPresent = false);
-
-	/** @brief Whether the latest present-tag submission still has a registered semaphore. */
-	bool PushPendingPresentWaitSemaphore();
-	/** @brief Whether a registered present-wait semaphore is still tracked. */
-	bool HasPendingPresentWaitSemaphore() const;
-	/** @brief Discards a registered semaphore after proving its signal submission complete. */
-	[[nodiscard]] bool DiscardPendingPresentWaitSemaphore();
-	/** @brief Reconciles the one-shot semaphore after DXVK acknowledges the outer present. */
-	void NotifyPresentWaitQueued();
+	bool SubmitFrameCommandBuffer(CommandTransaction& a_transaction);
 
 	/** @brief Defers image-view destruction until the current ring slot completes. */
 	void QueueViewsForDeferredDelete(const CommandTransaction& a_transaction,
@@ -174,7 +155,6 @@ public:
 	/** @brief Holds D3D resources until the current ring slot completes. */
 	void QueueResourcesForDeferredRelease(const CommandTransaction& a_transaction,
 		ID3D11Resource* const* a_resources, uint32_t a_count);
-	/** @brief Quarantines accepted views when a failed present removed the plugin frame without proving consumption. */
 
 private:
 	DXVKInterop() = default;
@@ -187,26 +167,12 @@ private:
 		VkColorSpaceKHR effectiveColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	};
 
-
-	struct PresentWaitSubmission
-	{
-		uint32_t slot = UINT32_MAX;
-		uint64_t generation = 0;
-	};
-
 	using GetPresenterSurfaceStateFn = uint64_t (*)(uint32_t*, uint32_t*, uint32_t*);
-
-	/// dxvkEnqueueInteropCommandBuffer @120: hands a recorded command buffer to DXVK's own
-	/// submission thread and registers the signal semaphore in the present-wait FIFO in one
-	/// call. Returns the generation, or 0 on rejection.
-	using EnqueueInteropCommandBufferFn = uint64_t (*)(VkCommandBuffer, VkSemaphore, VkFence);
 
 	static VkColorSpaceKHR RequestedPresenterColorSpace(bool a_hdr);
 	static PresenterEncoding ClassifyPresenterEncoding(const PresenterSurfaceState& a_state);
 	static bool PresenterStateMatches(
 		const PresenterSurfaceState& a_state, VkColorSpaceKHR a_requestedColorSpace);
-	bool ClearReleasedPresentWaitsAfterIdle();
-	void ResetPresentWaitRegistrationsAfterFault(const char* a_operation, DWORD a_exceptionCode = 0);
 
 	bool available = false;
 
@@ -235,34 +201,11 @@ private:
 	VkCommandPool commandPool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> commandBuffers;
 	std::vector<VkFence> commandFences;
-	std::vector<VkSemaphore> presentWaitSemaphores;
-	std::vector<bool> presentWaitInUse;
-	uint32_t pushedPresentWaitSlot = UINT32_MAX;
-	uint64_t pushedPresentWaitGeneration = 0;
-	std::vector<PresentWaitSubmission> outstandingPresentWaitSubmissions;
-	EnqueueInteropCommandBufferFn enqueueInteropCommandBuffer = nullptr;
-	uint32_t (*getPresentWaitSemaphoreState)(uint64_t) = nullptr;
-	uint32_t (*clearPresentWaitSemaphore)(uint64_t) = nullptr;
-	uint32_t (*cancelPresentWaitSemaphore)(VkSemaphore) = nullptr;
-	uint32_t (*releaseQueuedPresentWaitSemaphoresAfterIdle)() = nullptr;
-	// Set when a present completed without consuming the one-shot semaphore registered for
-	// it: the presenter has shown it will not attach present-wait semaphores to this
-	// swapchain (its frame-generation ownership is latched at creation, and can disagree
-	// with the live query). Requesting one every frame after that only manufactures an
-	// orphaned semaphore per present. Cleared when the swapchain is recreated.
-	bool presentWaitUnattachedForSwapchain = false;
-	// Latched on VK_ERROR_DEVICE_LOST. Terminal: a lost device is never recovered, so every
-	// completion-proof path must fail fast instead of retrying it once per frame.
 	bool deviceLost = false;
 	bool synchronousPresentControlAvailable = false;
-	bool presentQueueSplit = false;
 	bool commandRingFaulted = false;
-	// Indexed with the command ring.
-	// Resources held forever once Vulkan destruction has terminally faulted: leaking them is
-	// strictly better than risking a use-after-free on a device that is already unsafe.
 	std::vector<std::vector<VkImageView>> pendingViewDeletes;
 	std::vector<std::vector<winrt::com_ptr<ID3D11Resource>>> pendingResourceReleases;
-	// FFX may consume tagged images on its own queues after host evaluation.
 	uint32_t framesInFlight = 0;
 	uint32_t commandFrameIndex = 0;
 };
