@@ -676,6 +676,16 @@ int Upscaling::ResolveFrameRateDivisor(int a_saved, int a_refresh)
 
 uint32_t Upscaling::GetPresentModePreference() const
 {
+	// Vertical sync means "never tear", so it outranks the frame-rate heuristic below.
+	//
+	// Without this, an unlocked frame rate asked for the tearing preference and
+	// Presenter::pickPresentMode chose IMMEDIATE, which cannot honour a sync interval -- so
+	// enabling vsync did nothing at all. Measured with vsync on and the rate unlocked: 1846 fps
+	// rendered against a 60 Hz display, present mode IMMEDIATE, with the sync interval reaching
+	// DXVK as 1 the whole time.
+	if (settings.vsync)
+		return 0u;
+
 	// 1 = tearing (IMMEDIATE) when the frame rate is unlocked, 0 = tear-free (MAILBOX) when a cap
 	// already paces the output. See the note in Load().
 	return settings.frameRateLimitDivisor <= 0 ? 1u : 0u;
@@ -696,8 +706,9 @@ void Upscaling::UpdatePresentModePreference()
 	// swapchain keeps the old mode until it is rebuilt. Skip the recreate on the first call, which
 	// only records what Load() already pushed.
 	if (!first) {
-		logger::info("[Upscaling] present mode preference -> {} (frame rate {})",
+		logger::info("[Upscaling] present mode preference -> {} (vsync {}, frame rate {})",
 			desired ? "tearing" : "tear-free",
+			settings.vsync ? "on" : "off",
 			settings.frameRateLimitDivisor <= 0 ? "unlocked" : "capped");
 		Streamline::RequestDxvkSwapchainRecreate("frame-rate setting changed present mode");
 	}
@@ -708,6 +719,17 @@ double Upscaling::GetTargetFrameRate() const
 	if (!loaded)
 		return 0.0;
 	const int divisor = settings.frameRateLimitDivisor;
+
+	// Vertical sync is itself a cap at the refresh rate, so "unlocked" cannot mean unpaced here.
+	// It matters because an external frame-generation layer owns the present: FFX's replacement
+	// returns immediately instead of blocking on vblank, so nothing throttles the render thread.
+	// Measured with vsync on, rate unlocked and FSR-FG active: presents held at 57.8 fps while the
+	// render loop spun at 1131-1797 fps, burning the frame budget on frames that were never shown.
+	// With frame generation off the same settings blocked correctly at ~60, which is why this only
+	// surfaces on the FG path.
+	if (divisor <= 0 && settings.vsync)
+		return std::max(1.0, static_cast<double>(GetMonitorRefreshRate()));
+
 	if (divisor <= 0) {
 		// Unlocked means unlocked, for every frame-generation method. This used to return the
 		// refresh rate for DLSS-G, reasoning that sl.dlss_g presents tear-free and so cannot exceed
