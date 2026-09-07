@@ -78,7 +78,15 @@ namespace DxvkLoader
 				logger::warn("[DXVK] Failed to redirect DXVK logs to the SKSE log folder (error {})", ::GetLastError());
 		}
 
-		if (Aftermath::WantsCrashAnalysis()) {
+		// Never clobber a DXVK_DEBUG the developer set. DXVK reads a single mode from this variable,
+		// so overwriting it silently disables whatever they were trying to use -- DXVK_DEBUG=pipestats
+		// looked like a broken extension for a while because crash analysis had already taken the slot.
+		wchar_t existingDebug[64]{};
+		const DWORD existingDebugLen = ::GetEnvironmentVariableW(L"DXVK_DEBUG", existingDebug, ARRAYSIZE(existingDebug));
+
+		if (existingDebugLen != 0 && existingDebugLen < ARRAYSIZE(existingDebug)) {
+			logger::info("[DXVK] DXVK_DEBUG already set externally; leaving it alone");
+		} else if (Aftermath::WantsCrashAnalysis()) {
 			if (::SetEnvironmentVariableW(L"DXVK_DEBUG", L"crashanalysis"))
 				logger::info("[DXVK] DXVK_DEBUG=crashanalysis -- requesting GPU crash analysis support");
 			else
