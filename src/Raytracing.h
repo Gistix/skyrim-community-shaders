@@ -4,7 +4,9 @@
 #include "Feature.h"
 #include "FeatureCategories.h"
 #include "Globals.h"
+#include <d3d11.h>
 #include <memory>
+#include <winrt/base.h>
 
 struct uint2
 {
@@ -49,7 +51,8 @@ public:
 	// Lifecycle
 	virtual void Load() override;
 	virtual void PostPostLoad() override;
-	virtual void SetupResources() override;
+
+	void SetupResources();
 
 	bool Available(bool a_initialized = true) const;
 	bool InitializeCERaytracing();
@@ -57,8 +60,20 @@ public:
 	void UpdateSettings();
 	CreationEngineRaytracing::Settings GetSettings() const;
 
+	void Execute();
+
 	CreationEngineRaytracing::Mode Mode() const;
 	bool IsPathTracing() const;
+
+	static constexpr uint32_t SKY_HEMI_SIZE = 512;
+	static constexpr uint32_t WATER_FLOWMAP_SIZE = 320;
+
+	void SetupSkyHemisphere();
+	void SetupWaterFlowMap();
+	void SetupSharedTextures();
+	void SkyCubeToHemi() const;
+	void CopyWaterFlowMap() const;
+	void CompileShaders();
 
 	enum struct DisableReason
 	{
@@ -71,7 +86,6 @@ public:
 
 	struct Settings
 	{
-		bool Enabled = true;
 		CreationEngineRaytracing::Settings CreationEngineRaytracingSettings;
 		CreationEngineRaytracing::RendererSettings RendererSettings;
 
@@ -86,6 +100,24 @@ public:
 
 	std::unique_ptr<CreationEngineRaytracing> creationEngineRaytracing = nullptr;
 
+	// Sky Hemisphere
+	winrt::com_ptr<ID3D11Texture2D> skyHemisphere = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> skyHemisphereSRV = nullptr;
+	winrt::com_ptr<ID3D11UnorderedAccessView> skyHemisphereUAV = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> cubeToHemiCS = nullptr;
+	winrt::com_ptr<ID3D11SamplerState> samplerState = nullptr;
+	RE::NiPointer<RE::TESWaterReflections> waterReflections = nullptr;
+
+	// Water Flow Map
+	winrt::com_ptr<ID3D11Texture2D> waterFlowMap = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> waterFlowMapSRV = nullptr;
+	winrt::com_ptr<ID3D11RenderTargetView> waterFlowMapRTV = nullptr;
+
+	// Shared Textures (Normal + Roughness)
+	winrt::com_ptr<ID3D11Texture2D> normalRoughnessTexture = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> normalRoughnessSRV = nullptr;
+	winrt::com_ptr<ID3D11UnorderedAccessView> normalRoughnessUAV = nullptr;
+
 	struct Hooks
 	{
 		struct Main_RenderWorld
@@ -93,10 +125,9 @@ public:
 			static void thunk(bool a1)
 			{
 				auto& rt = globals::features::raytracing;
-				if (rt.Available() && rt.creationEngineRaytracing && rt.Mode() != CreationEngineRaytracing::Mode::None) {
-					if (rt.creationEngineRaytracing->UpdateCamera) {
-						rt.creationEngineRaytracing->UpdateCamera();
-					}
+				if (rt.Available() && rt.Mode() != CreationEngineRaytracing::Mode::None) {
+					rt.SkyCubeToHemi();
+					rt.creationEngineRaytracing->UpdateCamera();
 				}
 
 				func(a1);
@@ -105,9 +136,50 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct Main_RenderWaterEffects
+		{
+			static void thunk()
+			{
+				auto& rt = globals::features::raytracing;
+				if (rt.loaded && !rt.forcedDisabled && rt.waterReflections) {
+					auto* tes = RE::TES::GetSingleton();
+					if (tes && tes->interiorCell) {
+						if (tes->interiorCell->cellFlags.none(RE::TESObjectCELL::Flag::kHasWater))
+							tes->interiorCell->cellFlags.set(true, RE::TESObjectCELL::Flag::kHasWater);
+
+						rt.waterReflections->flags.set(true, RE::TESWaterReflections::Flags::kDirty);
+					}
+				}
+
+				func();
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct CopyToWaterFlowmap
+		{
+			static void thunk(void* a1)
+			{
+				func(a1);
+
+				auto& rt = globals::features::raytracing;
+				if (!rt.initialized || rt.forcedDisabled)
+					return;
+
+				rt.CopyWaterFlowMap();
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		static void Install()
 		{
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
+			if (!REL::Module::IsVR()) {
+				stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
+				stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));
+			}
 		}
 	};
 };

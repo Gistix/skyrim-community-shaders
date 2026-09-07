@@ -15,6 +15,7 @@
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
 #include "Features/CSEditor.h"
+#include "Raytracing.h"
 
 #include "Hooks.h"
 
@@ -183,6 +184,8 @@ void Deferred::SetupResources()
 		directionalShadowLights = new Buffer(sbDesc, nullptr, "Deferred::DirectionalShadowLights");
 		directionalShadowLights->CreateSRV(srvDesc);
 	}
+
+	globals::features::raytracing.SetupResources();
 }
 
 void Deferred::ReflectionsPrepasses()
@@ -342,6 +345,10 @@ void Deferred::DeferredPasses()
 		dynamicCubemaps.UpdateCubemap();
 
 	auto& ibl = globals::features::ibl;
+
+	auto& rt = globals::features::raytracing;
+	if (rt.loaded)
+		rt.Execute();
 
 	// Deferred Composite
 	{

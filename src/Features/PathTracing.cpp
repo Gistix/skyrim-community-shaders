@@ -47,39 +47,29 @@ void PathTracing::DrawSettings()
 		return;
 	}
 
-	bool changed = false;
+	auto settingsBefore = settings;
 
-	if (ImGui::Checkbox(T(TKEY("enabled"), "Enabled"), &settings.Enabled)) {
-		changed = true;
-	}
+	ImGui::Checkbox(T(TKEY("enabled"), "Enabled"), &settings.Enabled);
 
-	if (ImGui::SliderInt(T(TKEY("bounces"), "Bounces"), &settings.RaytracingSettings.Bounces, 1, 8)) {
-		changed = true;
-	}
+	ImGui::SliderInt(T(TKEY("bounces"), "Bounces"), &settings.RaytracingSettings.Bounces, 1, 8);
 
-	if (ImGui::SliderInt(T(TKEY("samples_per_pixel"), "Samples Per Pixel"), &settings.RaytracingSettings.SamplesPerPixel, 1, 16)) {
-		changed = true;
-	}
+	ImGui::SliderInt(T(TKEY("samples_per_pixel"), "Samples Per Pixel"), &settings.RaytracingSettings.SamplesPerPixel, 1, 16);
 
-	if (ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.RaytracingSettings.ResolutionScale, 0.25f, 1.0f, "%.2f")) {
-		changed = true;
-	}
+	ImGui::SliderFloat(T(TKEY("resolution_scale"), "Resolution Scale"), &settings.RaytracingSettings.ResolutionScale, 0.25f, 1.0f, "%.2f");
 
 	const char* rrNames[] = { "Disabled", "Standard", "Enhanced" };
 	int currentRR = static_cast<int>(settings.RaytracingSettings.RussianRoulette);
 	if (ImGui::Combo(T(TKEY("russian_roulette"), "Russian Roulette"), &currentRR, rrNames, IM_ARRAYSIZE(rrNames))) {
 		settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
-		changed = true;
 	}
 
 	const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
 	int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
 	if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
 		settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
-		changed = true;
 	}
 
-	if (changed) {
+	if (settingsBefore != settings) {
 		UpdateSettings();
 	}
 }

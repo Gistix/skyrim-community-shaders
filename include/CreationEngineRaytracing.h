@@ -730,12 +730,12 @@ struct CreationEngineRaytracing
 	using GetResolutionFn = void (*)(uint32_t&, uint32_t&);
 	using SetResolutionFn = void (*)(uint32_t, uint32_t);
 	using UpdateFeatureDataFn = void (*)(FeatureData*, uint32_t);
-	using SetSkyHemisphereFn = void (*)(ID3D12Resource*);
-	using SetWaterFlowMapFn = void (*)(ID3D12Resource*);
+	using SetSkyHemisphereFn = void (*)(void*);
+	using SetWaterFlowMapFn = void (*)(void*);
 	using GetPassTimingsFn = void (*)(eastl::vector<PassTiming>&);
 	using UpdateSettingsFn = void (*)(Settings);
 	using GetRRInputFn = void (*)(ID3D12Resource*&, ID3D12Resource*&, ID3D12Resource*&);
-	using SetSharedTexturesFn = void (*)(ID3D12Resource*, ID3D12Resource*, ID3D12Resource*);
+	using SetSharedTexturesFn = void (*)(void*, void*, void*);
 	using GetSharedTexturesFn = void (*)(SharedTexture*, SharedTexture*, SharedTexture*);
 	using UpdateJitterFn = void (*)(float2);
 	using SetSkinDetailNormalFn = void (*)(ID3D12Resource*);
