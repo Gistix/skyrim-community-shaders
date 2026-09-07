@@ -124,6 +124,16 @@ namespace
 		bool presenterSurfaceStateAvailable = false;
 		SetSwapchainTornDownCallbackFn setSwapchainTornDownCallback = nullptr;
 
+		/// Resolve on first use. Upscaling::Load pushes sync present and the tearing preference
+		/// before DXVK creates its swapchain -- which is the whole point of those calls -- but that
+		/// runs before Streamline feature init calls Resolve. Without this both pushes were dropped
+		/// and latched a "not found" warning that could never be retracted.
+		void EnsureResolved()
+		{
+			if (!module)
+				Resolve();
+		}
+
 		void Resolve()
 		{
 			module = GetModuleHandleW(L"dxvk_d3d11.dll");
@@ -2149,6 +2159,7 @@ bool Streamline::IsFSRFGPresentOwner() const
 
 void Streamline::RequestDxvkSwapchainRecreate(const char* a_reason)
 {
+	g_dxvk.EnsureResolved();
 	if (g_dxvk.requestSwapchainRecreate) {
 		g_dxvk.requestSwapchainRecreate();
 		logger::info("[Streamline] requested DXVK swapchain recreate ({})", a_reason);
@@ -2159,6 +2170,7 @@ void Streamline::RequestDxvkSwapchainRecreate(const char* a_reason)
 
 void Streamline::PushDxvkSyncPresent(bool a_sync)
 {
+	g_dxvk.EnsureResolved();
 	// Frame-generation proxies require present to complete before the D3D11 hook returns.
 	if (g_dxvk.setSyncPresent) {
 		g_dxvk.setSyncPresent(a_sync ? 1u : 0u);
@@ -2173,6 +2185,7 @@ void Streamline::PushDxvkSyncPresent(bool a_sync)
 
 void Streamline::PushDxvkPresentQueueDepth(uint32_t a_depth)
 {
+	g_dxvk.EnsureResolved();
 	// Bounded overlap for a steady frame-generation proxy. Neither extreme of
 	// dxvkSetSyncPresent substitutes for this: fully synchronous wedges the swapchain
 	// recreate that installs the FFX wrap, and unrestricted wedges shortly after it.
@@ -2189,6 +2202,7 @@ void Streamline::PushDxvkPresentQueueDepth(uint32_t a_depth)
 
 void Streamline::PushDxvkTearingPreference(uint32_t a_preference)
 {
+	g_dxvk.EnsureResolved();
 	// Presenter::pickPresentMode reads this at swapchain creation, so it must be set before the
 	// recreate that installs a frame-generation proxy. 0 = tear-free, 1 = tearing, anything else
 	// defers to DXVK configuration.
