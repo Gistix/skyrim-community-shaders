@@ -155,14 +155,7 @@ void Upscaling::DrawSettings()
 		}
 
 		const int refresh = GetMonitorRefreshRate();
-		std::vector<int> divisorOptions;
-		for (int d = 4; d >= 1; --d) {
-			if (refresh / d >= 30)
-				divisorOptions.push_back(d);
-		}
-		if (divisorOptions.empty())
-			divisorOptions.push_back(1);
-		divisorOptions.push_back(0);
+		const std::vector<int> divisorOptions = FrameRateDivisorOptions(refresh);
 
 		std::vector<std::string> fpsStrings;
 		for (int d : divisorOptions)
@@ -174,9 +167,10 @@ void Upscaling::DrawSettings()
 			fpsLabels.push_back(s.c_str());
 
 		const int maxSel = static_cast<int>(divisorOptions.size()) - 1;
-		int sel = maxSel > 0 ? maxSel - 1 : 0;
+		const int effective = ResolveFrameRateDivisor(settings.frameRateLimitDivisor, refresh);
+		int sel = 0;
 		for (int i = 0; i <= maxSel; ++i) {
-			if (divisorOptions[i] == settings.frameRateLimitDivisor)
+			if (divisorOptions[i] == effective)
 				sel = i;
 		}
 		DrawStepper(T(TKEY("frame_rate"), "Frame Rate"), &sel, fpsLabels);
@@ -581,13 +575,47 @@ bool Upscaling::GetEffectiveReflex() const
 
 int Upscaling::GetMonitorRefreshRate() const
 {
-	if (refreshRate >= 1.0)
-		return static_cast<int>(std::lround(refreshRate));
-	DEVMODEA dm{};
-	dm.dmSize = sizeof(dm);
-	if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm) && (dm.dmFields & DM_DISPLAYFREQUENCY) && dm.dmDisplayFrequency > 1)
-		return static_cast<int>(dm.dmDisplayFrequency);
-	return 60;
+	// Re-query rather than trust the rate latched at swapchain creation. The display is still
+	// settling then -- the mode changes under us during startup -- and latching that pinned the
+	// frame cap for the whole session: the main menu ran at 10 fps because the target is
+	// refresh/divisor and FSR-FG halves it again, so a stale 60 Hz became a 10 fps rendered cap
+	// while the real rate was far higher. GetRenderedFrameRateLimit is called once per input
+	// poll, so the result is cached for a second; QueryDisplayConfig is far too heavy per frame.
+	static std::mutex s_mutex;
+	static double s_cachedHz = 0.0;
+	static std::chrono::steady_clock::time_point s_lastQuery{};
+
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard lock(s_mutex);
+	if (s_cachedHz < 1.0 || now - s_lastQuery >= std::chrono::seconds(1)) {
+		s_lastQuery = now;
+		double queried = 0.0;
+		if (auto* chain = globals::d3d::swapChain) {
+			DXGI_SWAP_CHAIN_DESC desc{};
+			if (SUCCEEDED(chain->GetDesc(&desc)) && desc.OutputWindow)
+				queried = GetRefreshRate(desc.OutputWindow);
+		}
+		if (queried < 1.0) {
+			DEVMODEA dm{};
+			dm.dmSize = sizeof(dm);
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm) &&
+				(dm.dmFields & DM_DISPLAYFREQUENCY) && dm.dmDisplayFrequency > 1)
+				queried = static_cast<double>(dm.dmDisplayFrequency);
+		}
+		// Only fall back to the creation-time value while nothing live has answered.
+		if (queried < 1.0)
+			queried = refreshRate;
+
+		if (queried >= 1.0) {
+			const int before = static_cast<int>(std::lround(s_cachedHz));
+			const int after = static_cast<int>(std::lround(queried));
+			if (before != after)
+				logger::info("[Upscaling] display refresh {} Hz (was {})", after, before);
+			s_cachedHz = queried;
+		}
+	}
+
+	return s_cachedHz >= 1.0 ? static_cast<int>(std::lround(s_cachedHz)) : 60;
 }
 
 int Upscaling::GetHighestRefreshRate() const
@@ -606,6 +634,44 @@ int Upscaling::GetHighestRefreshRate() const
 			best = std::max(best, mode.dmDisplayFrequency);
 	}
 	return static_cast<int>(best);
+}
+
+std::vector<int> Upscaling::FrameRateDivisorOptions(int a_refresh)
+{
+	// Offer only divisors that can still reach kMinTargetFps, then "Unlocked" as 0.
+	std::vector<int> options;
+	for (int d = 4; d >= 1; --d) {
+		if (a_refresh / d >= kMinTargetFps)
+			options.push_back(d);
+	}
+	if (options.empty())
+		options.push_back(1);
+	options.push_back(0);
+	return options;
+}
+
+int Upscaling::ResolveFrameRateDivisor(int a_saved, int a_refresh)
+{
+	// Single source of truth for "which divisor is actually in force", shared by the settings UI
+	// and GetTargetFrameRate so the number on screen and the number the limiter uses cannot
+	// disagree. They did: a divisor saved against a faster display is not offered at a slower one,
+	// the UI fell back to its own default while the limiter kept honouring the stale value, and the
+	// menu ran at a fraction of the rate the setting claimed.
+	if (a_saved <= 0)
+		return 0;  // unlocked
+	const std::vector<int> options = FrameRateDivisorOptions(a_refresh);
+	for (int d : options) {
+		if (d == a_saved)
+			return a_saved;
+	}
+	// Not offered at this refresh rate: fall back to the fastest capped option, which is what the
+	// stepper lands on and therefore what the user is shown.
+	int best = 1;
+	for (int d : options) {
+		if (d > 0)
+			best = std::min(best == 1 ? d : best, d);
+	}
+	return best;
 }
 
 uint32_t Upscaling::GetPresentModePreference() const
@@ -652,13 +718,32 @@ double Upscaling::GetTargetFrameRate() const
 		// discrepancy was noticed. If guaranteed generation headroom is wanted, use the divisor.
 		return 0.0;
 	}
+	const int refresh = GetMonitorRefreshRate();
+
+	// Honour the same floor the settings UI applies when it builds the divisor list, so a saved
+	// divisor that the current refresh rate cannot support does not quietly cap the game.
+	//
+	// The UI only offers divisors where refresh/d >= kMinTargetFps, and rewrites the setting to a
+	// valid one the first time it is drawn. Until then the stale value was used as-is: a divisor
+	// of 3 saved against a 165 Hz display became a 20 fps target on a 60 Hz one, and FSR-FG halves
+	// the rendered rate again -- a 10 fps main menu that jumped to 60 the moment the menu was
+	// opened and the setting was silently rewritten. Clamping here makes the two agree whether or
+	// not the UI has been drawn.
+	const int effective = ResolveFrameRateDivisor(divisor, refresh);
+	if (effective != divisor) {
+		static int s_reported = 0;
+		if (std::exchange(s_reported, effective) != effective)
+			logger::info("[Upscaling] frame-rate divisor {} not offered at {} Hz; using {} ({} fps)",
+				divisor, refresh, effective, refresh / std::max(1, effective));
+	}
+
 	// Deliberately NOT rounded to a whole frame rate. The target is a submultiple of the display
 	// refresh, and rounding it breaks that relationship: at 165 Hz a divisor of 4 becomes 41 fps
 	// (24.390 ms) instead of 41.25 (24.242 ms, exactly four refresh intervals). That 0.61% error
 	// drifts a full refresh interval roughly once a second, so a frame slips and the display shows
 	// one long interval followed by a short one -- measured as ~1.4% of frames beyond twice the
 	// median, with the exact-dividing divisors 1 and 3 pacing visibly tighter.
-	return std::max(1.0, static_cast<double>(GetMonitorRefreshRate()) / divisor);
+	return std::max(1.0, static_cast<double>(refresh) / effective);
 }
 
 uint32_t Upscaling::GetFixedDLSSGMultiplier() const
@@ -677,8 +762,16 @@ double Upscaling::GetRenderedFrameRateLimit() const
 		return static_cast<double>(targetFps);
 
 	switch (GetFrameGenMethod()) {
-	case FrameGenMethod::kFSR:
-		return static_cast<double>(targetFps) / 2.0;
+	case FrameGenMethod::kFSR: {
+		// Divide by what FFX is actually presenting per rendered frame, not by an assumed 2.
+		// Frame generation being switched on does not mean it is generating: wherever the render
+		// pass supplies no interpolation inputs -- the main menu, load screens -- FFX reports
+		// numFramesActuallyPresented = 1 and passes frames through. Halving the cap there starved
+		// the menu to half the target for generation that never happened: measured 15 fps rendered
+		// against a 30 fps target, and 10 fps before the divisor clamp above.
+		const uint32_t presented = Streamline::GetSingleton()->GetFrameGenerationMultiplier();
+		return static_cast<double>(targetFps) / static_cast<double>(std::max(1u, presented));
+	}
 	case FrameGenMethod::kDLSSG:
 		// Unlike FFX -- whose replacement swapchain owns the present loop, so the limiter only
 		// ever sees rendered frames -- sl.dlss_g emits its generated frame from inside the same
