@@ -8,6 +8,7 @@
 #include "I18n/I18n.h"
 #include "LinearLighting.h"
 #include "Menu.h"
+#include "Utils/VersionedRelocation.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Upscaling.h"
@@ -607,7 +608,12 @@ void HDRDisplay::PostPostLoad()
 		logger::info("[HDR Display] Installing HDR pipeline hooks (Upscaling not loaded)");
 		const bool isGOG = !GetModuleHandle(L"steam_api64.dll");
 		stl::detour_thunk<HDR_MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
-		stl::write_thunk_call<HDR_Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2));
+		// Must match Upscaling::PostPostLoad exactly -- same call site, same three-way split.
+		// REL::Relocate only distinguishes SE from AE, so on AE 1.7.99+ this wrote the thunk at
+		// the pre-1.7.99 offset, patching the wrong instruction in SkyrimSE.exe. The game then
+		// died on a worker thread during load, with a stack containing no Community Shaders
+		// frames at all -- which is what made it look like anything but our bug.
+		stl::write_thunk_call<HDR_Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + Util::VersionedRelocation::Select(0xE5, isGOG ? 0x133 : 0xE2, 0x133));
 		stl::write_thunk_call<HDR_Main_PostProcessing>(REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7));
 	}
 }

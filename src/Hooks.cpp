@@ -5,6 +5,7 @@
 #include "Utils/ExternalEmittance.h"
 #include "Utils/VersionedRelocation.h"
 
+#include "Aftermath.h"
 #include "DxvkLoader.h"
 #include "Feature.h"
 #include "Globals.h"
@@ -1242,6 +1243,10 @@ namespace Hooks
 
 	void InstallEarlyHooks()
 	{
+		// Aftermath installs itself into the driver at device creation, so it has to be armed
+		// before DXVK brings a Vulkan device up. Arming it later collects nothing, silently.
+		Aftermath::Enable();
+
 		// Load DXVK before the game creates its D3D11 device.
 		const bool nativeMode = DxvkLoader::NativeModeRequested();
 		const bool dxvkLoaded = DxvkLoader::Load();
