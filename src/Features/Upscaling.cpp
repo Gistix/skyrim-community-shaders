@@ -372,6 +372,21 @@ void Upscaling::Load()
 		// to drops and left frame-time deviation at 16.5 ms. MAILBOX brings that to 2.3 ms and puts
 		// output back on target.
 		//
+		// Correction, measured with PresentMon rather than the overlay: the 2.3 ms above is the
+		// RENDER frame time, not the present cadence, and a tear-free mode does not fix the
+		// cadence. Capturing present intervals directly, 20 s in the Whiterun bench:
+		//
+		//     FSR-FG,  uncapped (tearing)    interval sd 0.39 ms,   0.0% back to back
+		//     DLSS-G,  uncapped (tearing)    interval sd 3.39 ms,  49.7% back to back
+		//     DLSS-G,  capped   (tear-free)  interval sd 33.12 ms, 50.1% back to back
+		//
+		// Nothing was dropped at the DXGI layer in any of them, and FFX paces perfectly on the
+		// same present path, so the path is not the problem. DLSS-G is unpaced here whatever the
+		// present mode, because -- as the DLSS-G branch of GetRenderedFrameRateLimit describes --
+		// sl.dlss_g emits its generated frame from inside the same present as the real one. There
+		// is no gap between them for a present mode to widen. So keep choosing the mode on the
+		// merits below, but do not expect it to change DLSS-G's cadence.
+		//
 		// That reasoning holds only while the frame rate is capped. MAILBOX blocks in present at
 		// vblank, which pins DLSS-G's output to the refresh rate and the rendered rate to
 		// refresh/multiplier: measured 30 rendered / 60 presented with 25.5 ms of every frame spent
