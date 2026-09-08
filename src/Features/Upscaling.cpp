@@ -144,7 +144,11 @@ void Upscaling::DrawSettings()
 
 	ImGui::SeparatorText(T(TKEY("display_header"), "Display"));
 	{
-		const bool vsyncForcedOff = IsFrameGenerationActive() && GetFrameGenMethod() == FrameGenMethod::kDLSSG;
+		// SL-VSYNC-011, as the Streamline sample does it: DLSS-G reports whether vsync is usable
+		// while generating, and the toggle is disabled and shown as off only when it says no --
+		// rather than assuming DLSS-G always precludes it.
+		const bool vsyncForcedOff = IsFrameGenerationActive() && GetFrameGenMethod() == FrameGenMethod::kDLSSG &&
+		                            !Streamline::GetSingleton()->IsDLSSGVsyncSupported();
 		if (vsyncForcedOff) {
 			bool effectiveVsync = false;
 			DrawToggleStepper(T(TKEY("vsync"), "Vertical Synchronisation"), &effectiveVsync, /*disabled=*/true);
@@ -714,19 +718,20 @@ int Upscaling::ResolveFrameRateDivisor(int a_saved, int a_refresh)
 
 uint32_t Upscaling::GetPresentModePreference() const
 {
-	// Vertical sync means "never tear", so it outranks the frame-rate heuristic below.
+	// Match the Streamline sample, which is NVIDIA's reference for DLSS-G presentation on Vulkan.
+	// donut's DeviceManager_VK.cpp builds its swapchain with
 	//
-	// Without this, an unlocked frame rate asked for the tearing preference and
-	// Presenter::pickPresentMode chose IMMEDIATE, which cannot honour a sync interval -- so
-	// enabling vsync did nothing at all. Measured with vsync on and the rate unlocked: 1846 fps
-	// rendered against a 60 Hz display, present mode IMMEDIATE, with the sync interval reaching
-	// DXVK as 1 the whole time.
-	if (settings.vsync)
-		return 0u;
-
-	// 1 = tearing (IMMEDIATE) when the frame rate is unlocked, 0 = tear-free (MAILBOX) when a cap
-	// already paces the output. See the note in Load().
-	return settings.frameRateLimitDivisor <= 0 ? 1u : 0u;
+	//     .setPresentMode(vsyncEnabled ? vk::PresentModeKHR::eFifo : vk::PresentModeKHR::eImmediate)
+	//
+	// and nothing in the sample varies that by frame-generation method or frame cap. MAILBOX is
+	// never used. So the mode follows the sync interval and nothing else: 0 (tear-free) with vsync
+	// on gives FIFO, 1 (tearing) with vsync off gives IMMEDIATE.
+	//
+	// This replaces a cap-dependent heuristic that picked MAILBOX whenever a frame cap was in
+	// force. See tools/pacing/README.md -- PresentMon rates MAILBOX far better for DLSS-G, but it
+	// cannot see through software flip metering, which submits the frame pair together and spaces
+	// the flips below the level PresentMon observes.
+	return settings.vsync ? 0u : 1u;
 }
 
 void Upscaling::UpdatePresentModePreference()

@@ -115,6 +115,8 @@ public:
 	[[nodiscard]] uint32_t GetFrameGenerationMultiplier() const;
 	/** @brief Running total of frames the FSR-FG swapchain has presented; difference for the true rate. */
 	[[nodiscard]] uint64_t GetTotalPresentedFrames() const;
+	/** @brief True when DLSS-G reports vertical sync is usable while it is generating (SL-VSYNC-011). */
+	[[nodiscard]] bool IsDLSSGVsyncSupported() const;
 	[[nodiscard]] bool IsDLSSGDynamicSupported() const;
 
 	/** @brief Sets the desired DLSS-G runtime load state. */

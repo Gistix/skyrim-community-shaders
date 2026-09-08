@@ -395,7 +395,10 @@ struct IDXGISwapChain_Present
 			if (up.loaded) {
 				const bool dlssgActive = up.IsFrameGenerationActive() &&
 				                         up.GetFrameGenMethod() == Upscaling::FrameGenMethod::kDLSSG;
-				SyncInterval = dlssgActive ? 0u : (up.settings.vsync ? 1u : 0u);
+				// Force the unsynced present only when DLSS-G says vsync is unusable (SL-VSYNC-011),
+				// not for every DLSS-G frame.
+				const bool dlssgNoVsync = dlssgActive && !Streamline::GetSingleton()->IsDLSSGVsyncSupported();
+				SyncInterval = dlssgNoVsync ? 0u : (up.settings.vsync ? 1u : 0u);
 				if (dlssgActive) {
 					auto* sl = Streamline::GetSingleton();
 					sl->QueryDLSSGCapabilities();

@@ -282,6 +282,53 @@ offset. Holding the margin at 0.01 and restoring the variance factor to FFX's 0.
 The continuous difference (mean 1.19 vs 1.09) sits inside the shipped arm's own spread, and the
 variance term brought a hitch back. Not a win; shipped pair stands.
 
+
+## Matched to the Streamline sample
+
+NVIDIA's reference for DLSS-G presentation on Vulkan is the Streamline sample. Its swapchain, in
+`donut/src/app/vulkan/DeviceManager_VK.cpp`:
+
+```cpp
+.setPresentMode(vsyncEnabled ? vk::PresentModeKHR::eFifo : vk::PresentModeKHR::eImmediate)
+```
+
+Nothing in the sample varies that by frame-generation method or by frame cap, and **MAILBOX is
+never used**. Its present is a plain `vkQueuePresentKHR` with no present ID or fence chained,
+which is what DXVK already does. `swapChainBufferCount` is 3.
+
+The sample does gate vsync on DLSS-G, but on the SDK's own answer rather than an assumption --
+`UIRenderer.h`, tagged SL-VSYNC-011: the VSync checkbox is enabled from
+`DLSSGState::bIsVsyncSupportAvailable`, and the setting is forced off only when that says no.
+
+CS now does both: the present mode follows the sync interval alone, and the vsync toggle consults
+`bIsVsyncSupportAvailable` instead of assuming DLSS-G always precludes it. On this box the flag
+reports **no**, so the effective behaviour here is unchanged -- but it is now correct for hardware
+where DLSS-G does support vsync.
+
+### What this costs on PresentMon, and why it was done anyway
+
+Matching the sample moves DLSS-G capped from MAILBOX to IMMEDIATE, and PresentMon rates that far
+worse:
+
+| DLSS-G capped | sd excl. 1% | intervals >10 ms off |
+| --- | --- | --- |
+| MAILBOX | 0.010 ms | 0.00% |
+| IMMEDIATE (sample-matched) | 11.79 ms | 25.68% |
+
+That comparison is not trustworthy, for the reason this page already documents: MAILBOX quantises
+flips to vblank, so its 0.010 ms is the vblank clock and not a pacing result. IMMEDIATE has no
+such clock, and DLSS-G meters its flips **in software, below the level PresentMon observes** --
+it submits the frame pair together and spaces the flips afterwards. The IMMEDIATE histogram shows
+exactly that signature: ~38% of intervals on target, with the remainder split between very short
+(<10 ms) and very long (58-64 ms) -- a partially-resolved pair, not a measurement of scanout.
+
+So PresentMon cannot adjudicate between "the metering is not working here" and "PresentMon cannot
+see the metering". Where a measurement cannot settle a question, the reference implementation
+wins. Judging this one needs an eye on the screen, not a CSV.
+
+FSR-FG is unaffected by the change in kind (0.76 -> 1.04 ms, no hitches either way) since it was
+already on IMMEDIATE via the old preference's fallback.
+
 ## The bench is noisier than one run can show
 
 Every conclusion on this page that rests on a single capture should be distrusted. Across six

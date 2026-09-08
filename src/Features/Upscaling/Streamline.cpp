@@ -90,6 +90,10 @@ namespace
 		float dlssgCachedDynamicFps = 0.0f;
 		std::atomic<uint32_t> dlssgMaxFramesToGenerate = 0;
 		std::atomic<bool> dlssgDynamicSupported = false;
+		// SL-VSYNC-011 in the Streamline sample: DLSS-G reports whether vsync is usable while it is
+		// generating, and the sample disables its VSync checkbox and forces the setting off when it
+		// is not. Latched from DLSSGState every query.
+		std::atomic<bool> dlssgVsyncSupported{ false };
 		std::atomic<uint32_t> frameGenerationMultiplier = 1;
 		// Running total of frames the FSR-FG swapchain has presented (real + generated). Differenced
 		// over time this is the true post-FG frame rate; the per-present multiplier above reads 1 on
@@ -702,6 +706,8 @@ void Streamline::CaptureDLSSGPresentState()
 				logger::warn("[Streamline] DLSS-G stopped generating: presenting {} (was {})",
 					state.numFramesActuallyPresented, prev);
 		}
+		g_sl.dlssgVsyncSupported.store(state.bIsVsyncSupportAvailable == sl::Boolean::eTrue,
+			std::memory_order_release);
 		static uint32_t s_sampleTick = 0u;
 		if ((++s_sampleTick % 600u) == 0u) {
 			logger::info("[Streamline] DLSS-G presented {} frame(s) since last query (status 0x{:X}, max {}, vsyncSupportAvailable={})",
@@ -1908,6 +1914,11 @@ uint32_t Streamline::GetDLSSGMaxFramesToGenerate() const
 uint32_t Streamline::GetFrameGenerationMultiplier() const
 {
 	return g_sl.frameGenerationMultiplier.load(std::memory_order_acquire);
+}
+
+bool Streamline::IsDLSSGVsyncSupported() const
+{
+	return g_sl.dlssgVsyncSupported.load(std::memory_order_acquire);
 }
 
 bool Streamline::IsDLSSGDynamicSupported() const
