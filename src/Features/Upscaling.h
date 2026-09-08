@@ -174,9 +174,6 @@ public:
 	[[nodiscard]] double GetRenderedFrameRateLimit() const;
 	/** @brief Returns the fixed DLSS-G multiplier clamped to the reported hardware limit. */
 	[[nodiscard]] uint32_t GetFixedDLSSGMultiplier() const;
-	/** @brief Applies the non-Reflex frame-rate limit through DXVK. */
-	void ApplyDxvkFrameRateLimit(double a_fps);
-
 	HRESULT PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT a_syncInterval, UINT a_flags,
 		const std::function<HRESULT(IDXGISwapChain*, UINT, UINT)>& a_present);
 

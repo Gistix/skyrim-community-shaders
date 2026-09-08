@@ -55,6 +55,23 @@ Blackwell added.
 
 Nothing is dropped at the DXGI layer in either case.
 
+## FSR-FG carries residual jitter that DLSS-G does not
+
+Capped, the two generators differ sharply in delivered cadence:
+
+| capped | display sd | min | max |
+| --- | --- | --- | --- |
+| DLSS-G | **0.01 ms** | 33.31 | 33.40 |
+| FSR-FG | **2.65 ms** | 28.92 | 67.33 |
+
+FSR-FG holds target on 97.6% of frames, but 2.2% arrive late and 0.5% are doubled outright --
+a visible hitch every six seconds or so. DLSS-G never misses.
+
+The difference is which rate is paced. Reflex holds FSR-FG's RENDER loop and FFX derives the
+presented cadence from it, so render-loop jitter lands directly on the delivered frame. DLSS-G
+is handed the OUTPUT target and derives its own render cadence, which absorbs that jitter.
+FFX's pacing is inside FidelityFX and not reachable from here.
+
 ## Tried and rejected
 
 Chaining present IDs into `VkPresentInfoKHR` so DLSS-G could use `vkWaitForPresentKHR` for
@@ -64,3 +81,11 @@ Restoring them changed nothing for the better: display sd 1.02 -> 1.11 ms, frame
 scanout 1.1% -> 2.1%, and 3% fewer frames. DLSS-G is not waiting on present IDs here.
 
 Present mode and frame cap were also each measured against DLSS-G's cadence and neither moved it.
+
+Handing FSR-FG the output target undivided, so Reflex paces output the way it does for DLSS-G.
+It does not pace better and it breaks the cap: against a 30 fps target it delivered 59.8 fps,
+because Reflex then holds the render loop at 30 and FFX still doubles it. Normalised for rate
+the jitter is unchanged, 7.9% of the frame interval against 8.4%.
+
+Removing DXVK's frame limiter (see below) -- pacing-neutral, 2.66 -> 2.65 ms, because Reflex
+was already available so CS had it switched off.

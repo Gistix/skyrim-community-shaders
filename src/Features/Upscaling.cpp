@@ -811,6 +811,12 @@ double Upscaling::GetRenderedFrameRateLimit() const
 
 	switch (GetFrameGenMethod()) {
 	case FrameGenMethod::kFSR: {
+		// Handing FFX the output target undivided, the way the DLSS-G branch below does, was
+		// measured and rejected. It does not pace better and it breaks the cap: against a 30 fps
+		// target it delivered 59.8 fps, because Reflex then holds the render loop at 30 and FFX
+		// still doubles it. Normalised for rate the jitter is unchanged -- 7.9% of the frame
+		// interval divided against 8.4% undivided -- so this only moved the rate, not the cadence.
+		//
 		// Divide by what FFX is actually presenting per rendered frame, not by an assumed 2.
 		// Frame generation being switched on does not mean it is generating: wherever the render
 		// pass supplies no interpolation inputs -- the main menu, load screens -- FFX reports
@@ -831,23 +837,6 @@ double Upscaling::GetRenderedFrameRateLimit() const
 		return static_cast<double>(targetFps);
 	default:
 		return static_cast<double>(targetFps);
-	}
-}
-
-void Upscaling::ApplyDxvkFrameRateLimit(double a_fps)
-{
-	using SetFrameRateFn = void (*)(double);
-	static SetFrameRateFn fn = nullptr;
-	static bool resolved = false;
-	if (!resolved) {
-		resolved = true;
-		if (HMODULE m = GetModuleHandleW(L"dxvk_d3d11.dll"))
-			fn = reinterpret_cast<SetFrameRateFn>(GetProcAddress(m, "dxvkSetTargetFrameRate"));
-	}
-	static double lastFps = -2.0;
-	if (fn && a_fps != lastFps) {
-		lastFps = a_fps;
-		fn(a_fps > 0.0 ? a_fps : 0.0);
 	}
 }
 

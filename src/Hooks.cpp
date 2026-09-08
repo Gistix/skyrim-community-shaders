@@ -635,10 +635,10 @@ struct BSInputDeviceManager_PollInputDevices
 			// The present mode follows the frame-rate setting (tear-free only while a cap paces the
 			// output), so it has to be re-evaluated when that setting changes at runtime.
 			upscaling.UpdatePresentModePreference();
-			// Reflex now owns the cap on both paths, so DXVK's limiter stays out of the way unless
-			// Reflex is not available at all to apply one.
-			const bool reflexLimiterActive = Streamline::GetSingleton()->IsReflexSupported();
-			upscaling.ApplyDxvkFrameRateLimit(reflexLimiterActive ? 0.0 : renderedFpsLimit);
+			// Reflex owns the cap outright. DXVK's limiter is gone -- it applied the cap from
+			// Presenter::signalFrame, on the submission thread after the present had already gone
+			// out, which is too late to pace anything, and having a second limiter that could
+			// engage at all was a source of frame-time spikes rather than a safety net.
 			Streamline::GetSingleton()->SetPCLMarker(Streamline::PclMarker::SimulationStart);
 		}
 
