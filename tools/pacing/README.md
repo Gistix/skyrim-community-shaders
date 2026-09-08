@@ -324,7 +324,12 @@ exactly that signature: ~38% of intervals on target, with the remainder split be
 
 So PresentMon cannot adjudicate between "the metering is not working here" and "PresentMon cannot
 see the metering". Where a measurement cannot settle a question, the reference implementation
-wins. Judging this one needs an eye on the screen, not a CSV.
+wins.
+
+**Confirmed by looking at it: capped DLSS-G is smooth on IMMEDIATE.** That closes the question in
+favour of the second reading -- the metering works, and the 25.68% is PresentMon failing to
+resolve a metered pair. Treat any sub-frame DLSS-G number from this tool as meaningless, and do
+not "fix" a regression it reports here without first checking the screen.
 
 FSR-FG is unaffected by the change in kind (0.76 -> 1.04 ms, no hitches either way) since it was
 already on IMMEDIATE via the old preference's fallback.
