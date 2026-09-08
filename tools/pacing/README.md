@@ -1,51 +1,52 @@
 # Measuring generated-frame pacing
 
-Frame rate does not tell you whether generated frames are *paced*. A generator can present
-twice as many frames and deliver no extra smoothness, if each generated frame lands next to
-its real frame instead of halfway between them. The overlay cannot see this: it reports render
-frame time, which stays smooth while the present cadence is ragged.
+Frame rate does not tell you whether generated frames are *paced*. A generator can present twice
+as many frames and deliver no extra smoothness if each generated frame lands next to its real
+frame instead of halfway between them. The overlay cannot see this: it reports render frame
+time, which stays smooth while the delivered cadence is ragged.
 
-PresentMon reports the present cadence directly. `capture-pacing.ps1` loads the standard bench
-scene, settles it, and captures 20 s of presents; `pmstats.awk` reduces the CSV to the numbers
-that matter:
+PresentMon reports the cadence directly. `capture-pacing.ps1` loads the standard bench scene,
+settles it, and captures 20 s of presents; `pmstats.awk` reduces the CSV.
 
 ```
 capture-pacing.ps1 -Label dlssg -Settings SettingsUser.dlssg_unlocked.json
 awk -F, -f pmstats.awk pm_dlssg.csv
 ```
 
-The two figures to read are the standard deviation of `MsBetweenPresents` and the share of
-intervals under 1 ms. A well-paced 2x generator has a low deviation and *no* sub-millisecond
-intervals; a high count of those means real and generated frames are being emitted together.
+## Read MsBetweenDisplayChange, not MsBetweenPresents
 
-## What it found
+This is the trap, and it is easy to draw exactly the wrong conclusion from it.
 
-Whiterun bench, RTX 4080, 20 s per run:
+`MsBetweenPresents` is when the application *called* present. `MsBetweenDisplayChange` is when
+the frame actually reached the screen. A frame generator that meters flips in software submits
+its two presents together and spaces them afterwards, so the two columns disagree completely:
 
-| | interval sd | back to back | never displayed |
-| --- | --- | --- | --- |
-| FSR-FG, uncapped (tearing) | **0.39 ms** | **0.0%** | 0% |
-| DLSS-G, uncapped (tearing) | 3.39 ms | **49.7%** | 0% |
-| DLSS-G, capped (tear-free) | 33.12 ms | **50.1%** | 0% |
+|  | present intervals | display changes |
+| --- | --- | --- |
+| FSR-FG, uncapped | sd 0.39 ms, 0.0% under 1 ms | sd 0.51 ms, 0.0% under 1 ms |
+| DLSS-G, uncapped | sd 3.39 ms, **49.7%** under 1 ms | sd 1.02 ms, **1.1%** under 1 ms |
 
-**FSR-FG is correctly paced.** FFX owns its present loop and spaces the generated frame itself.
+Judged on presents alone DLSS-G looks completely unpaced. Judged on what is scanned out it is
+paced, just about twice as loosely as FFX. Only the second column describes what a player sees.
 
-**DLSS-G is not, and the present mode does not change that.** Half its presents land within a
-millisecond of the previous one in every configuration tested. Nothing is dropped at the DXGI
-layer, so this is not a capacity or throughput problem: the frames are generated and displayed,
-just not spread out, which is why 279 fps of DLSS-G output judders.
+## What that means for the two generators
 
-The cause is structural rather than a misconfiguration. `sl.dlss_g` emits its generated frame
-from inside the same present call as the real one -- see the DLSS-G branch of
-`Upscaling::GetRenderedFrameRateLimit`, where the same property forces the frame limit to be
-handed over undivided. There is no interval between the two presents for a present mode, a
-frame cap, or a queue depth to widen. On D3D12 the spacing is done by hardware flip metering,
-which has no equivalent on this path.
+**FFX (FSR-FG)** owns its present loop and spaces the generated frame itself, so both columns
+agree and the cadence is tight.
 
-Everything CS controls was checked and is already correct: Reflex is forced on for DLSS-G
-(`GetEffectiveReflex`), all seven PCL markers are emitted, `queueParallelismMode` is the
-documented default whose contract CS meets, and the frame limit is handed to the limiter
-undivided. Present mode, frame cap, and Reflex limit were each measured and none affects the
-cadence.
+**DLSS-G** emits its generated frame from inside the same present call as the real one — the same
+property that forces `GetRenderedFrameRateLimit` to hand it the frame limit undivided — and then
+meters the flip in software. On Ada that metering is software, not the hardware flip metering
+Blackwell added.
 
-So on the Vulkan path FSR-FG is the frame generator that actually delivers paced frames.
+Nothing is dropped at the DXGI layer in either case.
+
+## Tried and rejected
+
+Chaining present IDs into `VkPresentInfoKHR` so DLSS-G could use `vkWaitForPresentKHR` for
+timing feedback. DXVK had stopped chaining them along with the present fence, but the deadlock
+argument for dropping the fence never applied to IDs, since nothing in DXVK waits on one.
+Restoring them changed nothing for the better: display sd 1.02 -> 1.11 ms, frames bunched at
+scanout 1.1% -> 2.1%, and 3% fewer frames. DLSS-G is not waiting on present IDs here.
+
+Present mode and frame cap were also each measured against DLSS-G's cadence and neither moved it.

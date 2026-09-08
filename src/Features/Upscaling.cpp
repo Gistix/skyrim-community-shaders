@@ -373,19 +373,25 @@ void Upscaling::Load()
 		// output back on target.
 		//
 		// Correction, measured with PresentMon rather than the overlay: the 2.3 ms above is the
-		// RENDER frame time, not the present cadence, and a tear-free mode does not fix the
-		// cadence. Capturing present intervals directly, 20 s in the Whiterun bench:
+		// RENDER frame time, and it is not the cadence the display sees. Measuring 20 s of the
+		// Whiterun bench directly, uncapped:
 		//
-		//     FSR-FG,  uncapped (tearing)    interval sd 0.39 ms,   0.0% back to back
-		//     DLSS-G,  uncapped (tearing)    interval sd 3.39 ms,  49.7% back to back
-		//     DLSS-G,  capped   (tear-free)  interval sd 33.12 ms, 50.1% back to back
+		//                    present intervals        display changes
+		//     FSR-FG         sd 0.39 ms,  0.0% <1ms   sd 0.51 ms, 0.0% <1ms
+		//     DLSS-G         sd 3.39 ms, 49.7% <1ms   sd 1.02 ms, 1.1% <1ms
 		//
-		// Nothing was dropped at the DXGI layer in any of them, and FFX paces perfectly on the
-		// same present path, so the path is not the problem. DLSS-G is unpaced here whatever the
-		// present mode, because -- as the DLSS-G branch of GetRenderedFrameRateLimit describes --
-		// sl.dlss_g emits its generated frame from inside the same present as the real one. There
-		// is no gap between them for a present mode to widen. So keep choosing the mode on the
-		// merits below, but do not expect it to change DLSS-G's cadence.
+		// The two columns disagree, and the second is the one that matters. sl.dlss_g emits its
+		// generated frame from inside the same present as the real one (see the DLSS-G branch of
+		// GetRenderedFrameRateLimit), so half its present CALLS land within a millisecond of each
+		// other -- but DLSS-G on Ada meters flips in software, and by the time frames are scanned
+		// out only 1.1% are still bunched. Reading MsBetweenPresents alone makes a working pacer
+		// look broken.
+		//
+		// So DLSS-G is paced, just about twice as loosely as FFX (1.02 ms against 0.51 ms on a
+		// 3.58 ms mean). Chaining present IDs so it could use vkWaitForPresentKHR was tried and
+		// made both worse -- display sd 1.11 ms, 2.1% bunched, and 3% fewer frames -- so it is not
+		// waiting on them. Choose the present mode on the merits below; none of the modes tested
+		// changed DLSS-G's cadence either way.
 		//
 		// That reasoning holds only while the frame rate is capped. MAILBOX blocks in present at
 		// vblank, which pins DLSS-G's output to the refresh rate and the rendered rate to
