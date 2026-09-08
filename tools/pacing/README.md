@@ -10,7 +10,9 @@ settles it, and captures 20 s of presents; `pmstats.awk` reduces the CSV.
 
 ```
 capture-pacing.ps1 -Label dlssg -Settings SettingsUser.dlssg_unlocked.json
-awk -F, -f pmstats.awk pm_dlssg.csv
+awk -F, -f pmstats.awk pm_dlssg.csv   # rate, deviation, bunching
+awk -F, -f hist.awk    pm_dlssg.csv   # deviation histogram + sd excluding the worst 1%
+awk -F, -f seg.awk     pm_dlssg.csv   # the same split into four time segments
 ```
 
 ## Read MsBetweenDisplayChange, not MsBetweenPresents
@@ -67,10 +69,73 @@ Capped, the two generators differ sharply in delivered cadence:
 FSR-FG holds target on 97.6% of frames, but 2.2% arrive late and 0.5% are doubled outright --
 a visible hitch every six seconds or so. DLSS-G never misses.
 
-The difference is which rate is paced. Reflex holds FSR-FG's RENDER loop and FFX derives the
-presented cadence from it, so render-loop jitter lands directly on the delivered frame. DLSS-G
-is handed the OUTPUT target and derives its own render cadence, which absorbs that jitter.
-FFX's pacing is inside FidelityFX and not reachable from here.
+The difference is which pacer is in charge. FFX paces by blocking the caller in `Present` (see
+below), so its cadence is whatever its own internal pacer produces and nothing upstream of the
+present can improve it. DLSS-G is handed the OUTPUT target and meters its flips downstream of the
+game's present, which is why it can hit a hundredth of a millisecond. Neither is reachable from CS
+or DXVK, but only one of them has a defect.
+
+Splitting the deviation shows two separate faults rather than one. Removing the worst 1% of
+intervals:
+
+| capped | sd | sd excl. worst 1% | intervals >10 ms off |
+| --- | --- | --- | --- |
+| DLSS-G | 0.013 ms | 0.013 ms | 0% |
+| FSR-FG | 2.65 / 2.16 / 1.82 ms | 1.00 / 0.82 / 0.81 ms | 1.0% / 0.3% / 0.5% |
+
+A continuous sub-millisecond phase spread, plus a rare dropped frame that dominates the untrimmed
+figure. The tail is what a player notices; the spread is what looked addressable, and was not.
+
+
+## What actually paces the FSR-FG loop
+
+Worth stating plainly, because two comments in the source used to imply otherwise: on the FSR-FG
+path **FidelityFX paces the loop itself, by blocking inside `Present`**. Reflex's `frameLimitUs`
+is handed to it and does nothing there.
+
+Instrumenting a present gate made this unambiguous. Gating the game's `Present` call onto a fixed
+66.7 ms grid, the gate reported waiting on every single frame:
+
+```
+[Pace] 300 frames | waited 300 (58.04 ms avg) | late 0 | re-anchored 0 | arrival vs grid -58.06 ms avg
+```
+
+58 ms of wait in a 66.7 ms frame. The render loop's own work is only ~8.7 ms; the other 58 ms was
+never Reflex sleeping and never the loop being slow -- it was FFX holding the caller until it was
+ready for the next real frame. The gate did not add pacing, it *relocated* FFX's pacing wait to
+before the present call.
+
+## Tried and rejected: gating the present
+
+That relocation is harmful, for a reason that is obvious once the mechanism is right: arriving at
+FFX exactly when it wants the next frame leaves it no slack to place the interpolated one. The
+delivered cadence splits systematically instead of jittering -- in one run 63.8% of intervals sat
+2-4 ms off the mean, against 3.5% ungated. It also costs up to 58 ms of latency, since the wait
+happens with a fully rendered frame in hand.
+
+Four runs, deviation excluding the worst 1% of intervals:
+
+```
+gate off   1.39 / 4.35 ms
+gate on    3.04 / 0.43 ms
+```
+
+The 0.43 ms run is real and is the reason this was worth chasing -- segmented, it held sd 0.40 /
+0.47 / 0.56 ms over fifteen seconds, near DLSS-G's 0.013 ms. But it is a phase accident: the gate
+happened to land in step with FFX's own pacer. Adding 2% headroom to the Reflex cap to make the
+lock reproducible did not (that run went to 3.12 ms), because the headroom was addressing a slow
+render loop that does not exist.
+
+## The bench is noisier than one run can show
+
+Every conclusion on this page that rests on a single capture should be distrusted. Across six
+capped FSR-FG runs of the same scene with no code change at all, deviation excluding the worst 1%
+of intervals ranged 0.81 to 4.35 ms, and the untrimmed figure ranged 1.82 to 6.85 ms. Two separate
+changes here produced a convincing first result that reversed on pairing.
+
+Segment each capture before trusting it -- `seg.awk` splits it into quarters. The first quarter is
+routinely several times worse than the rest even after a 60 s settle, so a capture that starts
+early reads as a regression that is not there.
 
 ## Tried and rejected
 
