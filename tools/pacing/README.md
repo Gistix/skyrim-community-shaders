@@ -153,6 +153,36 @@ Also swept, since it decides how far DXVK's presenter may run ahead of FFX's pac
 Both extremes of `dxvkSetSyncPresent` remain unusable for a different reason: fully synchronous
 wedges the swapchain recreate that installs the FFX wrap, and unrestricted wedges shortly after it.
 
+
+### DLSS-G was not affected, and has no equivalent knob
+
+The tuning above is specific to `sl.fsr_g`. DLSS-G measured identically either side of it, and
+`DLSSGOptions` exposes no pacing field at all -- only `numFramesToGenerate` and
+`queueParallelismMode` -- because its flip metering happens inside the plugin and driver:
+
+| DLSS-G, capped | mean | sd | hitches |
+| --- | --- | --- | --- |
+| before | 33.348 | 0.016 | 0% |
+| after | 33.348 | 0.014 | 0% |
+| after | 33.348 | 0.016 | 0% |
+
+Check the log before believing any DLSS-G capped number. DLSS-G takes the cap undivided, so a run
+where frame generation never engaged presents at the same 30 fps as one where it did, and scores
+the same from outside. The runs above logged `rendered 15.0 fps | post-FG 30.0 fps | mult=2`.
+
+With the FSR fix in, the two are equivalent uncapped and FSR-FG is marginally ahead:
+
+| | DLSS-G | FSR-FG |
+| --- | --- | --- |
+| capped, sd excl. 1% | **0.013 ms** | 1.07-1.53 ms |
+| capped, hitches | 0% | 0% |
+| uncapped, sd excl. 1% | 0.91 / 0.96 ms | **0.85 / 0.89 ms** |
+
+The remaining gap is the capped continuous spread, and it is structural: DLSS-G meters flips
+downstream of the game's present, so it re-times frames after the fact, while FFX places its frame
+at submission and lives with what the loop hands it. About 1 ms on a 33 ms interval, nothing
+dropped.
+
 ### Sweeping it again
 
 `CS_FSRFG_SAFETY` and `CS_FSRFG_VARIANCE` override the host's values inside sl.fsr_g, and
