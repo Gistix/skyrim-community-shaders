@@ -585,12 +585,24 @@ bool Upscaling::GetEffectiveReflex() const
 			// presented with DXVK's limiter disabled).
 			return true;
 		case FrameGenMethod::kFSR:
-			// Off. FidelityFX's replacement swapchain owns present, and Reflex paces through the
-			// present it owns, so the limit it is handed cannot be applied -- measured 37 fps
-			// rendered against a 20.5 fps limit. Nor is there a latency benefit to weigh against
-			// that: with Reflex off, on, and on+boost the frame rate and render-to-present latency
-			// were identical (3.13 / 3.13 / 3.15 ms), because DXVK's SyncFrameLatency already holds
-			// the queue at about one frame. Leaving it off also lets DXVK's limiter take the cap.
+			// Off. FidelityFX's replacement swapchain owns present, and Reflex paces
+			// through the present it owns, so the limit it is handed cannot be applied -- measured
+			// 37 fps rendered against a 20.5 fps limit. Nor was there a latency benefit to weigh
+			// against that: with Reflex off, on, and on+boost the frame rate and render-to-present
+			// latency were identical (3.13 / 3.13 / 3.15 ms), because DXVK's SyncFrameLatency
+			// already holds the queue at about one frame.
+			//
+			// The third reason that used to be here -- that leaving it off let DXVK's limiter take
+			// the cap -- is gone with that limiter, so low-latency mode was re-tested against this
+			// path's pacing jitter. It does not help. Three paired runs of the capped bench,
+			// display-interval deviation:
+			//
+			//     mode off  2.65 / 2.16 / 1.82 ms   mean 2.21
+			//     mode on   2.20 / 3.40 / 2.63 ms   mean 2.74
+			//
+			// Slightly worse, with the ranges overlapping. A single first run showed 2.20 against
+			// 2.65 and looked like a 17% win; it was noise, which is worth recording because the
+			// same shape of false positive has now appeared three times in this area.
 			return false;
 		default:
 			break;

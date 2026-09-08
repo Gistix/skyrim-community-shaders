@@ -40,8 +40,8 @@ display changes 595 | mean 33.35 ms | sd 0.01 ms | 0% bunched
   min 33.31 ms  max 33.40 ms  100% of intervals in a single 8 ms bucket
 ```
 
-Locked to the target with a hundredth of a millisecond of deviation. There is no pacing defect
-to fix on either generator.
+Locked to the target with a hundredth of a millisecond of deviation. FSR-FG capped is not this
+tight -- see "FSR-FG carries residual jitter" below.
 
 ## What that means for the two generators
 
@@ -87,5 +87,19 @@ It does not pace better and it breaks the cap: against a 30 fps target it delive
 because Reflex then holds the render loop at 30 and FFX still doubles it. Normalised for rate
 the jitter is unchanged, 7.9% of the frame interval against 8.4%.
 
-Removing DXVK's frame limiter (see below) -- pacing-neutral, 2.66 -> 2.65 ms, because Reflex
+Removing DXVK's frame limiter -- pacing-neutral, 2.66 -> 2.65 ms, because Reflex
 was already available so CS had it switched off.
+
+Turning Reflex low-latency mode on for the FSR-FG path. With DXVK's limiter gone, one of the two
+reasons for leaving it off went with it, and steadying the render loop is exactly what this
+defect wants. It does not steady it. Three paired runs each, display-interval deviation:
+
+```
+mode off   2.65 / 2.16 / 1.82 ms    mean 2.21
+mode on    2.20 / 3.40 / 2.63 ms    mean 2.74
+```
+
+Slightly worse, ranges overlapping. Worth recording how this one presented: the first run of
+each showed 2.20 against 2.65 and read as a 17% win in the direction the mechanism predicts.
+Pairing reversed it. Single runs on this bench have now produced a false positive three times
+in a row, so nothing here should be landed on one.
