@@ -387,11 +387,16 @@ void Upscaling::Load()
 		// out only 1.1% are still bunched. Reading MsBetweenPresents alone makes a working pacer
 		// look broken.
 		//
-		// So DLSS-G is paced, just about twice as loosely as FFX (1.02 ms against 0.51 ms on a
-		// 3.58 ms mean). Chaining present IDs so it could use vkWaitForPresentKHR was tried and
-		// made both worse -- display sd 1.11 ms, 2.1% bunched, and 3% fewer frames -- so it is not
-		// waiting on them. Choose the present mode on the merits below; none of the modes tested
-		// changed DLSS-G's cadence either way.
+		// So DLSS-G is paced, about twice as loosely as FFX (1.02 ms against 0.51 ms on a 3.58 ms
+		// mean) -- and that is the uncapped case at 279 fps, where the display cannot give each
+		// frame its own scanout anyway. Capped, which is how the thing is actually played, its
+		// pacing is exact: 595 display changes, mean 33.35 ms, sd 0.01 ms, every interval between
+		// 33.31 and 33.40 ms.
+		//
+		// Chaining present IDs so it could use vkWaitForPresentKHR was tried and made both worse
+		// -- display sd 1.11 ms, 2.1% bunched, 3% fewer frames -- so it is not waiting on them.
+		// Choose the present mode on the merits below; none of the modes tested changed DLSS-G's
+		// cadence either way.
 		//
 		// That reasoning holds only while the frame rate is capped. MAILBOX blocks in present at
 		// vblank, which pins DLSS-G's output to the refresh rate and the rendered rate to

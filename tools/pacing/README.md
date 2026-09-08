@@ -29,6 +29,20 @@ its two presents together and spaces them afterwards, so the two columns disagre
 Judged on presents alone DLSS-G looks completely unpaced. Judged on what is scanned out it is
 paced, just about twice as loosely as FFX. Only the second column describes what a player sees.
 
+## Cadence is correct, and best where it matters
+
+Uncapped at 279 fps the display cannot give each frame its own scanout, so some variation there
+is expected and not very meaningful. Capped -- how the game is actually played -- DLSS-G is
+exact:
+
+```
+display changes 595 | mean 33.35 ms | sd 0.01 ms | 0% bunched
+  min 33.31 ms  max 33.40 ms  100% of intervals in a single 8 ms bucket
+```
+
+Locked to the target with a hundredth of a millisecond of deviation. There is no pacing defect
+to fix on either generator.
+
 ## What that means for the two generators
 
 **FFX (FSR-FG)** owns its present loop and spaces the generated frame itself, so both columns
