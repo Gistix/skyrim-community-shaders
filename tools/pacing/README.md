@@ -72,8 +72,9 @@ a visible hitch every six seconds or so. DLSS-G never misses.
 The difference is which pacer is in charge. FFX paces by blocking the caller in `Present` (see
 below), so its cadence is whatever its own internal pacer produces and nothing upstream of the
 present can improve it. DLSS-G is handed the OUTPUT target and meters its flips downstream of the
-game's present, which is why it can hit a hundredth of a millisecond. Neither is reachable from CS
-or DXVK, but only one of them has a defect.
+game's present, which is why it can hit a hundredth of a millisecond. FFX's pacer is not
+reachable in the sense of overriding where it puts the frame -- but it is tunable, and its default
+tuning was the defect. See "Fixed: FFX's frame-pacing tuning" below.
 
 Splitting the deviation shows two separate faults rather than one. Removing the worst 1% of
 intervals:
@@ -84,8 +85,78 @@ intervals:
 | FSR-FG | 2.65 / 2.16 / 1.82 ms | 1.00 / 0.82 / 0.81 ms | 1.0% / 0.3% / 0.5% |
 
 A continuous sub-millisecond phase spread, plus a rare dropped frame that dominates the untrimmed
-figure. The tail is what a player notices; the spread is what looked addressable, and was not.
+figure. The tail is what a player notices -- and the tail is the half that turned out to be fixable.
 
+
+
+## Fixed: FFX's frame-pacing tuning
+
+FFX does not place its interpolated frame at the midpoint. From the SDK header:
+
+```
+target frametime delta = average Frametime - (variance * varianceFactor) - safetyMarginInMs
+```
+
+Both terms pull the interpolated frame EARLY, and FFX's defaults (0.1 ms / 0.1) subtract about
+0.19 ms at the ~0.9 ms of variance this game shows. That is the whole of the offset by which
+FSR-FG's delivered cadence sat behind DLSS-G's on the same target -- mean 33.42-33.64 ms against a
+33.35 ms target, drifting a full refresh interval every few seconds and dropping a frame when it
+got there.
+
+`sl.fsr_g` was already setting this key, to FFX's defaults. It now takes the values from the host
+(`FSRFrameGenOptions::pacingSafetyMarginMs` / `pacingVarianceFactor`, appended LAST in the struct)
+and re-applies them from the present thread whenever they change, so no swapchain recreate is
+needed. CS sets **0.01 ms / 0.0**.
+
+Measuring the settled half of each capture, counting display intervals more than 10 ms off the
+mean -- a doubled frame, the visible hitch:
+
+| safety / variance | capped, hitches per run | mean | worst |
+| --- | --- | --- | --- |
+| 0.1 / 0.1 (FFX default) | 0.67 0.67 0.67 0.68 1.01 1.34 % | 0.84 | 1.34 |
+| 0.05 / 0.05 | 0.34 0.00 1.35 % | 0.56 | 1.35 |
+| **0.01 / 0.0 (shipped)** | 0.00 0.00 0.00 0.34 0.67 % | **0.20** | **0.67** |
+
+The shipped pair is the only one whose worst run matches the default's best, and three of its five
+runs have no hitch at all. The midpoint overlaps the default completely and was rejected despite a
+promising first run -- the third went to 1.35%.
+
+The mean also lands where it should: 33.31-33.35 ms against 33.42-33.64 on the defaults.
+
+### What it costs
+
+Continuous deviation, excluding the worst 1% of intervals, gets slightly worse -- the safety margin
+was doing something, just less than it cost:
+
+| safety / variance | capped sd excl. 1% | uncapped sd excl. 1% |
+| --- | --- | --- |
+| 0.1 / 0.1 | 0.87 0.95 0.95 | 0.48 0.44 |
+| 0.05 / 0.05 | 0.58 0.84 2.13 | 0.56 0.49 |
+| 0.01 / 0.0 | 1.10 1.53 1.07 | 0.89 0.84 0.85 |
+
+Uncapped the relationship inverts cleanly: at ~275 fps the margin is 5% of a 3.6 ms frame and holds
+placement together, where at 33 ms it is 0.6% and only displaces it. A single pair is used anyway,
+because the trade is a sub-millisecond continuous deviation -- invisible at either rate -- against a
+dropped frame, which is not, and because there are no hitches uncapped under any tuning.
+
+### Present queue depth
+
+Also swept, since it decides how far DXVK's presenter may run ahead of FFX's paced present
+(`CS_FSRFG_QDEPTH`). The existing depth of 2 is already the best of the three:
+
+| depth | sd | sd excl. 1% | hitches |
+| --- | --- | --- | --- |
+| 1 | 1.674 | 1.637 | 0.00% |
+| **2 (current)** | **1.096** | **1.073** | 0.00% |
+| 3 | 1.390 | 1.360 | 0.00% |
+
+Both extremes of `dxvkSetSyncPresent` remain unusable for a different reason: fully synchronous
+wedges the swapchain recreate that installs the FFX wrap, and unrestricted wedges shortly after it.
+
+### Sweeping it again
+
+`CS_FSRFG_SAFETY` and `CS_FSRFG_VARIANCE` override the host's values inside sl.fsr_g, and
+`CS_FSRFG_QDEPTH` overrides the queue depth, so neither needs a rebuild to test.
 
 ## What actually paces the FSR-FG loop
 

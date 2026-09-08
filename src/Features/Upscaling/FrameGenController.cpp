@@ -1,5 +1,7 @@
 #include "FrameGenController.h"
 
+#include <cstdlib>
+
 #include "../HDRDisplay.h"
 #include "../Upscaling.h"
 #include "DXVKInterop.h"
@@ -164,8 +166,20 @@ namespace FrameGen
 		// This needs the bounded middle regime specifically -- neither extreme of dxvkSetSyncPresent
 		// works. Fully synchronous wedges the swapchain recreate that installs the FFX wrap, and
 		// unrestricted wedges shortly after it; both present a black screen with a frozen log.
-		if (owner == Method::kFSR)
-			Streamline::PushDxvkPresentQueueDepth(2u);
+		if (owner == Method::kFSR) {
+			// Depth is a pacing knob as well as a throughput one: it decides how far DXVK's
+			// presenter may run ahead of FFX's paced present. Overridable for sweeping.
+			static const uint32_t s_depth = [] {
+				char buf[8] = {};
+				if (GetEnvironmentVariableA("CS_FSRFG_QDEPTH", buf, sizeof(buf)) && buf[0]) {
+					const int v = std::atoi(buf);
+					if (v >= 1 && v <= 8)
+						return static_cast<uint32_t>(v);
+				}
+				return 2u;
+			}();
+			Streamline::PushDxvkPresentQueueDepth(s_depth);
+		}
 	}
 
 	bool Controller::StepModeTeardown(Method a_target)

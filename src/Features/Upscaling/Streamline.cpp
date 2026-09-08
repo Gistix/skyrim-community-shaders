@@ -1817,6 +1817,16 @@ bool Streamline::SetFSRFrameGen(bool a_enable, bool a_hdr,
 	options.debugTearLines = a_debugTearLines ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 	options.debugPacingLines = a_debugPacingLines ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 	options.onlyPresentGenerated = a_onlyPresentGenerated ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	// FFX places its interpolated frame at (average frametime - variance * varianceFactor -
+	// safetyMarginInMs), not at the midpoint. Cutting that subtraction roughly halves the visible
+	// hitch rate when a frame cap is in force -- display intervals more than 10 ms off the mean,
+	// over the settled half of ten captures of the capped bench:
+	//
+	//     FFX defaults 0.1/0.1   0.84% of frames        this   0.20%
+	//
+	// See tools/pacing/README.md for the uncapped measurements and why this pair is used there too.
+	options.pacingSafetyMarginMs = 0.01f;
+	options.pacingVarianceFactor = 0.0f;
 	const sl::Result res = g_sl.slFSRFrameGenerationSetOptions(g_sl.viewport, options);
 	if (res != sl::Result::eOk) {
 		logger::error("[Streamline] slFSRFrameGenerationSetOptions failed (result {})", static_cast<int>(res));
