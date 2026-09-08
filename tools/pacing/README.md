@@ -42,8 +42,9 @@ display changes 595 | mean 33.35 ms | sd 0.01 ms | 0% bunched
   min 33.31 ms  max 33.40 ms  100% of intervals in a single 8 ms bucket
 ```
 
-Locked to the target with a hundredth of a millisecond of deviation. FSR-FG capped is not this
-tight -- see "FSR-FG carries residual jitter" below.
+Locked to the target with a hundredth of a millisecond of deviation -- which turns out to be the
+vblank clock rather than a pacing result, since two refresh intervals on this display is 33.350 ms.
+See "The DLSS-G comparison was confounded by present mode" below.
 
 ## What that means for the two generators
 
@@ -58,6 +59,10 @@ Blackwell added.
 Nothing is dropped at the DXGI layer in either case.
 
 ## FSR-FG carries residual jitter that DLSS-G does not
+
+> Read "The DLSS-G comparison was confounded by present mode" below before trusting the ratios in
+> this section. DLSS-G runs on MAILBOX and is quantised to vblank; FSR-FG runs on IMMEDIATE and is
+> not. The two columns are not the same measurement.
 
 Capped, the two generators differ sharply in delivered cadence:
 
@@ -226,6 +231,56 @@ The 0.43 ms run is real and is the reason this was worth chasing -- segmented, i
 happened to land in step with FFX's own pacer. Adding 2% headroom to the Reflex cap to make the
 lock reproducible did not (that run went to 3.12 ms), because the headroom was addressing a slow
 render loop that does not exist.
+
+
+## The DLSS-G comparison was confounded by present mode
+
+Every "DLSS-G is 80x tighter" figure on this page compared two things that are not the same
+measurement. The bench display runs at 3440x1440 **59.97 Hz** -- a 16.675 ms refresh interval.
+
+The two generators do not get the same Vulkan present mode:
+
+| method | vsync | cap | CS preference | present mode |
+| --- | --- | --- | --- | --- |
+| DLSS-G | either | capped | 0 (tear-free) | `MAILBOX` |
+| FSR-FG | off | either | 2 -> no preference | `IMMEDIATE` |
+| FSR-FG | on | either | 2 -> no preference | `FIFO` |
+
+`MAILBOX` and `FIFO` flip at vblank. `IMMEDIATE` tears mid-scanout. So DLSS-G's display-change
+timestamps are quantised to a hardware clock and FSR-FG's are continuous.
+
+DLSS-G capped measures **33.348 ms, sd 0.013**. Two refresh intervals is **33.350 ms**. That
+figure is the vblank clock, not the quality of DLSS-G's flip metering -- it is what any generator
+hitting every second vblank would score.
+
+Turning vsync on for FSR-FG proves it. The intervals become exact refresh multiples:
+
+```
+16-17 ms  3.9%      33-34 ms  92.5%      49-51 ms  3.7%
+```
+
+Quantised, as predicted -- and much worse in practice: FFX misses the two-refresh slot 7.5% of the
+time, so sd goes to 5.96 ms and 12.75% of intervals are a full refresh out. `IMMEDIATE` is the
+right mode for FSR-FG and the shipped configuration already picks it.
+
+Which means the residual continuous deviation is **1.1 ms against a 16.675 ms refresh interval** --
+6.6% of one refresh. Under a tearing present mode that is a tear line sitting a few scanlines from
+where it ideally would, not a judder. The defect that was worth fixing was the dropped frame, and
+that is fixed.
+
+### Rejected: decoupling the two FFX pacing terms
+
+The sweep above moved `pacingSafetyMarginMs` and `pacingVarianceFactor` together, so the shipped
+pair might not have been the best point -- the variance term is adaptive where the margin is a flat
+offset. Holding the margin at 0.01 and restoring the variance factor to FFX's 0.1, three runs each:
+
+| | continuous sd excl. 1% | hitches |
+| --- | --- | --- |
+| 0.01 / 0.0 (shipped) | 1.29 / 1.50 / 0.77 | none |
+| 0.01 / 0.1 | 1.08 / 1.05 / 1.13 | one run at 0.34% |
+
+The continuous difference (mean 1.19 vs 1.09) sits inside the shipped arm's own spread, and the
+variance term brought a hitch back. Not a win; shipped pair stands.
 
 ## The bench is noisier than one run can show
 
