@@ -422,10 +422,11 @@ struct CreationEngineRaytracing
 		TextureMode TextureMode = TextureMode::Share;
 		uint32_t TextureCutOff = 0;
 		bool GlobalLights = false;
+		bool RenderTreeLOD = false;
 
 		bool operator==(const ExperimentalSettings&) const = default;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights, RenderTreeLOD)
 	};
 
 	enum struct TimingMode
