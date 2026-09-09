@@ -1409,6 +1409,7 @@ void HDRDisplay::RefreshDisplayLuminance() const
 	// UI can say which of those it is instead of printing a number that looks authoritative.
 	cachedDisplayLuminanceValid = false;
 	cachedDisplayIsHDR = false;
+	static bool s_loggedFailure = false;
 
 	winrt::com_ptr<IDXGIOutput> output;
 	if (globals::d3d::swapChain && SUCCEEDED(globals::d3d::swapChain->GetContainingOutput(output.put()))) {
@@ -1421,8 +1422,18 @@ void HDRDisplay::RefreshDisplayLuminance() const
 					desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
 					desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
 				cachedDisplayMaxLuminance = desc1.MaxLuminance >= 80.0f ? desc1.MaxLuminance : 1000.0f;
+				static bool s_logged = false;
+				if (!std::exchange(s_logged, true)) {
+					logger::info("[HDR] display luminance: max {:.1f} maxFullFrame {:.1f} min {:.4f} | colorSpace {} | bitsPerColor {} | isHDR {}",
+						desc1.MaxLuminance, desc1.MaxFullFrameLuminance, desc1.MinLuminance,
+						static_cast<int>(desc1.ColorSpace), desc1.BitsPerColor, cachedDisplayIsHDR);
+				}
 			}
 		}
+	}
+	if (!cachedDisplayLuminanceValid && !std::exchange(s_loggedFailure, true)) {
+		logger::warn("[HDR] display luminance query failed -- falling back to {:.1f} nits (swapChain {}, GetContainingOutput/GetDesc1 unavailable)",
+			cachedDisplayMaxLuminance, globals::d3d::swapChain ? "present" : "null");
 	}
 }
 

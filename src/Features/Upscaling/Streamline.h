@@ -115,6 +115,8 @@ public:
 	[[nodiscard]] uint32_t GetFrameGenerationMultiplier() const;
 	/** @brief Running total of frames the FSR-FG swapchain has presented; difference for the true rate. */
 	[[nodiscard]] uint64_t GetTotalPresentedFrames() const;
+	/** @brief True when DLSS-G reports vertical sync is usable while it is generating (SL-VSYNC-011). */
+	[[nodiscard]] bool IsDLSSGVsyncSupported() const;
 	[[nodiscard]] bool IsDLSSGDynamicSupported() const;
 
 	/** @brief Sets the desired DLSS-G runtime load state. */
@@ -134,9 +136,11 @@ public:
 
 	void ClearDLSSGTags();
 	[[nodiscard]] bool EnsureDLSSGPresentTag();
+	/** @brief FSR-FG counterpart: passes frames through when the render pass prepared none. */
+	bool EnsureFSRFGPresentState();
 
-	/** @brief Registers Streamline ownership of DXVK present pacing. */
-	static void RegisterDxvkOwnershipPredicate();
+	/** @brief Registers the swapchain-torn-down callback frame-generation switching needs. */
+	static void RegisterDxvkSwapchainCallbacks();
 
 	/** @brief Requests a Vulkan swapchain recreation. */
 	static void RequestDxvkSwapchainRecreate(const char* a_reason = "FG method switch");

@@ -144,7 +144,11 @@ void Upscaling::DrawSettings()
 
 	ImGui::SeparatorText(T(TKEY("display_header"), "Display"));
 	{
-		const bool vsyncForcedOff = IsFrameGenerationActive() && GetFrameGenMethod() == FrameGenMethod::kDLSSG;
+		// SL-VSYNC-011, as the Streamline sample does it: DLSS-G reports whether vsync is usable
+		// while generating, and the toggle is disabled and shown as off only when it says no --
+		// rather than assuming DLSS-G always precludes it.
+		const bool vsyncForcedOff = IsFrameGenerationActive() && GetFrameGenMethod() == FrameGenMethod::kDLSSG &&
+		                            !Streamline::GetSingleton()->IsDLSSGVsyncSupported();
 		if (vsyncForcedOff) {
 			bool effectiveVsync = false;
 			DrawToggleStepper(T(TKEY("vsync"), "Vertical Synchronisation"), &effectiveVsync, /*disabled=*/true);
@@ -155,14 +159,7 @@ void Upscaling::DrawSettings()
 		}
 
 		const int refresh = GetMonitorRefreshRate();
-		std::vector<int> divisorOptions;
-		for (int d = 4; d >= 1; --d) {
-			if (refresh / d >= 30)
-				divisorOptions.push_back(d);
-		}
-		if (divisorOptions.empty())
-			divisorOptions.push_back(1);
-		divisorOptions.push_back(0);
+		const std::vector<int> divisorOptions = FrameRateDivisorOptions(refresh);
 
 		std::vector<std::string> fpsStrings;
 		for (int d : divisorOptions)
@@ -174,9 +171,10 @@ void Upscaling::DrawSettings()
 			fpsLabels.push_back(s.c_str());
 
 		const int maxSel = static_cast<int>(divisorOptions.size()) - 1;
-		int sel = maxSel > 0 ? maxSel - 1 : 0;
+		const int effective = ResolveFrameRateDivisor(settings.frameRateLimitDivisor, refresh);
+		int sel = 0;
 		for (int i = 0; i <= maxSel; ++i) {
-			if (divisorOptions[i] == settings.frameRateLimitDivisor)
+			if (divisorOptions[i] == effective)
 				sel = i;
 		}
 		DrawStepper(T(TKEY("frame_rate"), "Frame Rate"), &sel, fpsLabels);
@@ -378,6 +376,32 @@ void Upscaling::Load()
 		// to drops and left frame-time deviation at 16.5 ms. MAILBOX brings that to 2.3 ms and puts
 		// output back on target.
 		//
+		// Correction, measured with PresentMon rather than the overlay: the 2.3 ms above is the
+		// RENDER frame time, and it is not the cadence the display sees. Measuring 20 s of the
+		// Whiterun bench directly, uncapped:
+		//
+		//                    present intervals        display changes
+		//     FSR-FG         sd 0.39 ms,  0.0% <1ms   sd 0.51 ms, 0.0% <1ms
+		//     DLSS-G         sd 3.39 ms, 49.7% <1ms   sd 1.02 ms, 1.1% <1ms
+		//
+		// The two columns disagree, and the second is the one that matters. sl.dlss_g emits its
+		// generated frame from inside the same present as the real one (see the DLSS-G branch of
+		// GetRenderedFrameRateLimit), so half its present CALLS land within a millisecond of each
+		// other -- but DLSS-G on Ada meters flips in software, and by the time frames are scanned
+		// out only 1.1% are still bunched. Reading MsBetweenPresents alone makes a working pacer
+		// look broken.
+		//
+		// So DLSS-G is paced, about twice as loosely as FFX (1.02 ms against 0.51 ms on a 3.58 ms
+		// mean) -- and that is the uncapped case at 279 fps, where the display cannot give each
+		// frame its own scanout anyway. Capped, which is how the thing is actually played, its
+		// pacing is exact: 595 display changes, mean 33.35 ms, sd 0.01 ms, every interval between
+		// 33.31 and 33.40 ms.
+		//
+		// Chaining present IDs so it could use vkWaitForPresentKHR was tried and made both worse
+		// -- display sd 1.11 ms, 2.1% bunched, 3% fewer frames -- so it is not waiting on them.
+		// Choose the present mode on the merits below; none of the modes tested changed DLSS-G's
+		// cadence either way.
+		//
 		// That reasoning holds only while the frame rate is capped. MAILBOX blocks in present at
 		// vblank, which pins DLSS-G's output to the refresh rate and the rendered rate to
 		// refresh/multiplier: measured 30 rendered / 60 presented with 25.5 ms of every frame spent
@@ -565,12 +589,24 @@ bool Upscaling::GetEffectiveReflex() const
 			// presented with DXVK's limiter disabled).
 			return true;
 		case FrameGenMethod::kFSR:
-			// Off. FidelityFX's replacement swapchain owns present, and Reflex paces through the
-			// present it owns, so the limit it is handed cannot be applied -- measured 37 fps
-			// rendered against a 20.5 fps limit. Nor is there a latency benefit to weigh against
-			// that: with Reflex off, on, and on+boost the frame rate and render-to-present latency
-			// were identical (3.13 / 3.13 / 3.15 ms), because DXVK's SyncFrameLatency already holds
-			// the queue at about one frame. Leaving it off also lets DXVK's limiter take the cap.
+			// Off. FidelityFX's replacement swapchain owns present, and Reflex paces
+			// through the present it owns, so the limit it is handed cannot be applied -- measured
+			// 37 fps rendered against a 20.5 fps limit. Nor was there a latency benefit to weigh
+			// against that: with Reflex off, on, and on+boost the frame rate and render-to-present
+			// latency were identical (3.13 / 3.13 / 3.15 ms), because DXVK's SyncFrameLatency
+			// already holds the queue at about one frame.
+			//
+			// The third reason that used to be here -- that leaving it off let DXVK's limiter take
+			// the cap -- is gone with that limiter, so low-latency mode was re-tested against this
+			// path's pacing jitter. It does not help. Three paired runs of the capped bench,
+			// display-interval deviation:
+			//
+			//     mode off  2.65 / 2.16 / 1.82 ms   mean 2.21
+			//     mode on   2.20 / 3.40 / 2.63 ms   mean 2.74
+			//
+			// Slightly worse, with the ranges overlapping. A single first run showed 2.20 against
+			// 2.65 and looked like a 17% win; it was noise, which is worth recording because the
+			// same shape of false positive has now appeared three times in this area.
 			return false;
 		default:
 			break;
@@ -581,13 +617,47 @@ bool Upscaling::GetEffectiveReflex() const
 
 int Upscaling::GetMonitorRefreshRate() const
 {
-	if (refreshRate >= 1.0)
-		return static_cast<int>(std::lround(refreshRate));
-	DEVMODEA dm{};
-	dm.dmSize = sizeof(dm);
-	if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm) && (dm.dmFields & DM_DISPLAYFREQUENCY) && dm.dmDisplayFrequency > 1)
-		return static_cast<int>(dm.dmDisplayFrequency);
-	return 60;
+	// Re-query rather than trust the rate latched at swapchain creation. The display is still
+	// settling then -- the mode changes under us during startup -- and latching that pinned the
+	// frame cap for the whole session: the main menu ran at 10 fps because the target is
+	// refresh/divisor and FSR-FG halves it again, so a stale 60 Hz became a 10 fps rendered cap
+	// while the real rate was far higher. GetRenderedFrameRateLimit is called once per input
+	// poll, so the result is cached for a second; QueryDisplayConfig is far too heavy per frame.
+	static std::mutex s_mutex;
+	static double s_cachedHz = 0.0;
+	static std::chrono::steady_clock::time_point s_lastQuery{};
+
+	const auto now = std::chrono::steady_clock::now();
+	std::lock_guard lock(s_mutex);
+	if (s_cachedHz < 1.0 || now - s_lastQuery >= std::chrono::seconds(1)) {
+		s_lastQuery = now;
+		double queried = 0.0;
+		if (auto* chain = globals::d3d::swapChain) {
+			DXGI_SWAP_CHAIN_DESC desc{};
+			if (SUCCEEDED(chain->GetDesc(&desc)) && desc.OutputWindow)
+				queried = GetRefreshRate(desc.OutputWindow);
+		}
+		if (queried < 1.0) {
+			DEVMODEA dm{};
+			dm.dmSize = sizeof(dm);
+			if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &dm) &&
+				(dm.dmFields & DM_DISPLAYFREQUENCY) && dm.dmDisplayFrequency > 1)
+				queried = static_cast<double>(dm.dmDisplayFrequency);
+		}
+		// Only fall back to the creation-time value while nothing live has answered.
+		if (queried < 1.0)
+			queried = refreshRate;
+
+		if (queried >= 1.0) {
+			const int before = static_cast<int>(std::lround(s_cachedHz));
+			const int after = static_cast<int>(std::lround(queried));
+			if (before != after)
+				logger::info("[Upscaling] display refresh {} Hz (was {})", after, before);
+			s_cachedHz = queried;
+		}
+	}
+
+	return s_cachedHz >= 1.0 ? static_cast<int>(std::lround(s_cachedHz)) : 60;
 }
 
 int Upscaling::GetHighestRefreshRate() const
@@ -608,11 +678,60 @@ int Upscaling::GetHighestRefreshRate() const
 	return static_cast<int>(best);
 }
 
+std::vector<int> Upscaling::FrameRateDivisorOptions(int a_refresh)
+{
+	// Offer only divisors that can still reach kMinTargetFps, then "Unlocked" as 0.
+	std::vector<int> options;
+	for (int d = 4; d >= 1; --d) {
+		if (a_refresh / d >= kMinTargetFps)
+			options.push_back(d);
+	}
+	if (options.empty())
+		options.push_back(1);
+	options.push_back(0);
+	return options;
+}
+
+int Upscaling::ResolveFrameRateDivisor(int a_saved, int a_refresh)
+{
+	// Single source of truth for "which divisor is actually in force", shared by the settings UI
+	// and GetTargetFrameRate so the number on screen and the number the limiter uses cannot
+	// disagree. They did: a divisor saved against a faster display is not offered at a slower one,
+	// the UI fell back to its own default while the limiter kept honouring the stale value, and the
+	// menu ran at a fraction of the rate the setting claimed.
+	if (a_saved <= 0)
+		return 0;  // unlocked
+	const std::vector<int> options = FrameRateDivisorOptions(a_refresh);
+	for (int d : options) {
+		if (d == a_saved)
+			return a_saved;
+	}
+	// Not offered at this refresh rate: fall back to the fastest capped option, which is what the
+	// stepper lands on and therefore what the user is shown.
+	int best = 1;
+	for (int d : options) {
+		if (d > 0)
+			best = std::min(best == 1 ? d : best, d);
+	}
+	return best;
+}
+
 uint32_t Upscaling::GetPresentModePreference() const
 {
-	// 1 = tearing (IMMEDIATE) when the frame rate is unlocked, 0 = tear-free (MAILBOX) when a cap
-	// already paces the output. See the note in Load().
-	return settings.frameRateLimitDivisor <= 0 ? 1u : 0u;
+	// Match the Streamline sample, which is NVIDIA's reference for DLSS-G presentation on Vulkan.
+	// donut's DeviceManager_VK.cpp builds its swapchain with
+	//
+	//     .setPresentMode(vsyncEnabled ? vk::PresentModeKHR::eFifo : vk::PresentModeKHR::eImmediate)
+	//
+	// and nothing in the sample varies that by frame-generation method or frame cap. MAILBOX is
+	// never used. So the mode follows the sync interval and nothing else: 0 (tear-free) with vsync
+	// on gives FIFO, 1 (tearing) with vsync off gives IMMEDIATE.
+	//
+	// This replaces a cap-dependent heuristic that picked MAILBOX whenever a frame cap was in
+	// force. See tools/pacing/README.md -- PresentMon rates MAILBOX far better for DLSS-G, but it
+	// cannot see through software flip metering, which submits the frame pair together and spaces
+	// the flips below the level PresentMon observes.
+	return settings.vsync ? 0u : 1u;
 }
 
 void Upscaling::UpdatePresentModePreference()
@@ -630,8 +749,9 @@ void Upscaling::UpdatePresentModePreference()
 	// swapchain keeps the old mode until it is rebuilt. Skip the recreate on the first call, which
 	// only records what Load() already pushed.
 	if (!first) {
-		logger::info("[Upscaling] present mode preference -> {} (frame rate {})",
+		logger::info("[Upscaling] present mode preference -> {} (vsync {}, frame rate {})",
 			desired ? "tearing" : "tear-free",
+			settings.vsync ? "on" : "off",
 			settings.frameRateLimitDivisor <= 0 ? "unlocked" : "capped");
 		Streamline::RequestDxvkSwapchainRecreate("frame-rate setting changed present mode");
 	}
@@ -642,6 +762,17 @@ double Upscaling::GetTargetFrameRate() const
 	if (!loaded)
 		return 0.0;
 	const int divisor = settings.frameRateLimitDivisor;
+
+	// Vertical sync is itself a cap at the refresh rate, so "unlocked" cannot mean unpaced here.
+	// It matters because an external frame-generation layer owns the present: FFX's replacement
+	// returns immediately instead of blocking on vblank, so nothing throttles the render thread.
+	// Measured with vsync on, rate unlocked and FSR-FG active: presents held at 57.8 fps while the
+	// render loop spun at 1131-1797 fps, burning the frame budget on frames that were never shown.
+	// With frame generation off the same settings blocked correctly at ~60, which is why this only
+	// surfaces on the FG path.
+	if (divisor <= 0 && settings.vsync)
+		return std::max(1.0, static_cast<double>(GetMonitorRefreshRate()));
+
 	if (divisor <= 0) {
 		// Unlocked means unlocked, for every frame-generation method. This used to return the
 		// refresh rate for DLSS-G, reasoning that sl.dlss_g presents tear-free and so cannot exceed
@@ -652,13 +783,32 @@ double Upscaling::GetTargetFrameRate() const
 		// discrepancy was noticed. If guaranteed generation headroom is wanted, use the divisor.
 		return 0.0;
 	}
+	const int refresh = GetMonitorRefreshRate();
+
+	// Honour the same floor the settings UI applies when it builds the divisor list, so a saved
+	// divisor that the current refresh rate cannot support does not quietly cap the game.
+	//
+	// The UI only offers divisors where refresh/d >= kMinTargetFps, and rewrites the setting to a
+	// valid one the first time it is drawn. Until then the stale value was used as-is: a divisor
+	// of 3 saved against a 165 Hz display became a 20 fps target on a 60 Hz one, and FSR-FG halves
+	// the rendered rate again -- a 10 fps main menu that jumped to 60 the moment the menu was
+	// opened and the setting was silently rewritten. Clamping here makes the two agree whether or
+	// not the UI has been drawn.
+	const int effective = ResolveFrameRateDivisor(divisor, refresh);
+	if (effective != divisor) {
+		static int s_reported = 0;
+		if (std::exchange(s_reported, effective) != effective)
+			logger::info("[Upscaling] frame-rate divisor {} not offered at {} Hz; using {} ({} fps)",
+				divisor, refresh, effective, refresh / std::max(1, effective));
+	}
+
 	// Deliberately NOT rounded to a whole frame rate. The target is a submultiple of the display
 	// refresh, and rounding it breaks that relationship: at 165 Hz a divisor of 4 becomes 41 fps
 	// (24.390 ms) instead of 41.25 (24.242 ms, exactly four refresh intervals). That 0.61% error
 	// drifts a full refresh interval roughly once a second, so a frame slips and the display shows
 	// one long interval followed by a short one -- measured as ~1.4% of frames beyond twice the
 	// median, with the exact-dividing divisors 1 and 3 pacing visibly tighter.
-	return std::max(1.0, static_cast<double>(GetMonitorRefreshRate()) / divisor);
+	return std::max(1.0, static_cast<double>(refresh) / effective);
 }
 
 uint32_t Upscaling::GetFixedDLSSGMultiplier() const
@@ -677,8 +827,22 @@ double Upscaling::GetRenderedFrameRateLimit() const
 		return static_cast<double>(targetFps);
 
 	switch (GetFrameGenMethod()) {
-	case FrameGenMethod::kFSR:
-		return static_cast<double>(targetFps) / 2.0;
+	case FrameGenMethod::kFSR: {
+		// Handing FFX the output target undivided, the way the DLSS-G branch below does, was
+		// measured and rejected. It does not pace better and it breaks the cap: against a 30 fps
+		// target it delivered 59.8 fps, because Reflex then holds the render loop at 30 and FFX
+		// still doubles it. Normalised for rate the jitter is unchanged -- 7.9% of the frame
+		// interval divided against 8.4% undivided -- so this only moved the rate, not the cadence.
+		//
+		// Divide by what FFX is actually presenting per rendered frame, not by an assumed 2.
+		// Frame generation being switched on does not mean it is generating: wherever the render
+		// pass supplies no interpolation inputs -- the main menu, load screens -- FFX reports
+		// numFramesActuallyPresented = 1 and passes frames through. Halving the cap there starved
+		// the menu to half the target for generation that never happened: measured 15 fps rendered
+		// against a 30 fps target, and 10 fps before the divisor clamp above.
+		const uint32_t presented = Streamline::GetSingleton()->GetFrameGenerationMultiplier();
+		return static_cast<double>(targetFps) / static_cast<double>(std::max(1u, presented));
+	}
 	case FrameGenMethod::kDLSSG:
 		// Unlike FFX -- whose replacement swapchain owns the present loop, so the limiter only
 		// ever sees rendered frames -- sl.dlss_g emits its generated frame from inside the same
@@ -690,23 +854,6 @@ double Upscaling::GetRenderedFrameRateLimit() const
 		return static_cast<double>(targetFps);
 	default:
 		return static_cast<double>(targetFps);
-	}
-}
-
-void Upscaling::ApplyDxvkFrameRateLimit(double a_fps)
-{
-	using SetFrameRateFn = void (*)(double);
-	static SetFrameRateFn fn = nullptr;
-	static bool resolved = false;
-	if (!resolved) {
-		resolved = true;
-		if (HMODULE m = GetModuleHandleW(L"dxvk_d3d11.dll"))
-			fn = reinterpret_cast<SetFrameRateFn>(GetProcAddress(m, "dxvkSetTargetFrameRate"));
-	}
-	static double lastFps = -2.0;
-	if (fn && a_fps != lastFps) {
-		lastFps = a_fps;
-		fn(a_fps > 0.0 ? a_fps : 0.0);
 	}
 }
 
@@ -724,8 +871,7 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 			!streamline->SetDLSSGMode(false, displayWidth, displayHeight)) {
 			logger::error("[Upscaling] DLSS-G mode-off failed; continuing with device-idle teardown");
 		}
-		const bool completionProven = dxvk->HasPendingPresentWaitSemaphore() ?
-			dxvk->DiscardPendingPresentWaitSemaphore() : dxvk->WaitDeviceIdle();
+		const bool completionProven = dxvk->WaitDeviceIdle();
 		if (!completionProven) {
 			// Deferring suppresses this present. That is correct for a transient fault, but only
 			// while the wait can still succeed -- see the device-lost check at the top, which is
@@ -751,33 +897,29 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 	};
 	if (dxvk->HasCommandRingFault()) {
 		settings.frameGeneration = false;
-		if (streamline->IsDLSSGLoaded() || streamline->IsFSRFGLoaded() ||
-			dxvk->HasPendingPresentWaitSemaphore())
+		if (streamline->IsDLSSGLoaded() || streamline->IsFSRFGLoaded())
 			return requestFaultTeardown("Vulkan frame-generation dispatch fault");
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 	}
 
-	if (!IsFrameGenerationActive()) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
+	if (!IsFrameGenerationActive())
 		return a_present(a_swapChain, a_syncInterval, a_flags);
-	}
 
 	// Relax the fully-synchronous present once a proxy actually owns the swapchain. The switch
 	// itself needs depth zero, and the proxy install re-asserts it, so this has to be (re)applied
-	// from the steady-state present rather than once at settle. Depth zero makes
-	// D3D11SwapChain::PresentImage drain its own status every frame, blocking the render thread in
-	// waitForSubmission until the proxy's intercepted vkQueuePresentKHR returns.
+	// from the steady-state present rather than once at settle.
 	// FSR-FG only. DLSS-G paces by blocking inside its own present (eBlockPresentingClientQueue);
-	// adding a second waiting gate on top deadlocks the pipeline -- measured as a main-thread hang
-	// that only a process restart clears.
+	// adding a second waiting gate on top deadlocks the pipeline.
 	if (streamline->IsFSRFGPresentOwner())
 		Streamline::PushDxvkPresentQueueDepth(2u);
 
 	auto fgMethod = GetFrameGenMethod();
 	if (fgMethod != FrameGenMethod::kDLSSG) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
+		// FSR-FG needs the same every-present guarantee DLSS-G gets below: on frames where the
+		// render pass prepared no interpolation frame -- the main menu, load screens, anywhere
+		// Main_UpdateJitter does not run -- discard whatever FFX still holds so it passes the real
+		// frame through instead of interpolating stale contents onto a black screen.
+		(void)streamline->EnsureFSRFGPresentState();
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 	}
 
@@ -785,17 +927,11 @@ HRESULT Upscaling::PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT 
 	// the present. Between selecting it and sl.dlss_g being loaded (a swapchain recreate apart), the
 	// tag path legitimately has nothing to do, and treating that as a fault tore frame generation
 	// down on every enable.
-	if (!streamline->IsDLSSGLoaded()) {
-		if (dxvk->HasPendingPresentWaitSemaphore() && !dxvk->PushPendingPresentWaitSemaphore())
-			return requestFaultTeardown("DLSS-G present synchronization failed");
-		return a_present(a_swapChain, a_syncInterval, a_flags);
-	}
-
-	if ((dxvk->HasPendingPresentWaitSemaphore() || streamline->EnsureDLSSGPresentTag()) &&
-		dxvk->PushPendingPresentWaitSemaphore())
+	if (!streamline->IsDLSSGLoaded())
 		return a_present(a_swapChain, a_syncInterval, a_flags);
 
-	return requestFaultTeardown("DLSS-G present synchronization failed");
+	(void)streamline->EnsureDLSSGPresentTag();
+	return a_present(a_swapChain, a_syncInterval, a_flags);
 }
 
 void Upscaling::CreateUpscaledTexture()
@@ -1298,7 +1434,7 @@ void Upscaling::SetupResources()
 		auto* streamline = Streamline::GetSingleton();
 		if (streamline->Initialize()) {
 			streamline->SetVulkanDevice();
-			Streamline::RegisterDxvkOwnershipPredicate();
+			Streamline::RegisterDxvkSwapchainCallbacks();
 		}
 
 		ApplyHardwareDefaults();

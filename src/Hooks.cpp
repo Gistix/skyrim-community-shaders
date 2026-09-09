@@ -6,6 +6,7 @@
 #include "Utils/VersionedRelocation.h"
 
 #include "Aftermath.h"
+#include "D3DX9MathUpgrade.h"
 #include "DxvkLoader.h"
 #include "Feature.h"
 #include "Globals.h"
@@ -27,6 +28,7 @@
 #include "Features/Upscaling/Streamline.h"
 #include "Features/VolumetricLighting.h"
 
+#include <xmmintrin.h>
 #include <unordered_map>
 
 namespace
@@ -393,7 +395,10 @@ struct IDXGISwapChain_Present
 			if (up.loaded) {
 				const bool dlssgActive = up.IsFrameGenerationActive() &&
 				                         up.GetFrameGenMethod() == Upscaling::FrameGenMethod::kDLSSG;
-				SyncInterval = dlssgActive ? 0u : (up.settings.vsync ? 1u : 0u);
+				// Force the unsynced present only when DLSS-G says vsync is unusable (SL-VSYNC-011),
+				// not for every DLSS-G frame.
+				const bool dlssgNoVsync = dlssgActive && !Streamline::GetSingleton()->IsDLSSGVsyncSupported();
+				SyncInterval = dlssgNoVsync ? 0u : (up.settings.vsync ? 1u : 0u);
 				if (dlssgActive) {
 					auto* sl = Streamline::GetSingleton();
 					sl->QueryDLSSGCapabilities();
@@ -422,12 +427,6 @@ struct IDXGISwapChain_Present
 		const bool presentSucceeded = SUCCEEDED(retval);
 		if (presentSucceeded)
 			dxvk->RefreshPresenterSurfaceState();
-		// Resolve the pushed present-wait registration after every successful present, whoever
-		// owns it. Gating this on the FSR-FG owner left the slot latched forever under DLSS-G:
-		// SubmitFrameCommandBuffer then refused every subsequent present-wait submission and
-		// DLSS-G was starved of its input tags for the rest of the session.
-		if (presentSucceeded)
-			dxvk->NotifyPresentWaitQueued();
 		streamline->CaptureDLSSGPresentState();
 
 		// Collect the overlay's frame metrics here rather than from its draw path, so hiding the
@@ -539,6 +538,23 @@ void Hooks::BSGraphics_SetDirtyStates::thunk(bool isCompute)
 	globals::state->Draw();
 }
 
+void Hooks::BSBatchRenderer_RenderPassImmediately1::thunk(RE::BSRenderPass* pass, uint32_t technique, bool alphaTest, uint32_t renderFlags)
+{
+	// Software-pipeline the batch walk: BSBatchRenderer iterates pass->passGroupNext chains
+	// whose nodes live scattered across the engine's contiguous 4.7 MB render-pass arena
+	// (65535 x 72 B slots; the pool's lock-free LIFO freelist scrambles with alloc/free
+	// churn), so nearly every iteration begins with a cold-line load of the next node.
+	// Live IP-sampling of the render thread showed these loads as its single hottest
+	// cluster (RenderPassImmediately+0x1f/+0x64/+0x8d). Prefetching the next pass one
+	// iteration ahead lets its lines arrive while the current pass renders. A pass is
+	// 72 bytes at a 72-byte stride, so a node can straddle two cache lines.
+	if (auto* next = pass->passGroupNext) {
+		_mm_prefetch(reinterpret_cast<const char*>(next), _MM_HINT_T0);
+		_mm_prefetch(reinterpret_cast<const char*>(next) + 64, _MM_HINT_T0);
+	}
+	func(pass, technique, alphaTest, renderFlags);
+}
+
 struct ID3D11Device_CreateVertexShader
 {
 	static HRESULT thunk(ID3D11Device* This, const void* pShaderBytecode, SIZE_T BytecodeLength, ID3D11ClassLinkage* pClassLinkage, ID3D11VertexShader** ppVertexShader)
@@ -622,10 +638,10 @@ struct BSInputDeviceManager_PollInputDevices
 			// The present mode follows the frame-rate setting (tear-free only while a cap paces the
 			// output), so it has to be re-evaluated when that setting changes at runtime.
 			upscaling.UpdatePresentModePreference();
-			// Reflex now owns the cap on both paths, so DXVK's limiter stays out of the way unless
-			// Reflex is not available at all to apply one.
-			const bool reflexLimiterActive = Streamline::GetSingleton()->IsReflexSupported();
-			upscaling.ApplyDxvkFrameRateLimit(reflexLimiterActive ? 0.0 : renderedFpsLimit);
+			// Reflex owns the cap outright. DXVK's limiter is gone -- it applied the cap from
+			// Presenter::signalFrame, on the submission thread after the present had already gone
+			// out, which is too late to pace anything, and having a second limiter that could
+			// engage at all was a source of frame-time spikes rather than a safety net.
 			Streamline::GetSingleton()->SetPCLMarker(Streamline::PclMarker::SimulationStart);
 		}
 
@@ -1134,6 +1150,8 @@ namespace Hooks
 	 */
 	void Install()
 	{
+		D3DX9MathUpgrade::Install();
+
 		logger::info("Hooking BSImageSpace::Init::IBLF");
 		stl::detour_thunk<BSImageSpace_Init_IBLF>(REL::RelocationID(100480, 107198));
 
@@ -1152,6 +1170,15 @@ namespace Hooks
 
 		logger::info("Hooking BSGraphics::SetDirtyStates");
 		stl::detour_thunk<BSGraphics_SetDirtyStates>(REL::RelocationID(75580, 77386));
+
+		// CS_NO_PASS_PREFETCH=1: A/B escape hatch to run without the next-pass prefetch detour.
+		char noPassPrefetch[2] = {};
+		if (!(GetEnvironmentVariableA("CS_NO_PASS_PREFETCH", noPassPrefetch, sizeof(noPassPrefetch)) && noPassPrefetch[0] == '1')) {
+			logger::info("Hooking BSBatchRenderer::RenderPassImmediately (next-pass prefetch)");
+			stl::detour_thunk<BSBatchRenderer_RenderPassImmediately1>(REL::RelocationID(100854, 107644));
+		} else {
+			logger::info("BSBatchRenderer::RenderPassImmediately prefetch disabled via CS_NO_PASS_PREFETCH");
+		}
 
 		logger::info("Hooking BSGraphics::Renderer::InitD3D");
 		stl::write_thunk_call<BSGraphics_Renderer_Init_InitD3D>(REL::RelocationID(75595, 77226).address() + REL::Relocate(0x50, 0x2BC));

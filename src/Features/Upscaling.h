@@ -150,6 +150,17 @@ public:
 	[[nodiscard]] bool GetEffectiveReflex() const;
 
 	/** @brief Returns the monitor refresh rate in hertz. */
+	/// Lowest frame-rate target the divisor list will offer. A divisor that cannot reach this at
+	/// the current refresh rate is clamped in GetTargetFrameRate, so a setting saved against a
+	/// faster display cannot silently cap the game.
+	static constexpr int kMinTargetFps = 30;
+
+	/// Divisors the settings stepper offers at a given refresh rate, "Unlocked" (0) last.
+	static std::vector<int> FrameRateDivisorOptions(int a_refresh);
+	/// The divisor actually in force: the saved one if the refresh rate can support it, else the
+	/// fallback the stepper shows. Shared by the UI and GetTargetFrameRate so they cannot disagree.
+	static int ResolveFrameRateDivisor(int a_saved, int a_refresh);
+
 	[[nodiscard]] int GetMonitorRefreshRate() const;
 	/** @brief Highest refresh rate the display offers at its current resolution. */
 	[[nodiscard]] int GetHighestRefreshRate() const;
@@ -163,9 +174,6 @@ public:
 	[[nodiscard]] double GetRenderedFrameRateLimit() const;
 	/** @brief Returns the fixed DLSS-G multiplier clamped to the reported hardware limit. */
 	[[nodiscard]] uint32_t GetFixedDLSSGMultiplier() const;
-	/** @brief Applies the non-Reflex frame-rate limit through DXVK. */
-	void ApplyDxvkFrameRateLimit(double a_fps);
-
 	HRESULT PresentWithFrameGeneration(IDXGISwapChain* a_swapChain, UINT a_syncInterval, UINT a_flags,
 		const std::function<HRESULT(IDXGISwapChain*, UINT, UINT)>& a_present);
 

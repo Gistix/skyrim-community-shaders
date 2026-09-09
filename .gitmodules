@@ -8,4 +8,4 @@
 [submodule "extern/dxvk"]
 	path = extern/dxvk
 	url = https://github.com/community-shaders/dxvk.git
-	branch = native
+	branch = interop

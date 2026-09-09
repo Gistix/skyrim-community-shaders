@@ -1,5 +1,7 @@
 #include "FrameGenController.h"
 
+#include <cstdlib>
+
 #include "../HDRDisplay.h"
 #include "../Upscaling.h"
 #include "DXVKInterop.h"
@@ -86,9 +88,7 @@ namespace FrameGen
 		if (faultRecoveryRequested) {
 			if (!faultRecoveryRequested) {
 				auto* dxvk = DXVKInterop::GetSingleton();
-				const bool completionProven = (dxvk->HasPendingPresentWaitSemaphore() ?
-				                                      dxvk->DiscardPendingPresentWaitSemaphore() :
-				                                      dxvk->WaitDeviceIdle());
+				const bool completionProven = dxvk->WaitDeviceIdle();
 				if (!completionProven) {
 					// Once only: this re-enters every reconcile, and a fault that cannot prove
 					// completion would otherwise log on every frame for the rest of the session.
@@ -162,8 +162,24 @@ namespace FrameGen
 		// the switch itself into a bounded overlap. Depth zero blocks the render thread in
 		// waitForSubmission on every present; measured with FSR-FG that left the GPU idle 33% of the
 		// frame while the CPU was the limiter.
-		if (owner == Method::kFSR)
-			Streamline::PushDxvkPresentQueueDepth(2u);
+		//
+		// This needs the bounded middle regime specifically -- neither extreme of dxvkSetSyncPresent
+		// works. Fully synchronous wedges the swapchain recreate that installs the FFX wrap, and
+		// unrestricted wedges shortly after it; both present a black screen with a frozen log.
+		if (owner == Method::kFSR) {
+			// Depth is a pacing knob as well as a throughput one: it decides how far DXVK's
+			// presenter may run ahead of FFX's paced present. Overridable for sweeping.
+			static const uint32_t s_depth = [] {
+				char buf[8] = {};
+				if (GetEnvironmentVariableA("CS_FSRFG_QDEPTH", buf, sizeof(buf)) && buf[0]) {
+					const int v = std::atoi(buf);
+					if (v >= 1 && v <= 8)
+						return static_cast<uint32_t>(v);
+				}
+				return 2u;
+			}();
+			Streamline::PushDxvkPresentQueueDepth(s_depth);
+		}
 	}
 
 	bool Controller::StepModeTeardown(Method a_target)
@@ -251,21 +267,11 @@ namespace FrameGen
 			return;
 		}
 
-		// The two interpolators want opposite presentation behaviour, so choose per method rather
-		// than once for the session. Tear-free replaces a queued image instead of queueing it, which
-		// is what DLSS-G's flip metering needs and what destroys FSR-FG once FFX stops spacing its
-		// pair: the interpolated frame lands a fraction of a millisecond before the real one and is
-		// superseded before scanout. Measured on a 60 Hz display at a 20 fps cap, tear-free left
-		// FSR-FG at 10.5 fps against a 20 fps target with 48% of presents never displayed, where a
-		// queueing mode held 18.9; DLSS-G wanted the reverse, holding its target exactly under
-		// tear-free and losing 44% under the queueing mode.
-		//
-		// Presenter::pickPresentMode reads this at swapchain creation, so it has to be set before
-		// the recreate below -- which a method switch performs anyway, so no extra recreate is
-		// introduced by choosing here.
-		Streamline::PushDxvkTearingPreference(
-			wantFSRFG ? 2u : globals::features::upscaling.GetPresentModePreference());
-
+		// One rule for both methods, as in the Streamline sample: the present mode follows the
+		// sync interval, never the frame-generation method. Presenter::pickPresentMode reads this
+		// at swapchain creation, so it has to be set before the recreate below -- which a method
+		// switch performs anyway, so no extra recreate is introduced here.
+		Streamline::PushDxvkTearingPreference(globals::features::upscaling.GetPresentModePreference());
 		sl->SetDLSSGDesiredLoaded(wantDLSSG);
 		sl->SetFSRFGDesiredLoaded(wantFSRFG);
 		BeginPresenterRecreateTransition();
