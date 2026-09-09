@@ -2,8 +2,16 @@
 
 #include "Deferred.h"
 #include "Features/CloudShadows.h"
+#include "Features/ExponentialHeightFog.h"
+#include "Features/ExtendedMaterials.h"
+#include "Features/ExtendedTranslucency.h"
+#include "Features/HairSpecular.h"
+#include "Features/LinearLighting.h"
+#include "Features/LODBlending.h"
 #include "Features/PathTracing.h"
+#include "Features/Skin.h"
 #include "Features/Upscaling/DXVKInterop.h"
+#include "Features/WetnessEffects.h"
 #include "Globals.h"
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
@@ -72,9 +80,10 @@ bool Raytracing::IsPathTracing() const
 
 void Raytracing::UpdateSettings()
 {
-	if (creationEngineRaytracing && creationEngineRaytracing->UpdateSettings) {
-		creationEngineRaytracing->UpdateSettings(GetSettings());
-	}
+	if (!initialized)
+		return;
+
+	creationEngineRaytracing->UpdateSettings(GetSettings());
 }
 
 void Raytracing::Execute()
@@ -109,45 +118,7 @@ void Raytracing::Execute()
 	const bool debug = (Mode() == CreationEngineRaytracing::Mode::Debug);
 
 	if (pathtracing || debug) {
-		static bool loggedPointersOnce = false;
-		if (!loggedPointersOnce) {
-			loggedPointersOnce = true;
-			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-			auto depthStencils = renderer->GetDepthStencilData().depthStencils;
-			auto& mainDepth = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-			auto& mainDepthCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
-			auto& zPrePassCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
 
-			logger::info("[Raytracing] Execute Pointers Check:");
-			logger::info("  main.texture: {}, main.UAV: {}", static_cast<void*>(main.texture), static_cast<void*>(main.UAV));
-			logger::info("  mv.texture: {}, mv.UAV: {}", static_cast<void*>(mv.texture), static_cast<void*>(mv.UAV));
-			logger::info("  mainDepth.views[0]: {}, mainDepth.texture: {}", static_cast<void*>(mainDepth.views[0]), static_cast<void*>(mainDepth.texture));
-			logger::info("  mainDepthCopy.views[0]: {}, mainDepthCopy.texture: {}", static_cast<void*>(mainDepthCopy.views[0]), static_cast<void*>(mainDepthCopy.texture));
-			logger::info("  zPrePassCopy.views[0]: {}, zPrePassCopy.texture: {}", static_cast<void*>(zPrePassCopy.views[0]), static_cast<void*>(zPrePassCopy.texture));
-			logger::info("  sharedMainTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedMainTextures[completedSlot].srv.get()));
-			logger::info("  sharedMotionVectorTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedMotionVectorTextures[completedSlot].srv.get()));
-			logger::info("  sharedDepthTextures[{}].srv: {}", completedSlot, static_cast<void*>(sharedDepthTextures[completedSlot].srv.get()));
-			logger::info("  ptCompositeCS: {}, copyDepthVS: {}, copyDepthPS: {}", static_cast<void*>(ptCompositeCS.get()), static_cast<void*>(copyDepthVS.get()), static_cast<void*>(copyDepthPS.get()));
-			D3D11_TEXTURE2D_DESC mainDesc{}, mvDesc{};
-			if (main.texture) main.texture->GetDesc(&mainDesc);
-			if (mv.texture) mv.texture->GetDesc(&mvDesc);
-
-			D3D11_UNORDERED_ACCESS_VIEW_DESC mainUavDesc{}, mvUavDesc{};
-			if (main.UAV) main.UAV->GetDesc(&mainUavDesc);
-			if (mv.UAV) mv.UAV->GetDesc(&mvUavDesc);
-
-			D3D11_SHADER_RESOURCE_VIEW_DESC mainSrvDesc{}, mvSrvDesc{}, depthSrvDesc{};
-			if (sharedMainTextures[completedSlot].srv) sharedMainTextures[completedSlot].srv->GetDesc(&mainSrvDesc);
-			if (sharedMotionVectorTextures[completedSlot].srv) sharedMotionVectorTextures[completedSlot].srv->GetDesc(&mvSrvDesc);
-			if (sharedDepthTextures[completedSlot].srv) sharedDepthTextures[completedSlot].srv->GetDesc(&depthSrvDesc);
-
-			logger::info("[Raytracing] Formats Check:");
-			logger::info("  main.texture format: {}, main.UAV format: {}", (int)mainDesc.Format, (int)mainUavDesc.Format);
-			logger::info("  mv.texture format: {}, mv.UAV format: {}", (int)mvDesc.Format, (int)mvUavDesc.Format);
-			logger::info("  sharedMain SRV format: {}", (int)mainSrvDesc.Format);
-			logger::info("  sharedMV SRV format: {}", (int)mvSrvDesc.Format);
-			logger::info("  sharedDepth SRV format: {}", (int)depthSrvDesc.Format);
-		}
 
 		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
 		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
@@ -297,9 +268,6 @@ bool Raytracing::InitializeCERaytracing()
 	if (forcedDisabled || initialized)
 		return false;
 
-	if (!creationEngineRaytracing || !creationEngineRaytracing->handle)
-		return false;
-
 	auto* dxvk = DXVKInterop::GetSingleton();
 	if (dxvk && (dxvk->IsAvailable() || dxvk->Initialize())) {
 		VkQueue graphicsQueue = dxvk->GetQueue();
@@ -340,7 +308,7 @@ bool Raytracing::InitializeCERaytracing()
 
 bool Raytracing::UpdateResolution()
 {
-	if (!globals::game::graphicsState || !creationEngineRaytracing || !creationEngineRaytracing->SetResolution)
+	if (!globals::game::graphicsState)
 		return false;
 
 	uint2 resolution{
@@ -368,6 +336,9 @@ void Raytracing::SetupResources()
 		return;
 
 	creationEngineRaytracing->Initialize(GetSettings());
+
+	if (!featureData)
+		featureData = std::make_unique<CreationEngineRaytracing::FeatureData>();
 
 	auto* device = globals::d3d::device;
 	if (!screenCB)
@@ -467,8 +438,6 @@ void Raytracing::SetupSkyHemisphere()
 		waterReflections->cubeMapSides[i] = RE::TESWaterReflections::CubeMapSide(i, 0.0f);
 	}
 
-	logger::info("SetSkyHemisphere");
-
 	creationEngineRaytracing->SetSkyHemisphere(skyHemisphere.get());
 }
 
@@ -504,8 +473,6 @@ void Raytracing::SetupWaterFlowMap()
 	rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
 	rtvDesc.Texture2D.MipSlice = 0;
 	DX::ThrowIfFailed(device->CreateRenderTargetView(waterFlowMap.get(), &rtvDesc, waterFlowMapRTV.put()));
-
-	logger::info("SetWaterFlowMap");
 
 	creationEngineRaytracing->SetWaterFlowMap(waterFlowMap.get());
 }
@@ -569,21 +536,17 @@ void Raytracing::SetupSharedTextures()
 	auto* gnmaoTex = renderer->GetRuntimeData().renderTargets[MASKS2].texture;
 
 	if (!albedoTex || !gnmaoTex) {
-		logger::warn("SetSharedTextures: GBuffer render targets not ready (albedo: {}, gnmao: {})", albedoTex != nullptr, gnmaoTex != nullptr);
 		return;
 	}
 
-	logger::info("SetSharedTextures");
-
 	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTexture.get(), gnmaoTex);
 
-	if (creationEngineRaytracing->GetSharedTextures) {
-		CreationEngineRaytracing::SharedTexture depth[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-		CreationEngineRaytracing::SharedTexture motionVector[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-		CreationEngineRaytracing::SharedTexture main[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-		creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
+	CreationEngineRaytracing::SharedTexture depth[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	CreationEngineRaytracing::SharedTexture motionVector[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	CreationEngineRaytracing::SharedTexture main[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
 
-		auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
+	auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
 			wrapper.texture = st;
 			wrapper.srv = nullptr;
 			if (st.shared) {
@@ -604,15 +567,7 @@ void Raytracing::SetupSharedTextures()
 			setupSharedWrapper(sharedDepthTextures[i], depth[i]);
 			setupSharedWrapper(sharedMotionVectorTextures[i], motionVector[i]);
 			setupSharedWrapper(sharedMainTextures[i], main[i]);
-
-			logger::info("[Raytracing] SharedTexture[{}]: Depth native={}, shared={}, srv={}",
-				i, static_cast<void*>(depth[i].native), static_cast<void*>(depth[i].shared), static_cast<void*>(sharedDepthTextures[i].srv.get()));
-			logger::info("[Raytracing] SharedTexture[{}]: MotionVector native={}, shared={}, srv={}",
-				i, static_cast<void*>(motionVector[i].native), static_cast<void*>(motionVector[i].shared), static_cast<void*>(sharedMotionVectorTextures[i].srv.get()));
-			logger::info("[Raytracing] SharedTexture[{}]: Main native={}, shared={}, srv={}",
-				i, static_cast<void*>(main[i].native), static_cast<void*>(main[i].shared), static_cast<void*>(sharedMainTextures[i].srv.get()));
 		}
-	}
 }
 
 void Raytracing::CompileShaders()
@@ -755,4 +710,209 @@ void Raytracing::DrawSettings()
 	if (ceRTSettingsBefore != GetSettings()) {
 		UpdateSettings();
 	}
+}
+
+void Raytracing::UpdateFeatureData()
+{
+	if (!initialized)
+		return;
+
+	if (!featureData)
+		featureData = std::make_unique<CreationEngineRaytracing::FeatureData>();
+
+	std::memset(featureData.get(), 0, sizeof(CreationEngineRaytracing::FeatureData));
+
+	auto wetnessEffect = globals::features::wetnessEffects.GetCommonBufferData();
+	auto linearLighting = globals::features::linearLighting.GetCommonBufferData();
+	auto skinData = globals::features::skin.GetCommonBufferData();
+
+	// Extended Material
+	{
+		const auto& em = globals::features::extendedMaterials.settings;
+		featureData->ExtendedMaterial.EnableComplexMaterial = em.EnableComplexMaterial;
+		featureData->ExtendedMaterial.EnableParallax = em.EnableParallax;
+		featureData->ExtendedMaterial.EnableTerrainParallax = em.EnableTerrain;
+		featureData->ExtendedMaterial.EnableHeightBlending = em.EnableHeightBlending;
+		featureData->ExtendedMaterial.EnableShadows = em.EnableShadows;
+		featureData->ExtendedMaterial.ExtendShadows = FALSE;
+		featureData->ExtendedMaterial.EnableParallaxWarpingFix = em.EnableParallaxWarpingFix;
+		featureData->ExtendedMaterial.pad0 = 0;
+	}
+
+	// Wetness Effects
+	{
+		std::memcpy(&featureData->WetnessEffects.OcclusionViewProj, &wetnessEffect.OcclusionViewProj, sizeof(featureData->WetnessEffects.OcclusionViewProj));
+		featureData->WetnessEffects.Time = wetnessEffect.Time;
+		featureData->WetnessEffects.Raining = wetnessEffect.Raining;
+		featureData->WetnessEffects.Wetness = wetnessEffect.Wetness;
+		featureData->WetnessEffects.PuddleWetness = wetnessEffect.PuddleWetness;
+
+		const auto& weSettings = wetnessEffect.settings;
+		featureData->WetnessEffects.EnableWetnessEffects = weSettings.EnableWetnessEffects;
+		featureData->WetnessEffects.MaxRainWetness = weSettings.MaxRainWetness;
+		featureData->WetnessEffects.MaxPuddleWetness = weSettings.MaxPuddleWetness;
+		featureData->WetnessEffects.MaxShoreWetness = weSettings.MaxShoreWetness;
+		featureData->WetnessEffects.ShoreRange = weSettings.ShoreRange;
+		featureData->WetnessEffects.PuddleRadius = weSettings.PuddleRadius;
+		featureData->WetnessEffects.PuddleMaxAngle = weSettings.PuddleMaxAngle;
+		featureData->WetnessEffects.PuddleMinWetness = weSettings.PuddleMinWetness;
+		featureData->WetnessEffects.MinRainWetness = weSettings.MinRainWetness;
+		featureData->WetnessEffects.SkinWetness = weSettings.SkinWetness;
+		featureData->WetnessEffects.WeatherTransitionSpeed = weSettings.WeatherTransitionSpeed;
+		featureData->WetnessEffects.EnableRaindropFx = weSettings.EnableRaindropFx;
+		featureData->WetnessEffects.EnableSplashes = weSettings.EnableSplashes;
+		featureData->WetnessEffects.EnableRipples = weSettings.EnableRipples;
+		featureData->WetnessEffects.EnableVanillaRipples = weSettings.EnableVanillaRipples;
+		featureData->WetnessEffects.RaindropFxRange = weSettings.RaindropFxRange;
+		featureData->WetnessEffects.RaindropGridSizeRcp = weSettings.RaindropGridSize;
+		featureData->WetnessEffects.RaindropIntervalRcp = weSettings.RaindropInterval;
+		featureData->WetnessEffects.RaindropChance = weSettings.RaindropChance;
+		featureData->WetnessEffects.SplashesLifetime = weSettings.SplashesLifetime;
+		featureData->WetnessEffects.SplashesStrength = weSettings.SplashesStrength;
+		featureData->WetnessEffects.SplashesMinRadius = weSettings.SplashesMinRadius;
+		featureData->WetnessEffects.SplashesMaxRadius = weSettings.SplashesMaxRadius;
+		featureData->WetnessEffects.RippleStrength = weSettings.RippleStrength;
+		featureData->WetnessEffects.RippleRadius = weSettings.RippleRadius;
+		featureData->WetnessEffects.RippleBreadth = weSettings.RippleBreadth;
+		featureData->WetnessEffects.RippleLifetimeRcp = weSettings.RippleLifetime;
+		featureData->WetnessEffects.pad0 = 0.0f;
+	}
+
+	// Cloud Shadows
+	{
+		featureData->CloudShadows.Opacity = globals::features::cloudShadows.settings.Opacity;
+		featureData->CloudShadows.pad0 = { 0.0f, 0.0f, 0.0f };
+	}
+
+	// Hair Specular
+	{
+		const auto& hs = globals::features::hairSpecular.settings;
+		featureData->HairSpecular.Enabled = hs.Enabled;
+		featureData->HairSpecular.HairGlossiness = hs.HairGlossiness;
+		featureData->HairSpecular.SpecularMult = hs.SpecularMult;
+		featureData->HairSpecular.DiffuseMult = hs.DiffuseMult;
+		featureData->HairSpecular.EnableTangentShift = hs.EnableTangentShift;
+		featureData->HairSpecular.PrimaryTangentShift = hs.PrimaryTangentShift;
+		featureData->HairSpecular.SecondaryTangentShift = hs.SecondaryTangentShift;
+		featureData->HairSpecular.HairSaturation = hs.HairSaturation;
+		featureData->HairSpecular.SpecularIndirectMult = hs.SpecularIndirectMult;
+		featureData->HairSpecular.DiffuseIndirectMult = hs.DiffuseIndirectMult;
+		featureData->HairSpecular.BaseColorMult = hs.BaseColorMult;
+		featureData->HairSpecular.Transmission = hs.Transmission;
+		featureData->HairSpecular.EnableSelfShadow = hs.EnableSelfShadow;
+		featureData->HairSpecular.SelfShadowStrength = hs.SelfShadowStrength;
+		featureData->HairSpecular.SelfShadowExponent = hs.SelfShadowExponent;
+		featureData->HairSpecular.SelfShadowScale = hs.SelfShadowScale;
+		featureData->HairSpecular.HairMode = hs.HairMode;
+		featureData->HairSpecular.pad1 = 0;
+		featureData->HairSpecular.pad2 = 0;
+		featureData->HairSpecular.pad3 = 0;
+	}
+
+	// Extended Translucency
+	{
+		const auto& et = globals::features::extendedTranslucency.GetCommonBufferData();
+		featureData->ExtendedTranslucency.MaterialModel = et.AlphaMode;
+		featureData->ExtendedTranslucency.Reduction = et.AlphaReduction;
+		featureData->ExtendedTranslucency.Softness = et.AlphaSoftness;
+		featureData->ExtendedTranslucency.Strength = et.AlphaStrength;
+	}
+
+	// Linear Lighting
+	{
+		featureData->LinearLighting.enableLinearLighting = linearLighting.enableLinearLighting;
+		featureData->LinearLighting.isDirLightLinear = linearLighting.isDirLightLinear;
+		featureData->LinearLighting.dirLightMult = linearLighting.dirLightMult;
+		featureData->LinearLighting.lightGamma = linearLighting.lightGamma;
+		featureData->LinearLighting.colorGamma = linearLighting.colorGamma;
+		featureData->LinearLighting.emitColorGamma = linearLighting.emitColorGamma;
+		featureData->LinearLighting.glowmapGamma = linearLighting.glowmapGamma;
+		featureData->LinearLighting.ambientGamma = linearLighting.ambientGamma;
+		featureData->LinearLighting.fogGamma = linearLighting.fogGamma;
+		featureData->LinearLighting.fogAlphaGamma = linearLighting.fogAlphaGamma;
+		featureData->LinearLighting.effectGamma = linearLighting.effectGamma;
+		featureData->LinearLighting.effectAlphaGamma = linearLighting.effectAlphaGamma;
+		featureData->LinearLighting.skyGamma = linearLighting.skyGamma;
+		featureData->LinearLighting.waterGamma = linearLighting.waterGamma;
+		featureData->LinearLighting.vlGamma = linearLighting.vlGamma;
+		featureData->LinearLighting.vanillaDiffuseColorMult = linearLighting.vanillaDiffuseColorMult;
+		featureData->LinearLighting.directionalLightMult = linearLighting.directionalLightMult;
+		featureData->LinearLighting.pointLightMult = linearLighting.pointLightMult;
+		featureData->LinearLighting.ambientMult = linearLighting.ambientMult;
+		featureData->LinearLighting.emitColorMult = linearLighting.emitColorMult;
+		featureData->LinearLighting.glowmapMult = linearLighting.glowmapMult;
+		featureData->LinearLighting.effectLightingMult = linearLighting.effectLightingMult;
+		featureData->LinearLighting.membraneEffectMult = linearLighting.membraneEffectMult;
+		featureData->LinearLighting.bloodEffectMult = linearLighting.bloodEffectMult;
+		featureData->LinearLighting.projectedEffectMult = linearLighting.projectedEffectMult;
+		featureData->LinearLighting.deferredEffectMult = linearLighting.deferredEffectMult;
+		featureData->LinearLighting.otherEffectMult = linearLighting.otherEffectMult;
+		featureData->LinearLighting.pad0 = 0;
+	}
+
+	// Exponential Height Fog
+	{
+		const auto& ehf = globals::features::exponentialHeightFog.settings;
+		featureData->ExponentialHeightFog.enabled = ehf.enabled;
+		featureData->ExponentialHeightFog.useDynamicCubemaps = ehf.useDynamicCubemaps;
+		featureData->ExponentialHeightFog.startDistance = ehf.startDistance;
+		featureData->ExponentialHeightFog.fogHeight = ehf.fogHeight;
+		featureData->ExponentialHeightFog.fogHeightFalloff = ehf.fogHeightFalloff;
+		featureData->ExponentialHeightFog.fogDensity = ehf.fogDensity;
+		featureData->ExponentialHeightFog.directionalInscatteringMultiplier = ehf.directionalInscatteringMultiplier;
+		featureData->ExponentialHeightFog.directionalInscatteringAnisotropy = ehf.directionalInscatteringAnisotropy;
+		featureData->ExponentialHeightFog.inscatteringTint = ehf.inscatteringTint;
+		featureData->ExponentialHeightFog.cubemapMipLevel = ehf.cubemapMipLevel;
+		featureData->ExponentialHeightFog.sunlightAttenuationAmount = ehf.sunlightAttenuationAmount;
+		featureData->ExponentialHeightFog.respectVanillaFogFade = ehf.respectVanillaFogFade;
+		featureData->ExponentialHeightFog.disableVanillaFog = ehf.disableVanillaFog;
+		featureData->ExponentialHeightFog.fogInscatteringColor = ehf.fogInscatteringColor;
+		featureData->ExponentialHeightFog.originalFogColorAmount = ehf.originalFogColorAmount;
+		featureData->ExponentialHeightFog.volumetricFogEnabled = ehf.volumetricFogEnabled;
+		featureData->ExponentialHeightFog.volumetricGridPixelSize = ehf.volumetricGridPixelSize;
+		featureData->ExponentialHeightFog.volumetricGridSizeZ = ehf.volumetricGridSizeZ;
+		featureData->ExponentialHeightFog.volumetricFogDistance = ehf.volumetricFogDistance;
+		featureData->ExponentialHeightFog.volumetricFogStartDistance = ehf.volumetricFogStartDistance;
+		featureData->ExponentialHeightFog.volumetricFogNearFadeInDistance = ehf.volumetricFogNearFadeInDistance;
+		featureData->ExponentialHeightFog.volumetricFogExtinctionScale = ehf.volumetricFogExtinctionScale;
+		featureData->ExponentialHeightFog.volumetricFogAlbedo = ehf.volumetricFogAlbedo;
+		featureData->ExponentialHeightFog.volumetricFogEmissive = ehf.volumetricFogEmissive;
+		featureData->ExponentialHeightFog.volumetricDirectionalScatteringIntensity = ehf.volumetricDirectionalScatteringIntensity;
+		featureData->ExponentialHeightFog.volumetricShadowBias = ehf.volumetricShadowBias;
+		featureData->ExponentialHeightFog.volumetricDepthDistributionScale = ehf.volumetricDepthDistributionScale;
+		featureData->ExponentialHeightFog.volumetricSkyLightingIntensity = ehf.volumetricSkyLightingIntensity;
+		featureData->ExponentialHeightFog.volumetricFogScatteringDistribution = ehf.volumetricFogScatteringDistribution;
+		featureData->ExponentialHeightFog.volumetricHistoryWeight = ehf.volumetricHistoryWeight;
+		featureData->ExponentialHeightFog.volumetricHistoryMissSampleCount = ehf.volumetricHistoryMissSampleCount;
+		featureData->ExponentialHeightFog.volumetricSampleJitterMultiplier = ehf.volumetricSampleJitterMultiplier;
+		featureData->ExponentialHeightFog.volumetricUpsampleJitterMultiplier = ehf.volumetricUpsampleJitterMultiplier;
+		featureData->ExponentialHeightFog.volumetricLocalLightScatteringIntensity = ehf.volumetricLocalLightScatteringIntensity;
+		featureData->ExponentialHeightFog.pad0 = ehf.pad0;
+	}
+
+	// LOD Blending
+	{
+		const auto& lod = globals::features::lodBlending.settings;
+		featureData->LODBlending.LODTerrainBrightness = lod.LODTerrainBrightness;
+		featureData->LODBlending.LODObjectBrightness = lod.LODObjectBrightness;
+		featureData->LODBlending.LODObjectSnowBrightness = lod.LODObjectSnowBrightness;
+		featureData->LODBlending.DisableTerrainVertexColors = lod.DisableTerrainVertexColors;
+		featureData->LODBlending.LODTerrainGamma = lod.LODTerrainGamma;
+		featureData->LODBlending.LODObjectGamma = lod.LODObjectGamma;
+		featureData->LODBlending.LODObjectSnowGamma = lod.LODObjectSnowGamma;
+		featureData->LODBlending.pad = lod.pad;
+	}
+
+	// Skin
+	{
+		featureData->Skin.skinParams = skinData.skinParams;
+		featureData->Skin.skinParams2 = skinData.skinParams2;
+		featureData->Skin.skinDetailParams = skinData.skinDetailParams;
+		featureData->Skin.sssParams = skinData.sssParams;
+		featureData->Skin.fuzzParams = skinData.fuzzParams;
+		featureData->Skin.physicalParams = skinData.physicalParams;
+		featureData->Skin.wetParams = skinData.wetParams;
+	}
+
+	creationEngineRaytracing->UpdateFeatureData(featureData.get(), sizeof(CreationEngineRaytracing::FeatureData));
 }

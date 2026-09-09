@@ -146,6 +146,10 @@ public:
 	winrt::com_ptr<ID3D11RasterizerState> copyRasterizerState = nullptr;
 	winrt::com_ptr<ID3D11DepthStencilState> depthStencilState = nullptr;
 
+	void UpdateFeatureData();
+
+	std::unique_ptr<CreationEngineRaytracing::FeatureData> featureData = nullptr;
+
 	struct Hooks
 	{
 		struct Main_RenderWorld
@@ -154,6 +158,7 @@ public:
 			{
 				auto& rt = globals::features::raytracing;
 				if (rt.Available() && rt.Mode() != CreationEngineRaytracing::Mode::None) {
+					rt.UpdateFeatureData();
 					rt.SkyCubeToHemi();
 					rt.creationEngineRaytracing->UpdateCamera();
 				}
