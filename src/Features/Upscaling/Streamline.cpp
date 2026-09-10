@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <unordered_set>
 
@@ -23,6 +24,7 @@
 #include <sl_core_api.h>
 #include <sl_device_wrappers.h>
 #include <sl_dlss.h>
+#include <sl_dlss_d.h>
 #include <sl_dlss_g.h>
 #include <sl_fsr.h>
 #include <sl_fsr_g.h>
@@ -50,6 +52,7 @@ namespace
 
 		PFun_slDLSSGetOptimalSettings* slDLSSGetOptimalSettings = nullptr;
 		PFun_slDLSSSetOptions* slDLSSSetOptions = nullptr;
+		PFun_slDLSSDSetOptions* slDLSSDSetOptions = nullptr;
 		PFun_slReflexSetOptions* slReflexSetOptions = nullptr;
 		PFun_slReflexSleep* slReflexSleep = nullptr;
 		PFun_slPCLSetMarker* slPCLSetMarker = nullptr;
@@ -437,7 +440,7 @@ bool Streamline::Initialize()
 	// The controller keeps at most one frame-generation feature loaded at runtime.
 	dlssgHardware = ProbeDLSSGHardware();
 
-	std::vector<sl::Feature> featuresToLoad = { sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL,
+	std::vector<sl::Feature> featuresToLoad = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR, sl::kFeatureReflex, sl::kFeaturePCL,
 		sl::kFeatureFSR, sl::kFeatureFSR_G, sl::kFeatureXeSS };
 	if (dlssgHardware)
 		featuresToLoad.push_back(sl::kFeatureDLSS_G);
@@ -502,11 +505,16 @@ void Streamline::SetVulkanDevice()
 	featureXeSS = supported(sl::kFeatureXeSS);
 	featureFSR = supported(sl::kFeatureFSR);
 	featureFSRFG = supported(sl::kFeatureFSR_G);
+	featureDLSSRR = supported(sl::kFeatureDLSS_RR);
 
 	if (featureDLSS) {
 		g_sl.slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", reinterpret_cast<void*&>(g_sl.slDLSSGetOptimalSettings));
 		g_sl.slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", reinterpret_cast<void*&>(g_sl.slDLSSSetOptions));
 		featureDLSS = g_sl.slDLSSSetOptions != nullptr;
+	}
+	if (featureDLSSRR) {
+		g_sl.slGetFeatureFunction(sl::kFeatureDLSS_RR, "slDLSSDSetOptions", reinterpret_cast<void*&>(g_sl.slDLSSDSetOptions));
+		featureDLSSRR = g_sl.slDLSSDSetOptions != nullptr;
 	}
 	if (featureReflex) {
 		g_sl.slGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions", reinterpret_cast<void*&>(g_sl.slReflexSetOptions));
@@ -1191,11 +1199,20 @@ static bool cs_CanReleaseFailedFSRFrame(DXVKInterop* a_dxvk,
 	return false;
 }
 
+	struct DLSSDResources
+	{
+		ID3D11Resource* diffuseAlbedo = nullptr;
+		ID3D11Resource* specularAlbedo = nullptr;
+		ID3D11Resource* normalRoughness = nullptr;
+		ID3D11Resource* specularHitDistance = nullptr;
+	};
+
 static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::ViewportHandle& a_viewport,
 	ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut, ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
 	uint32_t a_renderWidth, uint32_t a_renderHeight, uint32_t a_outputWidth, uint32_t a_outputHeight,
 	float a_jitterX, float a_jitterY, ID3D11Resource* a_hudlessColor = nullptr,
-	bool* a_outputReady = nullptr, bool* a_skipped = nullptr)
+	bool* a_outputReady = nullptr, bool* a_skipped = nullptr,
+	const DLSSDResources* a_rrInputs = nullptr)
 {
 	if (a_outputReady)
 		*a_outputReady = false;
@@ -1262,11 +1279,19 @@ static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::Viewpo
 	auto vkDestroyImageView = reinterpret_cast<PFN_vkDestroyImageView>(destroyProcAttempt.function);
 	if (!vkCreateImageView || !vkDestroyImageView)
 		return sl::Result::eErrorNotInitialized;
+	const bool haveRR = (a_feature == sl::kFeatureDLSS_RR && a_rrInputs &&
+		a_rrInputs->diffuseAlbedo && a_rrInputs->specularAlbedo &&
+		a_rrInputs->normalRoughness && a_rrInputs->specularHitDistance);
+
 	ID3D11Resource* resources[] = {
-		a_colorIn, a_colorOut, a_depth, a_motionVectors, a_hudlessColor
+		a_colorIn, a_colorOut, a_depth, a_motionVectors, a_hudlessColor,
+		haveRR ? a_rrInputs->diffuseAlbedo : nullptr,
+		haveRR ? a_rrInputs->specularAlbedo : nullptr,
+		haveRR ? a_rrInputs->normalRoughness : nullptr,
+		haveRR ? a_rrInputs->specularHitDistance : nullptr
 	};
-	VkImageView views[5] = {};
-	sl::SubresourceRange subresources[5]{};
+	VkImageView views[9] = {};
+	sl::SubresourceRange subresources[9]{};
 	int nv = 0;
 	int nr = 0;
 	bool viewCreationTerminalFault = false;
@@ -1288,6 +1313,7 @@ static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::Viewpo
 	const bool haveColor = (a_colorIn && a_colorOut);
 	const bool haveHudless = (a_hudlessColor != nullptr);
 	sl::Resource colorInRes{}, colorOutRes{}, depthRes{}, mvecRes{}, hudlessRes{};
+	sl::Resource diffuseAlbedoRes{}, specularAlbedoRes{}, normalRoughnessRes{}, specHitDistRes{};
 	bool ok = wrap(a_depth, depthRes) &&
 	          wrap(a_motionVectors, mvecRes);
 	if (ok && haveColor)
@@ -1295,6 +1321,11 @@ static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::Viewpo
 		     wrap(a_colorOut, colorOutRes);
 	if (ok && haveHudless)
 		ok = wrap(a_hudlessColor, hudlessRes);
+	if (ok && haveRR)
+		ok = wrap(a_rrInputs->diffuseAlbedo, diffuseAlbedoRes) &&
+		     wrap(a_rrInputs->specularAlbedo, specularAlbedoRes) &&
+		     wrap(a_rrInputs->normalRoughness, normalRoughnessRes) &&
+		     wrap(a_rrInputs->specularHitDistance, specHitDistRes);
 	if (!ok) {
 		if (viewCreationTerminalFault) {
 			// The destroy entry point already faulted on these handles; calling it again would fault
@@ -1309,7 +1340,7 @@ static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::Viewpo
 
 	sl::Extent renderExtent{ 0, 0, a_renderWidth, a_renderHeight };
 	sl::Extent outputExtent{ 0, 0, a_outputWidth, a_outputHeight };
-	sl::ResourceTag tags[5];
+	sl::ResourceTag tags[9];
 	uint32_t nt = 0;
 	if (haveColor) {
 		tags[nt++] = sl::ResourceTag{ &colorInRes, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &renderExtent };
@@ -1321,6 +1352,12 @@ static sl::Result cs_EvaluateFeatureCore(sl::Feature a_feature, const sl::Viewpo
 	tags[nt++] = sl::ResourceTag{ &mvecRes, sl::kBufferTypeMotionVectors, inputLifecycle, &renderExtent };
 	if (haveHudless)
 		tags[nt++] = sl::ResourceTag{ &hudlessRes, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eOnlyValidNow, &outputExtent };
+	if (haveRR) {
+		tags[nt++] = sl::ResourceTag{ &diffuseAlbedoRes, sl::kBufferTypeAlbedo, inputLifecycle, &renderExtent };
+		tags[nt++] = sl::ResourceTag{ &specularAlbedoRes, sl::kBufferTypeSpecularAlbedo, inputLifecycle, &renderExtent };
+		tags[nt++] = sl::ResourceTag{ &normalRoughnessRes, sl::kBufferTypeNormalRoughness, inputLifecycle, &renderExtent };
+		tags[nt++] = sl::ResourceTag{ &specHitDistRes, sl::kBufferTypeSpecularHitDistance, inputLifecycle, &renderExtent };
+	}
 
 	sl::Result evalRes = sl::Result::eErrorNotInitialized;
 	auto transaction = dxvk->BeginFrameCommandBuffer();
@@ -1500,6 +1537,106 @@ Streamline::EvaluationResult Streamline::EvaluateDLSS(ID3D11Resource* a_colorIn,
 		s_loggedRes = evalRes;
 		s_loggedDims = dims;
 		logger::info("[Streamline] DLSS evaluate result={} render={}x{} output={}x{}",
+			static_cast<int>(evalRes), a_renderWidth, a_renderHeight, a_outputWidth, a_outputHeight);
+	}
+	return result;
+}
+
+Streamline::EvaluationResult Streamline::EvaluateDLSSD(ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
+	ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
+	ID3D11Resource* a_diffuseAlbedo, ID3D11Resource* a_specularAlbedo,
+	ID3D11Resource* a_normalRoughness, ID3D11Resource* a_specularHitDistance,
+	uint32_t a_renderWidth, uint32_t a_renderHeight,
+	uint32_t a_outputWidth, uint32_t a_outputHeight,
+	uint32_t a_qualityMode, uint32_t a_preset,
+	float a_jitterX, float a_jitterY)
+{
+	bool outputReady = false;
+	bool evaluationSkipped = false;
+	EvaluationResult result = EvaluationResult::kFailed;
+	if (!initialized || !featureDLSSRR || !g_sl.slDLSSDSetOptions)
+		return result;
+	if (!a_colorIn || !a_colorOut || !a_depth || !a_motionVectors ||
+		!a_diffuseAlbedo || !a_specularAlbedo || !a_normalRoughness || !a_specularHitDistance)
+		return result;
+
+	auto* dxvk = DXVKInterop::GetSingleton();
+	if (!dxvk->CommandResourcesReady())
+		return result;
+
+	sl::DLSSDOptions options{};
+	switch (a_qualityMode) {
+	case 0:
+		options.mode = sl::DLSSMode::eDLAA;
+		break;
+	case 1:
+		options.mode = sl::DLSSMode::eMaxQuality;
+		break;
+	case 2:
+		options.mode = sl::DLSSMode::eBalanced;
+		break;
+	case 3:
+		options.mode = sl::DLSSMode::eMaxPerformance;
+		break;
+	case 4:
+		options.mode = sl::DLSSMode::eUltraPerformance;
+		break;
+	default:
+		options.mode = sl::DLSSMode::eMaxQuality;
+		break;
+	}
+	options.outputWidth = a_outputWidth;
+	options.outputHeight = a_outputHeight;
+	options.colorBuffersHDR = sl::Boolean::eTrue;
+	options.preExposure = 1.0f;
+	options.sharpness = 0.0f;
+	options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+	options.alphaUpscalingEnabled = sl::Boolean::eFalse;
+
+	std::optional<sl::DLSSDPreset> customPreset;
+	switch (a_preset) {
+	case 1:
+		customPreset = sl::DLSSDPreset::ePresetD;
+		break;
+	case 2:
+		customPreset = sl::DLSSDPreset::ePresetE;
+		break;
+	case 3:
+		customPreset = sl::DLSSDPreset::ePresetF;
+		break;
+	default:
+		break;
+	}
+
+	if (customPreset.has_value()) {
+		options.dlaaPreset = *customPreset;
+		options.ultraQualityPreset = *customPreset;
+		options.qualityPreset = *customPreset;
+		options.balancedPreset = *customPreset;
+		options.performancePreset = *customPreset;
+		options.ultraPerformancePreset = *customPreset;
+	}
+
+	const sl::Result optionsResult = g_sl.slDLSSDSetOptions(g_sl.viewport, options);
+	if (optionsResult != sl::Result::eOk) {
+		logger::error("[Streamline] DLSS RR options failed (result {})", static_cast<int>(optionsResult));
+		return result;
+	}
+
+	DLSSDResources rrInputs{ a_diffuseAlbedo, a_specularAlbedo, a_normalRoughness, a_specularHitDistance };
+	const sl::Result evalRes = cs_EvaluateFeatureCore(sl::kFeatureDLSS_RR, g_sl.viewport,
+		a_colorIn, a_colorOut, a_depth, a_motionVectors,
+		a_renderWidth, a_renderHeight, a_outputWidth, a_outputHeight, a_jitterX, a_jitterY,
+		nullptr, &outputReady, &evaluationSkipped, &rrInputs);
+	result = cs_ClassifyEvaluation(evalRes, outputReady, evaluationSkipped);
+
+	static sl::Result s_loggedRes = sl::Result::eErrorNotInitialized;
+	static uint32_t s_loggedDims = 0;
+	const uint32_t dims = (a_renderWidth << 16) | (a_outputWidth & 0xFFFF);
+	if (evalRes != s_loggedRes || dims != s_loggedDims) {
+		s_loggedRes = evalRes;
+		s_loggedDims = dims;
+		logger::info("[Streamline] DLSS RR evaluate result={} render={}x{} output={}x{}",
 			static_cast<int>(evalRes), a_renderWidth, a_renderHeight, a_outputWidth, a_outputHeight);
 	}
 	return result;

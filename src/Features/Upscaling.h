@@ -40,6 +40,7 @@ public:
 		kFSR,
 		kDLSS,
 		kXeSS,
+		kDLSS_RR,
 	};
 
 	enum class FrameGenMethod
@@ -54,6 +55,8 @@ public:
 		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kFSR;
 		uint qualityMode = 1;
 		float sharpnessFSR = 0.0f;
+		// DLSS Ray Reconstruction model preset: 0=Default, 1=D, 2=E, 3=F.
+		uint presetDLSSRR = 0;
 		bool reflexEnabled = false;
 		bool reflexBoost = false;
 		// Legacy fields kept for JSON backward compatibility.

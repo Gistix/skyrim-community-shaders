@@ -27,6 +27,7 @@ public:
 	void MarkUnavailable() { unavailable = true; }
 	[[nodiscard]] bool IsUnavailable() const { return unavailable; }
 	[[nodiscard]] bool IsDLSSSupported() const { return featureDLSS; }
+	[[nodiscard]] bool IsDLSSRRSupported() const { return featureDLSSRR; }
 	[[nodiscard]] bool IsReflexSupported() const { return featureReflex; }
 	[[nodiscard]] bool IsDLSSGSupported() const { return featureDLSSG; }
 	[[nodiscard]] bool IsXeSSSupported() const { return featureXeSS; }
@@ -48,6 +49,16 @@ public:
 		uint32_t a_renderWidth, uint32_t a_renderHeight,
 		uint32_t a_outputWidth, uint32_t a_outputHeight,
 		uint32_t a_qualityMode,
+		float a_jitterX, float a_jitterY);
+
+	/** @brief Denoises and upscales in one pass using DLSS Ray Reconstruction. */
+	[[nodiscard]] EvaluationResult EvaluateDLSSD(ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
+		ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
+		ID3D11Resource* a_diffuseAlbedo, ID3D11Resource* a_specularAlbedo,
+		ID3D11Resource* a_normalRoughness, ID3D11Resource* a_specularHitDistance,
+		uint32_t a_renderWidth, uint32_t a_renderHeight,
+		uint32_t a_outputWidth, uint32_t a_outputHeight,
+		uint32_t a_qualityMode, uint32_t a_preset,
 		float a_jitterX, float a_jitterY);
 
 	[[nodiscard]] EvaluationResult EvaluateXeSS(ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
@@ -164,6 +175,7 @@ private:
 	bool unavailable = false;
 
 	bool featureDLSS = false;
+	bool featureDLSSRR = false;
 	bool featureReflex = false;
 	bool featureDLSSG = false;
 	bool featureXeSS = false;

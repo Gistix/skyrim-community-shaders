@@ -78,6 +78,33 @@ bool Raytracing::IsPathTracing() const
 	return Mode() == CreationEngineRaytracing::Mode::PathTracing;
 }
 
+void Raytracing::GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
+	ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist)
+{
+	diffuseAlbedo = nullptr;
+	specularAlbedo = nullptr;
+	normalRoughness = nullptr;
+	specHitDist = nullptr;
+
+	if (!creationEngineRaytracing || !creationEngineRaytracing->GetRRInput)
+		return;
+
+	const auto mode = Mode();
+	if (mode != CreationEngineRaytracing::Mode::GlobalIllumination &&
+		mode != CreationEngineRaytracing::Mode::PathTracing)
+		return;
+
+	void* diffuse = nullptr;
+	void* specular = nullptr;
+	void* hitDist = nullptr;
+	creationEngineRaytracing->GetRRInput(diffuse, specular, hitDist);
+
+	diffuseAlbedo = static_cast<ID3D11Resource*>(diffuse);
+	specularAlbedo = static_cast<ID3D11Resource*>(specular);
+	specHitDist = static_cast<ID3D11Resource*>(hitDist);
+	normalRoughness = normalRoughnessTexture.get();
+}
+
 void Raytracing::UpdateSettings()
 {
 	if (!initialized)

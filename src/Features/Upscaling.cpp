@@ -6,6 +6,7 @@
 #include "Features/Effects11/D3D11StateBackup.h"
 #include "HDRDisplay.h"
 #include "Hooks.h"
+#include "Raytracing.h"
 #include "State.h"
 #include "Upscaling/DXVKInterop.h"
 #include "Upscaling/FrameGenController.h"
@@ -28,6 +29,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	upscaleMethodNoDLSS,
 	qualityMode,
 	sharpnessFSR,
+	presetDLSSRR,
 	reflexEnabled,
 	reflexBoost,
 	reflexLowLatencyMode,
@@ -229,6 +231,21 @@ void Upscaling::DrawSettings()
 					"XeSS is running its DP4a fallback: hardware acceleration needs an Intel Arc GPU. "
 					"Expect a softer image than FSR at the same preset."));
 			}
+
+			// DLSS RR shares the DLSS upscaler slot: the method stays DLSS on disk and the
+			// Raytracing denoiser decides whether RR or plain DLSS runs.
+			if (GetUpscaleMethod() == UpscaleMethod::kDLSS_RR) {
+				ImGui::Text("%s", T(TKEY("dlss_rr_active"), "DLSS Ray Reconstruction is active (controlled by Raytracing Denoiser)."));
+				const std::vector<const char*> rrPresets = {
+					T(TKEY("dlss_rr_model_preset_default"), "Default"),
+					T(TKEY("dlss_rr_model_preset_d"), "Preset D"),
+					T(TKEY("dlss_rr_model_preset_e"), "Preset E"),
+					T(TKEY("dlss_rr_model_preset_f"), "Preset F"),
+				};
+				int rrIdx = std::clamp((int)settings.presetDLSSRR, 0, 3);
+				if (DrawStepper(T(TKEY("dlss_rr_model_preset"), "DLSS RR Model Preset"), &rrIdx, rrPresets))
+					settings.presetDLSSRR = (uint)std::clamp(rrIdx, 0, 3);
+			}
 		}
 	}
 
@@ -319,14 +336,24 @@ void Upscaling::LoadSettings(json& o_json)
 {
 	settings = o_json;
 
-	constexpr auto enumCount = 5;
+	// DLSS Ray Reconstruction is not user-selectable; it is auto-selected from the
+	// Raytracing denoiser. Migrate any value saved by an older build.
+	if (settings.upscaleMethod == static_cast<uint>(UpscaleMethod::kDLSS_RR)) {
+		logger::info("[Upscaling] Migrating saved DLSS_RR setting to DLSS (auto-managed by Raytracing Denoiser)");
+		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kDLSS);
+	}
+
+	constexpr auto enumCount = 6;
 	if (settings.upscaleMethod >= static_cast<uint>(enumCount)) {
 		logger::warn("[Upscaling] Loaded upscaleMethod {} out of range, clamping to {}", settings.upscaleMethod, enumCount - 1);
-		settings.upscaleMethod = enumCount - 1;
+		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kXeSS);
 	}
 	if (settings.upscaleMethodNoDLSS >= static_cast<uint>(enumCount) ||
 		settings.upscaleMethodNoDLSS == static_cast<uint>(UpscaleMethod::kDLSS))
 		settings.upscaleMethodNoDLSS = static_cast<uint>(UpscaleMethod::kFSR);
+
+	if (settings.presetDLSSRR > 3)
+		settings.presetDLSSRR = 0;
 
 	constexpr auto fgMethodCount = 2;
 	if (settings.frameGenMethod >= static_cast<uint>(fgMethodCount))
@@ -477,6 +504,21 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 {
 	auto* streamline = Streamline::GetSingleton();
 	auto method = static_cast<UpscaleMethod>(settings.upscaleMethod);
+
+	// DLSS Ray Reconstruction is not user-selectable. It activates when the user chooses DLSS
+	// and the Raytracing feature's denoiser is set to DLSS RR (and Streamline supports it).
+	// The denoiser lives in PathTracing and is merged into the effective settings by
+	// Raytracing::GetSettings(), so read that rather than Raytracing's own stored field.
+	if (method == UpscaleMethod::kDLSS) {
+		auto& rt = globals::features::raytracing;
+		const auto rtSettings = rt.GetSettings();
+		if (rtSettings.GeneralSettings.Mode != CreationEngineRaytracing::Mode::None &&
+			rtSettings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR &&
+			streamline->IsDLSSRRSupported()) {
+			return UpscaleMethod::kDLSS_RR;
+		}
+	}
+
 	for (uint32_t fallback = 0; fallback < 3; ++fallback) {
 		if (method == UpscaleMethod::kDLSS && !streamline->IsDLSSSupported()) {
 			method = static_cast<UpscaleMethod>(settings.upscaleMethodNoDLSS);
@@ -1175,6 +1217,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 
 		bool hadUpscale = (previousUpscaleMode == UpscaleMethod::kFSR ||
 		                   previousUpscaleMode == UpscaleMethod::kDLSS ||
+		                   previousUpscaleMode == UpscaleMethod::kDLSS_RR ||
 		                   previousUpscaleMode == UpscaleMethod::kXeSS) &&
 		                  previousUpscalingWasActive;
 		if (hadUpscale) {
@@ -1188,6 +1231,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 		}
 		if (a_upscalemethod == UpscaleMethod::kFSR ||
 		    a_upscalemethod == UpscaleMethod::kDLSS ||
+		    a_upscalemethod == UpscaleMethod::kDLSS_RR ||
 		    a_upscalemethod == UpscaleMethod::kXeSS) {
 			CreateUpscaledTexture();
 			CreateHudlessTexture();
@@ -1291,7 +1335,7 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 	auto screenWidth = static_cast<int>(screenSize.x);
 	auto screenHeight = static_cast<int>(screenSize.y);
 
-	if (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS) {
+	if (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR) {
 		auto getUpscaleRatio = [](uint qualityMode) -> float {
 			switch (qualityMode) {
 			case 0:
@@ -1533,7 +1577,7 @@ bool Upscaling::IsUpscalingActive() const
 {
 	auto method = GetUpscaleMethod();
 
-	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS) {
+	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS && method != UpscaleMethod::kDLSS_RR) {
 		return false;
 	}
 
@@ -1620,6 +1664,23 @@ void Upscaling::Upscale()
 					(uint32_t)displaySize.x, (uint32_t)displaySize.y,
 					settings.qualityMode, jitter.x, jitter.y);
 				break;
+			case UpscaleMethod::kDLSS_RR: {
+				ID3D11Resource* diffuseAlbedo = nullptr;
+				ID3D11Resource* specularAlbedo = nullptr;
+				ID3D11Resource* normalRoughness = nullptr;
+				ID3D11Resource* specularHitDistance = nullptr;
+				globals::features::raytracing.GetRayReconstructionInputs(
+					diffuseAlbedo, specularAlbedo, normalRoughness, specularHitDistance);
+				if (diffuseAlbedo && specularAlbedo && normalRoughness && specularHitDistance) {
+					result = Streamline::GetSingleton()->EvaluateDLSSD(
+						main.texture, upscaledTexture->resource.get(), depthTex.texture, motionVector.texture,
+						diffuseAlbedo, specularAlbedo, normalRoughness, specularHitDistance,
+						(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+						(uint32_t)displaySize.x, (uint32_t)displaySize.y,
+						settings.qualityMode, settings.presetDLSSRR, jitter.x, jitter.y);
+				}
+				break;
+			}
 			case UpscaleMethod::kXeSS:
 				result = Streamline::GetSingleton()->EvaluateXeSS(
 					main.texture, upscaledTexture->resource.get(), depthTex.texture, motionVector.texture,
@@ -1903,7 +1964,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		}
 	}
 
-	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS))
+	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR))
 		upscaling.PerformUpscaling();
 
 	Util::SetTemporal(upscaleMethod == UpscaleMethod::kTAA);

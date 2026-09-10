@@ -3,6 +3,8 @@
 #include "Globals.h"
 #include "Menu.h"
 #include "Raytracing.h"
+#include "Upscaling.h"
+#include "Upscaling/Streamline.h"
 
 #define I18N_KEY_PREFIX "feature.path_tracing."
 
@@ -67,6 +69,17 @@ void PathTracing::DrawSettings()
 	int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
 	if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
 		settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
+	}
+
+	if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
+		auto* streamline = Streamline::GetSingleton();
+		if (!streamline->IsDLSSRRSupported()) {
+			ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+				T("feature.raytracing.dlss_rr_not_available", "DLSS Ray Reconstruction is not available on this system."));
+		} else if (globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kDLSS_RR) {
+			ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Warning, "%s",
+				T("feature.raytracing.set_upscaling_to_dlss", "Set Upscaling method to DLSS to enable Ray Reconstruction."));
+		}
 	}
 
 	if (settingsBefore != settings) {

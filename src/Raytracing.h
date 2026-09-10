@@ -66,6 +66,9 @@ public:
 	CreationEngineRaytracing::Mode Mode() const;
 	bool IsPathTracing() const;
 
+	void GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
+		ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist);
+
 	static constexpr uint32_t SKY_HEMI_SIZE = 512;
 	static constexpr uint32_t WATER_FLOWMAP_SIZE = 320;
 
