@@ -691,6 +691,10 @@ void Raytracing::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("validation_layer"), "Validation Layer"), &settings.RendererSettings.ValidationLayer);
 
+	ImGui::Checkbox(T(TKEY("enable_ser"), "Enable Shader Execution Reordering"), &settings.CreationEngineRaytracingSettings.AdvancedSettings.ShaderExecutionReordering);
+
+	ImGui::Checkbox(T(TKEY("use_ray_query"), "Use Ray Query"), &settings.RendererSettings.UseRayQuery);
+
 	const char* modeStr = "None";
 	switch (Mode()) {
 	case CreationEngineRaytracing::Mode::GlobalIllumination:
