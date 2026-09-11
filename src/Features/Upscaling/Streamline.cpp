@@ -1593,6 +1593,15 @@ Streamline::EvaluationResult Streamline::EvaluateDLSSD(ID3D11Resource* a_colorIn
 	options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
 	options.alphaUpscalingEnabled = sl::Boolean::eFalse;
 
+	Matrix worldToView = globals::game::frameBufferCached.GetCameraView().Transpose();
+	Matrix viewToWorld = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
+	if (!cs_IsFiniteMatrix(worldToView) || !cs_IsFiniteMatrix(viewToWorld)) {
+		worldToView = Matrix::Identity;
+		viewToWorld = Matrix::Identity;
+	}
+	options.worldToCameraView = *reinterpret_cast<const sl::float4x4*>(&worldToView);
+	options.cameraViewToWorld = *reinterpret_cast<const sl::float4x4*>(&viewToWorld);
+
 	std::optional<sl::DLSSDPreset> customPreset;
 	switch (a_preset) {
 	case 1:
