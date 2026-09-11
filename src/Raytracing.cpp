@@ -722,6 +722,8 @@ void Raytracing::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("use_ray_query"), "Use Ray Query"), &settings.RendererSettings.UseRayQuery);
 
+	ImGui::Checkbox(T(TKEY("render_tree_lod"), "Render Tree LOD"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderTreeLOD);
+
 	const char* modeStr = "None";
 	switch (Mode()) {
 	case CreationEngineRaytracing::Mode::GlobalIllumination:
