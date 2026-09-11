@@ -65,6 +65,7 @@ public:
 
 	CreationEngineRaytracing::Mode Mode() const;
 	bool IsPathTracing() const;
+	bool IsPathTracingCull() const;
 
 	void GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
 		ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist);
@@ -164,6 +165,33 @@ public:
 					rt.UpdateFeatureData();
 					rt.SkyCubeToHemi();
 					rt.creationEngineRaytracing->UpdateCamera();
+
+					// Clear render targets 
+					if (rt.Mode() == CreationEngineRaytracing::Mode::PathTracing || rt.Mode() == CreationEngineRaytracing::Mode::Debug) {
+						if (rt.IsPathTracingCull()) {
+							auto renderer = globals::game::renderer;
+							auto context = globals::d3d::context;
+
+							// Clear Depth
+							{
+								auto depthStencils = renderer->GetDepthStencilData().depthStencils;
+								auto& mainDepth = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+								auto& mainDepthCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
+								auto& zPrePassCopy = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+
+								context->ClearDepthStencilView(mainDepth.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+								context->ClearDepthStencilView(mainDepthCopy.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+								context->ClearDepthStencilView(zPrePassCopy.views[0], D3D11_CLEAR_DEPTH, 1.0f, 0u);
+							}
+
+							// Clear Motion Vector
+							{
+								auto renderTargets = renderer->GetRuntimeData().renderTargets;
+								float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+								context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].RTV, clearColor);
+							}
+						}
+					}
 				}
 
 				func(a1);

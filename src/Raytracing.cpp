@@ -78,6 +78,12 @@ bool Raytracing::IsPathTracing() const
 	return Mode() == CreationEngineRaytracing::Mode::PathTracing;
 }
 
+bool Raytracing::IsPathTracingCull() const
+{
+	return Mode() == CreationEngineRaytracing::Mode::PathTracing 
+		&& settings.CreationEngineRaytracingSettings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
+}
+
 void Raytracing::GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
 	ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist)
 {
@@ -261,6 +267,12 @@ void Raytracing::Execute()
 
 			context->CopyResource(mainDepthCopy.texture, mainDepth.texture);
 			context->CopyResource(zPrePassCopy.texture, mainDepth.texture);
+		}
+
+		// Clear Specular render target
+		{
+			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kINDIRECT_DOWNSCALED].RTV, clearColor);
 		}
 	} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
 		context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
