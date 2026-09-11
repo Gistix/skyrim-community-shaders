@@ -299,7 +299,20 @@ void Raytracing::PostPostLoad()
 		return;
 	}
 
+	RE::GetINISetting("bReflectLODLand:Water")->data.b = false;
+	RE::GetINISetting("bReflectLODObjects:Water")->data.b = false;
+	RE::GetINISetting("bReflectLODTrees:Water")->data.b = false;
+	RE::GetINISetting("bReflectSky:Water")->data.b = true;
+
 	logger::info("[Raytracing] Loaded 'CreationEngineRaytracing.dll' module successfully.");
+}
+
+void Raytracing::DataLoaded()
+{
+	if (forcedDisabled)
+		return;
+
+	BGSActorCellEventHandler::Register();
 }
 
 bool Raytracing::InitializeCERaytracing()
@@ -960,4 +973,20 @@ void Raytracing::UpdateFeatureData()
 	}
 
 	creationEngineRaytracing->UpdateFeatureData(featureData.get(), sizeof(CreationEngineRaytracing::FeatureData));
+}
+
+RE::BSEventNotifyControl Raytracing::BGSActorCellEventHandler::ProcessEvent(const RE::BGSActorCellEvent* a_event, RE::BSTEventSource<RE::BGSActorCellEvent>*)
+{
+	if (a_event->flags.underlying() != static_cast<uint32_t>(RE::BGSActorCellEvent::CellFlag::kEnter))
+		return RE::BSEventNotifyControl::kContinue;
+
+	auto* tesWaterSystem = RE::TESWaterSystem::GetSingleton();
+
+	if (tesWaterSystem->waterReflections.empty()) {
+		tesWaterSystem->waterReflections.push_back(globals::features::raytracing.waterReflections);
+	}
+
+	tesWaterSystem->Enable();
+
+	return RE::BSEventNotifyControl::kContinue;
 }

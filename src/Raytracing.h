@@ -52,6 +52,7 @@ public:
 	// Lifecycle
 	virtual void Load() override;
 	virtual void PostPostLoad() override;
+	virtual void DataLoaded() override;
 
 	void SetupResources();
 
@@ -70,7 +71,8 @@ public:
 	void GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
 		ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist);
 
-	static constexpr uint32_t SKY_HEMI_SIZE = 512;
+	static constexpr uint32_t SKY_CUBEMAP_SIZE = 256;
+	static constexpr uint32_t SKY_HEMI_SIZE = SKY_CUBEMAP_SIZE * 2;
 	static constexpr uint32_t WATER_FLOWMAP_SIZE = 320;
 
 	void SetupSkyHemisphere();
@@ -204,10 +206,9 @@ public:
 		{
 			static void thunk()
 			{
-				auto& rt = globals::features::raytracing;
-				if (rt.loaded && !rt.forcedDisabled && rt.waterReflections) {
+				if (auto& rt = globals::features::raytracing; rt.loaded && !rt.forcedDisabled) {
 					auto* tes = RE::TES::GetSingleton();
-					if (tes && tes->interiorCell) {
+					if (tes->interiorCell) {
 						if (tes->interiorCell->cellFlags.none(RE::TESObjectCELL::Flag::kHasWater))
 							tes->interiorCell->cellFlags.set(true, RE::TESObjectCELL::Flag::kHasWater);
 
@@ -244,6 +245,24 @@ public:
 				stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
 				stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));
 			}
+		}
+	};
+
+	class BGSActorCellEventHandler : public RE::BSTEventSink<RE::BGSActorCellEvent>
+	{
+	public:
+		virtual RE::BSEventNotifyControl ProcessEvent(const RE::BGSActorCellEvent* a_event, RE::BSTEventSource<RE::BGSActorCellEvent>*);
+
+		static bool Register()
+		{
+			static BGSActorCellEventHandler singleton;
+
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			player->AsBGSActorCellEventSource()->AddEventSink(&singleton);
+
+			logger::info("Registered {}", typeid(singleton).name());
+
+			return true;
 		}
 	};
 };
