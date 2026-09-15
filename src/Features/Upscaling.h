@@ -139,6 +139,9 @@ public:
 	winrt::com_ptr<ID3D11PixelShader> copyHudlessPS;
 	ID3D11PixelShader* GetCopyHudlessPS();
 
+	winrt::com_ptr<ID3D11PixelShader> copyDepthPS;
+	ID3D11PixelShader* GetCopyDepthPS();
+
 	winrt::com_ptr<ID3D11DepthStencilState> upscaleDepthStencilState;
 	winrt::com_ptr<ID3D11BlendState> upscaleBlendState;
 	winrt::com_ptr<ID3D11RasterizerState> upscaleRasterizerState;
@@ -183,6 +186,7 @@ public:
 	// D3D11 textures
 	Texture2D* upscaledTexture = nullptr;
 	Texture2D* hudlessTexture = nullptr;
+	Texture2D* fsrDepthTexture = nullptr;
 
 	virtual void ClearShaderCache() override;
 
@@ -211,6 +215,10 @@ private:
 	void DestroyUpscaledTexture();
 	void CreateHudlessTexture();
 	bool DestroyHudlessTexture(bool a_commandRingDrained = false);
+	void CreateFsrDepthTexture(uint32_t a_width, uint32_t a_height);
+	bool DestroyFsrDepthTexture(bool a_commandRingDrained = false);
+	ID3D11Resource* PrepareFsrDepth(ID3D11ShaderResourceView* a_sourceSRV, ID3D11Resource* a_sourceRes);
+	bool CopyDepthToFsr(ID3D11ShaderResourceView* a_source);
 	ID3D11Resource* CaptureHudlessColor();
 	bool CopyHudlessColor(ID3D11ShaderResourceView* a_source);
 	void PrepareFrameGeneration(ID3D11Resource* a_hudlessColor);

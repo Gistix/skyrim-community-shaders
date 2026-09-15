@@ -1207,6 +1207,130 @@ ID3D11Resource* Upscaling::CaptureHudlessColor()
 	return CopyHudlessColor(fb.SRV) ? hudlessTexture->resource.get() : nullptr;
 }
 
+void Upscaling::CreateFsrDepthTexture(uint32_t a_width, uint32_t a_height)
+{
+	if (fsrDepthTexture &&
+		fsrDepthTexture->desc.Width == a_width &&
+		fsrDepthTexture->desc.Height == a_height)
+		return;
+
+	if (!DestroyFsrDepthTexture())
+		return;
+
+	D3D11_TEXTURE2D_DESC texDesc{};
+	texDesc.Width = a_width;
+	texDesc.Height = a_height;
+	texDesc.MipLevels = 1;
+	texDesc.ArraySize = 1;
+	texDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+	texDesc.SampleDesc.Count = 1;
+	texDesc.SampleDesc.Quality = 0;
+	texDesc.Usage = D3D11_USAGE_DEFAULT;
+	texDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+
+	fsrDepthTexture = new Texture2D(texDesc);
+	Util::SetResourceName(fsrDepthTexture->resource.get(), "Upscaling::FsrDepthTexture");
+
+	D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+	dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+	dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+	dsvDesc.Texture2D.MipSlice = 0;
+	fsrDepthTexture->CreateDSV(dsvDesc);
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+	srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = 1;
+	fsrDepthTexture->CreateSRV(srvDesc);
+
+	logger::info("[Upscaling] Created FSR depth texture ({}x{}, format=R32_TYPELESS/D32_FLOAT)",
+		texDesc.Width, texDesc.Height);
+}
+
+bool Upscaling::DestroyFsrDepthTexture(bool a_commandRingDrained)
+{
+	if (fsrDepthTexture) {
+		if (!a_commandRingDrained && !DXVKInterop::GetSingleton()->DrainCommandRing()) {
+			logger::error("[Upscaling] FSR depth texture destruction deferred because command completion could not be proven");
+			return false;
+		}
+		delete fsrDepthTexture;
+		fsrDepthTexture = nullptr;
+		logger::debug("[Upscaling] Destroyed FSR depth texture");
+	}
+	return true;
+}
+
+bool Upscaling::CopyDepthToFsr(ID3D11ShaderResourceView* a_source)
+{
+	if (!a_source || !fsrDepthTexture || !fsrDepthTexture->dsv)
+		return false;
+
+	auto* vertexShader = GetUpscaleVS();
+	auto* pixelShader = GetCopyDepthPS();
+	if (!vertexShader || !pixelShader)
+		return false;
+
+	auto* context = globals::d3d::context;
+	Effects11Util::D3D11ScopedPostFxBackup backup;
+	backup.Save(context);
+
+	context->IASetInputLayout(nullptr);
+	context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+	context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	context->VSSetShader(vertexShader, nullptr, 0);
+
+	D3D11_VIEWPORT viewport{};
+	viewport.Width = static_cast<float>(fsrDepthTexture->desc.Width);
+	viewport.Height = static_cast<float>(fsrDepthTexture->desc.Height);
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	context->RSSetViewports(1, &viewport);
+	context->RSSetState(upscaleRasterizerState.get());
+	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+	context->OMSetDepthStencilState(upscaleDepthStencilState.get(), 0);
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	ID3D11ShaderResourceView* sources[] = { a_source };
+	context->PSSetShaderResources(0, ARRAYSIZE(sources), sources);
+	context->PSSetShader(pixelShader, nullptr, 0);
+	ID3D11DepthStencilView* dsv = fsrDepthTexture->dsv.get();
+	context->OMSetRenderTargets(0, nullptr, dsv);
+	context->Draw(3, 0);
+
+	sources[0] = nullptr;
+	context->PSSetShaderResources(0, ARRAYSIZE(sources), sources);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	backup.Restore(context);
+	backup.Release();
+	return true;
+}
+
+ID3D11Resource* Upscaling::PrepareFsrDepth(ID3D11ShaderResourceView* a_sourceSRV, ID3D11Resource* a_sourceRes)
+{
+	if (!a_sourceSRV || !a_sourceRes)
+		return nullptr;
+
+	winrt::com_ptr<ID3D11Texture2D> srcTex;
+	if (FAILED(a_sourceRes->QueryInterface(IID_PPV_ARGS(srcTex.put()))) || !srcTex)
+		return nullptr;
+
+	D3D11_TEXTURE2D_DESC srcDesc{};
+	srcTex->GetDesc(&srcDesc);
+
+	CreateFsrDepthTexture(srcDesc.Width, srcDesc.Height);
+	if (!fsrDepthTexture || !fsrDepthTexture->resource)
+		return nullptr;
+
+	if (!CopyDepthToFsr(a_sourceSRV))
+		return nullptr;
+
+	return fsrDepthTexture->resource.get();
+}
+
 void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 {
 	static auto previousUpscaleMode = UpscaleMethod::kTAA;
@@ -1229,6 +1353,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 			}
 			DestroyUpscaledTexture();
 			DestroyHudlessTexture(true);
+			DestroyFsrDepthTexture(true);
 		}
 		if (a_upscalemethod == UpscaleMethod::kFSR ||
 		    a_upscalemethod == UpscaleMethod::kDLSS ||
@@ -1279,6 +1404,15 @@ ID3D11PixelShader* Upscaling::GetCopyHudlessPS()
 		copyHudlessPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/Upscaling/CopyHudlessPS.hlsl", {}, "ps_5_0"));
 	}
 	return copyHudlessPS.get();
+}
+
+ID3D11PixelShader* Upscaling::GetCopyDepthPS()
+{
+	if (!copyDepthPS) {
+		logger::debug("Compiling CopyDepthPS.hlsl");
+		copyDepthPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/Upscaling/CopyDepthPS.hlsl", {}, "ps_5_0"));
+	}
+	return copyDepthPS.get();
 }
 
 int32_t GetJitterPhaseCount(int32_t renderWidth, int32_t displayWidth)
@@ -1492,6 +1626,7 @@ void Upscaling::ClearShaderCache()
 	underwaterMaskUpscalePS = nullptr;
 	upscaleVS = nullptr;
 	copyHudlessPS = nullptr;
+	copyDepthPS = nullptr;
 }
 
 void UpdateCameraData()
@@ -1913,7 +2048,12 @@ void Upscaling::PrepareFrameGeneration(ID3D11Resource* a_hudlessColor)
 		const auto renderSize = Util::ConvertToDynamic(displaySize, true);
 		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 		auto& depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
-		ID3D11Resource* fgDepth = (IsUpscalingActive() && depthCopy.texture) ? depthCopy.texture : depth.texture;
+		ID3D11Resource* srcDepthRes = (IsUpscalingActive() && depthCopy.texture) ? depthCopy.texture : depth.texture;
+		ID3D11ShaderResourceView* srcDepthSRV = (IsUpscalingActive() && depthCopy.depthSRV) ? depthCopy.depthSRV : depth.depthSRV;
+		ID3D11Resource* fgDepth = PrepareFsrDepth(srcDepthSRV, srcDepthRes);
+		if (!fgDepth) {
+			fgDepth = srcDepthRes;
+		}
 		(void)Streamline::GetSingleton()->EvaluateFSRFrameGen(
 			fgDepth, motionVector.texture, a_hudlessColor,
 			(uint32_t)renderSize.x, (uint32_t)renderSize.y,
