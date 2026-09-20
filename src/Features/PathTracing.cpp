@@ -259,10 +259,16 @@ void PathTracing::DrawRelaxSettings()
 
 	auto& relaxSettings = settings.NRDRelaxSettings;
 
-	if (ImGui::InputScalar(T(RT_TKEY("diffuse_max_accumulated_frames"), "Diffuse Max Accumulated Frames"), ImGuiDataType_U32, &relaxSettings.diffuseMaxAccumulatedFrameNum))
+	if (ImGui::SliderFloat(T(RT_TKEY("diffuse_accumulation_seconds"), "Diffuse Accumulation Seconds"), &relaxSettings.diffuseAccumulationSeconds, 0.05f, 1.0f, "%.2f s"))
+		ClampSetting(relaxSettings.diffuseAccumulationSeconds, 0.05f, 1.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("specular_accumulation_seconds"), "Specular Accumulation Seconds"), &relaxSettings.specularAccumulationSeconds, 0.05f, 1.0f, "%.2f s"))
+		ClampSetting(relaxSettings.specularAccumulationSeconds, 0.05f, 1.0f);
+
+	if (ImGui::InputScalar(T(RT_TKEY("diffuse_max_accumulated_frames"), "Diffuse Max Accumulated Frames (Fallback)"), ImGuiDataType_U32, &relaxSettings.diffuseMaxAccumulatedFrameNum))
 		ClampSetting(relaxSettings.diffuseMaxAccumulatedFrameNum, 0u, 63u);
 
-	if (ImGui::InputScalar(T(RT_TKEY("specular_max_accumulated_frames"), "Specular Max Accumulated Frames"), ImGuiDataType_U32, &relaxSettings.specularMaxAccumulatedFrameNum))
+	if (ImGui::InputScalar(T(RT_TKEY("specular_max_accumulated_frames"), "Specular Max Accumulated Frames (Fallback)"), ImGuiDataType_U32, &relaxSettings.specularMaxAccumulatedFrameNum))
 		ClampSetting(relaxSettings.specularMaxAccumulatedFrameNum, 0u, 63u);
 
 	if (ImGui::InputScalar(T(RT_TKEY("diffuse_max_fast_accumulated_frames"), "Diffuse Max Fast Accumulated Frames"), ImGuiDataType_U32, &relaxSettings.diffuseMaxFastAccumulatedFrameNum))
@@ -290,6 +296,34 @@ void PathTracing::DrawRelaxSettings()
 		ClampSetting(relaxSettings.depthThreshold, 0.0f, 0.1f);
 
 	ImGui::Checkbox(T(RT_TKEY("enable_roughness_edge_stopping"), "Enable Roughness Edge Stopping"), &relaxSettings.enableRoughnessEdgeStopping);
+
+	if (ImGui::TreeNodeEx(T(RT_TKEY("relax_antilag"), "Antilag"), 0)) {
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_acceleration_amount"), "Acceleration Amount"), &relaxSettings.antilagAccelerationAmount, 0.0f, 1.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagAccelerationAmount, 0.0f, 1.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_spatial_sigma_scale"), "Spatial Sigma Scale"), &relaxSettings.antilagSpatialSigmaScale, 0.0f, 10.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagSpatialSigmaScale, 0.0f, 10.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_temporal_sigma_scale"), "Temporal Sigma Scale"), &relaxSettings.antilagTemporalSigmaScale, 0.0f, 10.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagTemporalSigmaScale, 0.0f, 10.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_reset_amount"), "Reset Amount"), &relaxSettings.antilagResetAmount, 0.0f, 1.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagResetAmount, 0.0f, 1.0f);
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(RT_TKEY("relax_spatial_relaxation"), "Spatial Relaxation"), 0)) {
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_relaxation_multiplier"), "Confidence Driven Relaxation Multiplier"), &relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_luminance_edge_stopping_relaxation"), "Confidence Driven Luminance Relaxation"), &relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_normal_edge_stopping_relaxation"), "Confidence Driven Normal Relaxation"), &relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("luminance_edge_stopping_relaxation"), "Luminance Edge Stopping Relaxation"), &relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("normal_edge_stopping_relaxation"), "Normal Edge Stopping Relaxation"), &relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("roughness_edge_stopping_relaxation"), "Roughness Edge Stopping Relaxation"), &relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 2.0f);
+		ImGui::TreePop();
+	}
 
 	ImGui::TreePop();
 }
