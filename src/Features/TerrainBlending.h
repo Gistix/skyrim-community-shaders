@@ -79,6 +79,8 @@ public:
 	std::vector<RenderPass> renderPasses;
 	std::vector<RenderPass> terrainRenderPasses;
 
+	bool Active() const;
+
 	/** @brief Applies terrain-specific vertex shader overrides and render target swaps during depth rendering. */
 	void TerrainShaderHacks();
 
