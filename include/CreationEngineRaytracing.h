@@ -170,6 +170,11 @@ struct CreationEngineRaytracing
 
 	struct NRDRelaxSettings
 	{
+		// Accumulation time in seconds (per NRD best practices: accumulate in seconds, not frames).
+		// Converted to max accumulated frames dynamically based on smoothed FPS.
+		float diffuseAccumulationSeconds = 0.33f;
+		float specularAccumulationSeconds = 0.25f;
+
 		// [0; RELAX_MAX_HISTORY_FRAME_NUM] - maximum number of linearly accumulated frames
 		uint32_t diffuseMaxAccumulatedFrameNum = 30;
 		uint32_t specularMaxAccumulatedFrameNum = 30;
@@ -184,7 +189,7 @@ struct CreationEngineRaytracing
 		float specularPhiLuminance = 1.0f;
 
 		// [2; 8] - number of iterations for A-Trous wavelet transform
-		uint32_t atrousIterationNum = 3;
+		uint32_t atrousIterationNum = 4;
 
 		// (>= 0) - how much variance we inject to specular if reprojection confidence is low
 		float specularVarianceBoost = 0.0f;
@@ -198,10 +203,26 @@ struct CreationEngineRaytracing
 		// Roughness based rejection
 		bool enableRoughnessEdgeStopping = true;
 
+		// Antilag settings (accelerates slow history toward fast history on motion/deltas)
+		float antilagAccelerationAmount = 0.4f;
+		float antilagSpatialSigmaScale = 4.5f;
+		float antilagTemporalSigmaScale = 0.5f;
+		float antilagResetAmount = 0.5f;
+
+		// Spatial relaxation weights (relaxes spatial filter in areas with low confidence / motion)
+		float confidenceDrivenRelaxationMultiplier = 0.5f;
+		float confidenceDrivenLuminanceEdgeStoppingRelaxation = 0.5f;
+		float confidenceDrivenNormalEdgeStoppingRelaxation = 0.5f;
+		float luminanceEdgeStoppingRelaxation = 0.5f;
+		float normalEdgeStoppingRelaxation = 0.3f;
+		float roughnessEdgeStoppingRelaxation = 1.0f;
+
 		bool operator==(const NRDRelaxSettings&) const = default;
 
 		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
 			NRDRelaxSettings,
+			diffuseAccumulationSeconds,
+			specularAccumulationSeconds,
 			diffuseMaxAccumulatedFrameNum,
 			specularMaxAccumulatedFrameNum,
 			diffuseMaxFastAccumulatedFrameNum,
@@ -212,7 +233,17 @@ struct CreationEngineRaytracing
 			specularVarianceBoost,
 			specularLobeAngleSlack,
 			depthThreshold,
-			enableRoughnessEdgeStopping)
+			enableRoughnessEdgeStopping,
+			antilagAccelerationAmount,
+			antilagSpatialSigmaScale,
+			antilagTemporalSigmaScale,
+			antilagResetAmount,
+			confidenceDrivenRelaxationMultiplier,
+			confidenceDrivenLuminanceEdgeStoppingRelaxation,
+			confidenceDrivenNormalEdgeStoppingRelaxation,
+			luminanceEdgeStoppingRelaxation,
+			normalEdgeStoppingRelaxation,
+			roughnessEdgeStoppingRelaxation)
 	};
 
 	struct MaterialSettings
