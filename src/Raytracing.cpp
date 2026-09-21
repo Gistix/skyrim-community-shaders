@@ -90,6 +90,7 @@ CreationEngineRaytracing::Settings Raytracing::GetSettings() const
 		certSettings.LightingSettings = pt.LightingSettings;
 		certSettings.WaterSettings = pt.WaterSettings;
 		certSettings.ExperimentalSettings.PathTracingCull = pt.ExperimentalSettings.PathTracingCull;
+		certSettings.SHaRCSettings = pt.SHaRCSettings;
 	} else {
 		certSettings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::None;
 	}

@@ -24,7 +24,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MaterialSettings,
 	LightingSettings,
 	WaterSettings,
-	ExperimentalSettings)
+	ExperimentalSettings,
+	SHaRCSettings)
 
 static std::string StableLabel(const char* label, std::string_view id)
 {
@@ -157,6 +158,8 @@ void PathTracing::DrawAdvancedSettings()
 		DrawSSSSettings();
 
 		DrawWaterSettings();
+
+		DrawSHaRCSettings();
 
 		ImGui::PopID();
 		ImGui::EndTabItem();
@@ -399,6 +402,29 @@ void PathTracing::DrawWaterSettings()
 
 		if (ImGui::DragFloat(T(RT_TKEY("absorption_scale"), "Absorption Scale"), &waterSettings.AbsorptionScale, 0.01f, 0.01f, 10.0f, "%.2f"))
 			waterSettings.AbsorptionScale = std::clamp(waterSettings.AbsorptionScale, 0.01f, 10.0f);
+	}
+}
+
+void PathTracing::DrawSHaRCSettings()
+{
+	if (ImGui::CollapsingHeader(T(RT_TKEY("sharc"), "SHaRC"))) {
+		auto& sharcSettings = settings.SHaRCSettings;
+
+		ImGui::Checkbox(T(RT_TKEY("sharc_enabled"), "Enable SHaRC"), &sharcSettings.Enabled);
+
+		if (sharcSettings.Enabled) {
+			if (ImGui::DragFloat(T(RT_TKEY("sharc_scene_scale"), "Scene Scale"), &sharcSettings.SceneScale, 0.001f, 0.01f, 100.0f, "%.3f"))
+				ClampSetting(sharcSettings.SceneScale, 0.01f, 100.0f);
+
+			if (ImGui::InputInt(T(RT_TKEY("sharc_accumulation_frames"), "Accumulation Frames"), &sharcSettings.AccumFrameNum))
+				ClampSetting(sharcSettings.AccumFrameNum, 1, 100);
+
+			if (ImGui::InputInt(T(RT_TKEY("sharc_stale_frames"), "Stale Frames"), &sharcSettings.StaleFrameNum))
+				ClampSetting(sharcSettings.StaleFrameNum, 1, 256);
+
+			if (ImGui::DragFloat(T(RT_TKEY("sharc_radiance_scale"), "Radiance Scale"), &sharcSettings.RadianceScale, 1.0f, 0.0f, 100000.0f, "%.1f"))
+				sharcSettings.RadianceScale = std::max(0.0f, sharcSettings.RadianceScale);
+		}
 	}
 }
 

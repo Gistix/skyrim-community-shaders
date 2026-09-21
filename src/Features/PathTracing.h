@@ -47,6 +47,7 @@ public:
 		CreationEngineRaytracing::LightingSettings LightingSettings;
 		CreationEngineRaytracing::WaterSettings WaterSettings;
 		CreationEngineRaytracing::ExperimentalSettings ExperimentalSettings;
+		CreationEngineRaytracing::SHaRCSettings SHaRCSettings;
 
 		bool operator==(const Settings&) const = default;
 	} settings;
@@ -65,6 +66,7 @@ public:
 	void DrawMaterialSettings();
 	void DrawLightingSettings();
 	void DrawWaterSettings();
+	void DrawSHaRCSettings();
 	void DrawExperimentalSettings();
 
 	void UpdateSettings();
