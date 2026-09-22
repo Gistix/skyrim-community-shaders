@@ -17,7 +17,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RaytracingSettings,
 	GeneralSettings,
 	StablePlanes,
-	SHaRCSettings,
 	NRDSettings,
 	NRDReblurSettings,
 	NRDRelaxSettings,
@@ -158,8 +157,6 @@ void PathTracing::DrawAdvancedSettings()
 
 		ImGui::Checkbox(T(RT_TKEY("stable_planes"), "Stable Planes"), &settings.StablePlanes);
 
-		DrawSHaRCSettings();
-
 		DrawSSSSettings();
 
 		DrawWaterSettings();
@@ -168,29 +165,6 @@ void PathTracing::DrawAdvancedSettings()
 
 		ImGui::PopID();
 		ImGui::EndTabItem();
-	}
-}
-
-void PathTracing::DrawSHaRCSettings()
-{
-	if (ImGui::CollapsingHeader(T(TKEY("sharc"), "SHaRC"))) {
-		ImGui::PushID("SHaRCSettings");
-		auto& sharc = settings.SHaRCSettings;
-
-		ImGui::Checkbox(T(TKEY("sharc_enabled"), "Enable SHaRC"), &sharc.Enabled);
-		ImGui::BeginDisabled(!sharc.Enabled);
-
-		if (ImGui::DragFloat(T(TKEY("sharc_scene_scale"), "Scene Scale"), &sharc.SceneScale, 0.01f, 0.01f, 100.0f, "%.2f"))
-			ClampSetting(sharc.SceneScale, 0.01f, 100.0f);
-		if (ImGui::SliderInt(T(TKEY("sharc_accumulation_frames"), "Accumulation Frames"), &sharc.AccumFrameNum, 1, 1024))
-			ClampSetting(sharc.AccumFrameNum, 1, 1024);
-		if (ImGui::SliderInt(T(TKEY("sharc_stale_frames"), "Stale Frames"), &sharc.StaleFrameNum, 8, 1024))
-			ClampSetting(sharc.StaleFrameNum, 8, 1024);
-		if (ImGui::DragFloat(T(TKEY("sharc_radiance_scale"), "Radiance Scale"), &sharc.RadianceScale, 1.0f, 1.0f, 1000000.0f, "%.0f"))
-			ClampSetting(sharc.RadianceScale, 1.0f, 1000000.0f);
-
-		ImGui::EndDisabled();
-		ImGui::PopID();
 	}
 }
 

@@ -38,7 +38,7 @@ public:
 			.Mode = CreationEngineRaytracing::Mode::PathTracing
 		};
 		bool StablePlanes = false;
-		CreationEngineRaytracing::SHaRCSettings SHaRCSettings;
+
 		CreationEngineRaytracing::NRDSettings NRDSettings;
 		CreationEngineRaytracing::NRDReblurSettings NRDReblurSettings;
 		CreationEngineRaytracing::NRDRelaxSettings NRDRelaxSettings;
@@ -59,7 +59,6 @@ public:
 
 	void DrawGeneralSettings();
 	void DrawAdvancedSettings();
-	void DrawSHaRCSettings();
 	void DrawNRDSettings();
 	void DrawReblurSettings();
 	void DrawRelaxSettings();
