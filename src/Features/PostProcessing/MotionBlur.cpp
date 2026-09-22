@@ -1,4 +1,5 @@
 #include "MotionBlur.h"
+#include "Features/PostProcessing.h"
 #include "Features/Upscaling.h"
 #include "ShaderCache.h"
 #include "Util.h"
@@ -67,56 +68,27 @@ void MotionBlur::SetupResources()
 
 void MotionBlur::CompileComputeShaders()
 {
-	// Clear existing shaders
-	horizontalPassShader = nullptr;
-	verticalPassShader = nullptr;
-	neighborMaxPassShader = nullptr;
-	blurPassShader = nullptr;
-
-	struct ShaderInfo
-	{
-		winrt::com_ptr<ID3D11ComputeShader>* shader;
-		const char* filename;
-	};
-
-	ShaderInfo shaders[] = {
+	const std::vector<ComputeShaderCompileInfo> shaderInfos = {
 		{ &horizontalPassShader, "motionblur_horizontalpass.cs.hlsl" },
 		{ &verticalPassShader, "motionblur_verticalpass.cs.hlsl" },
 		{ &neighborMaxPassShader, "motionblur_neighborpass.cs.hlsl" },
-		{ &blurPassShader, "motionblur_blurpass.cs.hlsl" }
+		{ &blurPassShader, "motionblur_blurpass.cs.hlsl" },
 	};
 
-	// Compile each shader
-	for (const auto& info : shaders) {
-		auto path = std::filesystem::path("Data\\Shaders\\PostProcessing\\MotionBlur") / info.filename;
-
-		try {
-			auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(
-				Util::CompileShader(path.c_str(), {}, "cs_5_0", "main"));
-
-			if (rawPtr) {
-				info.shader->attach(rawPtr);
-				logger::info("Compiled shader: {}", info.filename);
-			} else {
-				logger::error("Failed to compile shader: {}", info.filename);
-			}
-		} catch (const std::exception& e) {
-			logger::error("Failed to compile {}: {}", info.filename, e.what());
-		}
-	}
-
-	if (!horizontalPassShader || !verticalPassShader || !neighborMaxPassShader || !blurPassShader) {
-		logger::error("One or more motion blur shaders failed to compile");
-	}
+	CompileComputeShadersAsync(L"Data\\Shaders\\PostProcessing\\MotionBlur", shaderInfos);
 }
 
 void MotionBlur::ClearShaderCache()
 {
-	// Release resources
-	horizontalPassShader = nullptr;
-	verticalPassShader = nullptr;
-	neighborMaxPassShader = nullptr;
-	blurPassShader = nullptr;
+	BumpShaderGeneration();
+	{
+		std::lock_guard lock(shaderMutex);
+		// Release resources
+		horizontalPassShader = nullptr;
+		verticalPassShader = nullptr;
+		neighborMaxPassShader = nullptr;
+		blurPassShader = nullptr;
+	}
 
 	horizontalPassTexture = nullptr;
 	verticalPassTexture = nullptr;
@@ -128,6 +100,9 @@ void MotionBlur::ClearShaderCache()
 	reductionPassConstantBufferObj = nullptr;
 
 	lastWidth = lastHeight = 0;
+
+	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/MotionBlur");
+	CompileComputeShaders();
 }
 
 void MotionBlur::RestoreDefaultSettings()
@@ -172,9 +147,19 @@ void MotionBlur::DrawSettings()
 		"Very Short", "Short", "Medium", "Long", "Very Long"
 	};
 
+	const auto* cam = owner ? owner->GetActivePhysicalCameraState() : nullptr;
+	ImGui::BeginDisabled(cam != nullptr);
+
 	int preset = static_cast<int>(settings.ScalePreset);
 	if (ImGui::Combo("Motion Length", &preset, presets, IM_ARRAYSIZE(presets))) {
 		settings.ScalePreset = static_cast<MotionScale>(preset);
+	}
+
+	ImGui::EndDisabled();
+	if (cam) {
+		ImGui::TextDisabled(T("feature.post_processing.motion_blur.effective_shutter_scale", "Effective Velocity Scale (shutter %.0f°): %.0f"),
+			cam->ShutterAngleDeg,
+			std::clamp(CinematicCamera::kMotionBlurReferenceScale * cam->ShutterAngleDeg / 180.0f, 10.0f, 800.0f));
 	}
 
 	// Samples (each UI sample represents 2 actual samples)
@@ -190,6 +175,9 @@ void MotionBlur::Draw(TextureInfo& inout_tex)
 {
 	// Skip if disabled
 	if (!enabled)
+		return;
+
+	if (!AllShadersReady({ &horizontalPassShader, &verticalPassShader, &neighborMaxPassShader, &blurPassShader }))
 		return;
 
 	try {
@@ -391,8 +379,10 @@ bool MotionBlur::UpdateConstantBuffers()
 
 	bool updated = false;
 
-	// Get actual velocity scale value from preset
 	float velocityScale = GetScaleValueFromPreset(settings.ScalePreset);
+	if (const auto* cam = owner ? owner->GetActivePhysicalCameraState() : nullptr) {
+		velocityScale = std::clamp(CinematicCamera::kMotionBlurReferenceScale * cam->ShutterAngleDeg / 180.0f, 10.0f, 800.0f);
+	}
 	float2 velocityTextureScale = { 1.0f, 1.0f };
 	float2 targetResolution = { static_cast<float>(lastWidth), static_cast<float>(lastHeight) };
 

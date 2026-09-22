@@ -3,6 +3,7 @@
 #include "Features/PostProcessing.h"
 #include "HistogramAutoExposure.h"
 #include "I18n/I18n.h"
+#include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
 
@@ -24,7 +25,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 void LocalExposure::DrawSettings()
 {
 	auto* exposure = owner ? owner->GetPipelineFeature<HistogramAutoExposure>(PostProcessing::FeaturePipelineIndex::AutoExposure) : nullptr;
-	if (!exposure || !exposure->enabled) {
+	if (!exposure || !exposure->IsActive()) {
 		ImGui::SliderFloat(T("feature.post_processing.local_exposure.exposure", "Exposure"), &settings.Exposure, 0.f, 4.f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text(T("feature.post_processing.local_exposure.manual_brightness_normalization_used_when_histogram_auto_exposure", "Manual brightness normalization used when Histogram Auto Exposure is disabled. Higher values make the scene behave brighter."));
@@ -279,30 +280,28 @@ void LocalExposure::SetupResources()
 
 void LocalExposure::ClearShaderCache()
 {
+	outputReady = false;
+	BumpShaderGeneration();
 	const auto shaderPtrs = std::array{
 		&setupCS, &downsampleCS, &blurHorizontalCS, &blurVerticalCS, &gridCS, &resolveCS
 	};
 
-	for (auto shader : shaderPtrs)
-		if ((*shader)) {
-			(*shader)->Release();
-			shader->detach();
-		}
+	{
+		std::lock_guard lock(shaderMutex);
+		for (auto shader : shaderPtrs)
+			if ((*shader)) {
+				(*shader)->Release();
+				shader->detach();
+			}
+	}
 
+	globals::shaderCache->ClearStandaloneComputeCache(L"PostProcessing/LocalExposure");
 	CompileComputeShaders();
 }
 
 void LocalExposure::CompileComputeShaders()
 {
-	struct ShaderCompileInfo
-	{
-		winrt::com_ptr<ID3D11ComputeShader>* programPtr;
-		std::string_view filename;
-		std::vector<std::pair<const char*, const char*>> defines;
-		std::string entry;
-	};
-
-	std::vector<ShaderCompileInfo> shaderInfos = {
+	const std::vector<ComputeShaderCompileInfo> shaderInfos = {
 		{ &setupCS, "localexposure.cs.hlsl", {}, "CSSetupLogLuminance" },
 		{ &downsampleCS, "localexposure.cs.hlsl", {}, "CSDownsampleLogLuminance" },
 		{ &blurHorizontalCS, "localexposure.cs.hlsl", {}, "CSBlurHorizontal" },
@@ -311,17 +310,16 @@ void LocalExposure::CompileComputeShaders()
 		{ &resolveCS, "localexposure.cs.hlsl", {}, "CSResolveBaseLuminance" },
 	};
 
-	for (auto& info : shaderInfos) {
-		auto path = std::filesystem::path("Data\\Shaders\\PostProcessing\\LocalExposure") / info.filename;
-		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0", info.entry.c_str())))
-			info.programPtr->attach(rawPtr);
-	}
+	CompileComputeShadersAsync(L"Data\\Shaders\\PostProcessing\\LocalExposure", shaderInfos);
 }
 
 void LocalExposure::Draw(TextureInfo& inout_tex)
 {
 	auto context = globals::d3d::context;
 	auto state = globals::state;
+
+	if (!AllShadersReady({ &setupCS, &downsampleCS, &blurHorizontalCS, &blurVerticalCS, &gridCS, &resolveCS }))
+		return;
 
 	state->BeginPerfEvent("Local Exposure");
 
@@ -490,4 +488,5 @@ void LocalExposure::Draw(TextureInfo& inout_tex)
 
 	// NOTE: We do not modify inout_tex. Composite consumes the base luminance map.
 	state->EndPerfEvent();
+	outputReady = true;
 }

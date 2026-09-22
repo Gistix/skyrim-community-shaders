@@ -1,13 +1,15 @@
 #include "Raytracing.h"
 
+#include "Aftermath.h"
 #include "Deferred.h"
 #include "Features/CloudShadows.h"
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
 #include "Features/HairSpecular.h"
-#include "Features/LinearLighting.h"
+#include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
+#include "Features/LinearLighting.h"
 #include "Features/PathTracing.h"
 #include "Features/Skin.h"
 #include "Features/Upscaling/DXVKInterop.h"
@@ -15,8 +17,10 @@
 #include "Globals.h"
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
+#include "State.h"
 #include "Utils/D3D.h"
 #include <thread>
+#include <vulkan/vulkan.hpp>
 
 #define I18N_KEY_PREFIX "feature.raytracing."
 
@@ -82,6 +86,7 @@ CreationEngineRaytracing::Settings Raytracing::GetSettings() const
 		certSettings.GeneralSettings.Denoiser = pt.GeneralSettings.Denoiser;
 		certSettings.RaytracingSettings = pt.RaytracingSettings;
 		certSettings.AdvancedSettings.StablePlanes = pt.StablePlanes;
+		certSettings.SHaRCSettings = pt.SHaRCSettings;
 		certSettings.NRDSettings = pt.NRDSettings;
 		certSettings.NRDReblurSettings = pt.NRDReblurSettings;
 		certSettings.NRDRelaxSettings = pt.NRDRelaxSettings;
@@ -116,8 +121,7 @@ bool Raytracing::IsPathTracing() const
 
 bool Raytracing::IsPathTracingCull() const
 {
-	return Mode() == CreationEngineRaytracing::Mode::PathTracing 
-		&& settings.CreationEngineRaytracingSettings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
+	return Mode() == CreationEngineRaytracing::Mode::PathTracing && settings.CreationEngineRaytracingSettings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
 }
 
 void Raytracing::UpdateJitter(float2 a_jitter)
@@ -168,17 +172,41 @@ void Raytracing::Execute()
 	if (!Available() || Mode() == CreationEngineRaytracing::Mode::None)
 		return;
 
-	if (auto* dxvk = DXVKInterop::GetSingleton()) {
-		if (auto* interopDevice = dxvk->GetInteropDevice()) {
-			interopDevice->FlushRenderingCommands();
+	auto& skin = globals::features::skin;
+	if (creationEngineRaytracing->SetSkinDetailNormal)
+		creationEngineRaytracing->SetSkinDetailNormal(skin.loaded && skin.texSkinDetail ? skin.texSkinDetail->resource.get() : nullptr);
+
+	auto& isl = globals::features::inverseSquareLighting;
+	if (isl.loaded) {
+		const auto updateLights = [&](const auto& lights) {
+			for (const auto& entry : lights) {
+				auto* bsLight = entry.get();
+				if (bsLight && bsLight->light) {
+					LightLimitFix::LightData light{};
+					light.lightFlags = std::bit_cast<LightLimitFix::LightFlags>(bsLight->light->GetLightRuntimeData().ambient.red);
+					isl.ProcessLight(light, bsLight, bsLight->light.get());
+				}
+			}
+		};
+		if (auto* shadowSceneNode = globals::game::smState->shadowSceneNode[0]) {
+			auto& runtimeData = shadowSceneNode->GetRuntimeData();
+			updateLights(runtimeData.activeLights);
+			updateLights(runtimeData.activeShadowLights);
 		}
 	}
 
-	creationEngineRaytracing->Execute();
-	const uint32_t completedSlot = creationEngineRaytracing->PostExecution();
+	uint32_t completedSlot;
+	try {
+		creationEngineRaytracing->Execute();
+		completedSlot = creationEngineRaytracing->PostExecution();
 
-	if (settings.PerfOverlay != OverlayMode::None && creationEngineRaytracing->GetPassTimings) {
-		creationEngineRaytracing->GetPassTimings(passTimings);
+		if (settings.PerfOverlay != OverlayMode::None && creationEngineRaytracing->GetPassTimings) {
+			creationEngineRaytracing->GetPassTimings(passTimings);
+		}
+	} catch (const vk::DeviceLostError& e) {
+		logger::critical("[Raytracing] Vulkan device lost: {}", e.what());
+		Aftermath::WaitForCrashDump();
+		throw;
 	}
 
 	if (completedSlot >= CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT)
@@ -645,27 +673,27 @@ void Raytracing::SetupSharedTextures()
 	creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
 
 	auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
-			wrapper.texture = st;
-			wrapper.srv = nullptr;
-			if (st.shared) {
-				D3D11_TEXTURE2D_DESC desc{};
-				st.shared->GetDesc(&desc);
-				if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
-					D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-					srvDesc.Format = desc.Format;
-					srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-					srvDesc.Texture2D.MostDetailedMip = 0;
-					srvDesc.Texture2D.MipLevels = 1;
-					DX::ThrowIfFailed(device->CreateShaderResourceView(st.shared, &srvDesc, wrapper.srv.put()));
-				}
+		wrapper.texture = st;
+		wrapper.srv = nullptr;
+		if (st.shared) {
+			D3D11_TEXTURE2D_DESC desc{};
+			st.shared->GetDesc(&desc);
+			if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+				D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+				srvDesc.Format = desc.Format;
+				srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+				srvDesc.Texture2D.MostDetailedMip = 0;
+				srvDesc.Texture2D.MipLevels = 1;
+				DX::ThrowIfFailed(device->CreateShaderResourceView(st.shared, &srvDesc, wrapper.srv.put()));
 			}
-		};
-
-		for (uint32_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
-			setupSharedWrapper(sharedDepthTextures[i], depth[i]);
-			setupSharedWrapper(sharedMotionVectorTextures[i], motionVector[i]);
-			setupSharedWrapper(sharedMainTextures[i], main[i]);
 		}
+	};
+
+	for (uint32_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
+		setupSharedWrapper(sharedDepthTextures[i], depth[i]);
+		setupSharedWrapper(sharedMotionVectorTextures[i], motionVector[i]);
+		setupSharedWrapper(sharedMainTextures[i], main[i]);
+	}
 }
 
 void Raytracing::CompileShaders()
@@ -1009,26 +1037,13 @@ void Raytracing::UpdateFeatureData()
 
 	// Linear Lighting
 	{
-		featureData->LinearLighting.enableLinearLighting = linearLighting.enableLinearLighting;
-		featureData->LinearLighting.isDirLightLinear = linearLighting.isDirLightLinear;
-		featureData->LinearLighting.dirLightMult = linearLighting.dirLightMult;
-		featureData->LinearLighting.lightGamma = linearLighting.lightGamma;
-		featureData->LinearLighting.colorGamma = linearLighting.colorGamma;
-		featureData->LinearLighting.emitColorGamma = linearLighting.emitColorGamma;
-		featureData->LinearLighting.glowmapGamma = linearLighting.glowmapGamma;
-		featureData->LinearLighting.ambientGamma = linearLighting.ambientGamma;
-		featureData->LinearLighting.fogGamma = linearLighting.fogGamma;
-		featureData->LinearLighting.fogAlphaGamma = linearLighting.fogAlphaGamma;
-		featureData->LinearLighting.effectGamma = linearLighting.effectGamma;
-		featureData->LinearLighting.effectAlphaGamma = linearLighting.effectAlphaGamma;
-		featureData->LinearLighting.skyGamma = linearLighting.skyGamma;
-		featureData->LinearLighting.waterGamma = linearLighting.waterGamma;
-		featureData->LinearLighting.vlGamma = linearLighting.vlGamma;
+		featureData->LinearLighting.enableLinearLighting = globals::features::linearLighting.IsLinearLightingActive();
+		featureData->LinearLighting.enableACEScg = globals::features::linearLighting.IsACEScgActive();
+		featureData->LinearLighting.isMainOrLoadingMenu = linearLighting.isMainOrLoadingMenu;
 		featureData->LinearLighting.vanillaDiffuseColorMult = linearLighting.vanillaDiffuseColorMult;
 		featureData->LinearLighting.directionalLightMult = linearLighting.directionalLightMult;
 		featureData->LinearLighting.pointLightMult = linearLighting.pointLightMult;
 		featureData->LinearLighting.ambientMult = linearLighting.ambientMult;
-		featureData->LinearLighting.emitColorMult = linearLighting.emitColorMult;
 		featureData->LinearLighting.glowmapMult = linearLighting.glowmapMult;
 		featureData->LinearLighting.effectLightingMult = linearLighting.effectLightingMult;
 		featureData->LinearLighting.membraneEffectMult = linearLighting.membraneEffectMult;
@@ -1036,12 +1051,22 @@ void Raytracing::UpdateFeatureData()
 		featureData->LinearLighting.projectedEffectMult = linearLighting.projectedEffectMult;
 		featureData->LinearLighting.deferredEffectMult = linearLighting.deferredEffectMult;
 		featureData->LinearLighting.otherEffectMult = linearLighting.otherEffectMult;
-		featureData->LinearLighting.pad0 = 0;
+		featureData->LinearLighting.resetHistory = globals::state->ShouldResetHistory();
+		featureData->LinearLighting.emitColorMult = globals::features::linearLighting.IsLinearLightingActive() ? globals::features::linearLighting.settings.emitColorMult : 1.0f;
+		const auto* scene = globals::game::smState->shadowSceneNode[0];
+		if (scene && scene->GetRuntimeData().sunLight && scene->GetRuntimeData().sunLight->light) {
+			const auto* light = scene->GetRuntimeData().sunLight->light.get();
+			const auto color = globals::features::linearLighting.LightColorToWorking(light);
+			float intensity = light->GetLightRuntimeData().fade;
+			if (globals::game::imageSpaceManager)
+				intensity *= globals::game::imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
+			featureData->LinearLighting.directionalLightColor = { color.red, color.green, color.blue, intensity };
+		}
 	}
 
 	// Exponential Height Fog
 	{
-		const auto& ehf = globals::features::exponentialHeightFog.settings;
+		const auto ehf = globals::features::exponentialHeightFog.GetCommonBufferData();
 		featureData->ExponentialHeightFog.enabled = ehf.enabled;
 		featureData->ExponentialHeightFog.useDynamicCubemaps = ehf.useDynamicCubemaps;
 		featureData->ExponentialHeightFog.startDistance = ehf.startDistance;
