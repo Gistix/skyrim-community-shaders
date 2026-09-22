@@ -29,7 +29,8 @@ struct LightLimitFix : OverlayFeature
 	struct VertexColorCacheEntry
 	{
 		bool valid = false;
-		bool applyEffectMaterialTint = true;
+		bool colorManagementEnabled = false;
+		bool acescgEnabled = false;
 		ParticleLightConfig config{};
 		RE::NiColorA baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
 	};
@@ -73,6 +74,7 @@ public:
 		Disabled = (1 << 9),
 		InverseSquare = (1 << 10),
 		Linear = (1 << 11),
+		EditorDisabled = (1 << 12),
 	};
 
 	struct PositionOpt
