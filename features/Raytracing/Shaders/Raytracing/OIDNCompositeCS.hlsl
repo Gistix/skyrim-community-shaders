@@ -48,6 +48,45 @@ float GetLinearDepth(float rawDepth)
 	return CameraData.w / max(-rawDepth * CameraData.z + CameraData.x, 1e-7f);
 }
 
+// 5-tap Catmull-Rom bicubic history reconstruction (center + cross taps).
+// The negative lobes of Catmull-Rom cancel out the high-frequency attenuation
+// of bilinear filtering, preventing the compounded blur that occurs during camera motion.
+float3 SampleHistoryCatmullRom(Texture2D<float4> tex, SamplerState samp, float2 uv, float2 texSize)
+{
+	float2 samplePos = uv * texSize;
+	float2 tc = floor(samplePos - 0.5f) + 0.5f;
+	float2 f = samplePos - tc;
+	float2 f2 = f * f;
+	float2 f3 = f2 * f;
+
+	float2 w0 = f2 - 0.5f * (f3 + f);
+	float2 w1 = 1.5f * f3 - 2.5f * f2 + 1.0f;
+	float2 w2 = -1.5f * f3 + 2.0f * f2 + 0.5f * f;
+	float2 w3 = 0.5f * (f3 - f2);
+
+	float2 w12 = w1 + w2;
+	float2 tc0 = (tc - 1.0f) / texSize;
+	float2 tc12 = (tc + w2 / w12) / texSize;
+	float2 tc3 = (tc + 2.0f) / texSize;
+
+	float weightTop    = w12.x * w0.y;
+	float weightLeft   = w0.x * w12.y;
+	float weightCenter = w12.x * w12.y;
+	float weightRight  = w3.x * w12.y;
+	float weightBottom = w12.x * w3.y;
+
+	float weightSum = weightTop + weightLeft + weightCenter + weightRight + weightBottom;
+
+	float3 result =
+		tex.SampleLevel(samp, float2(tc12.x, tc0.y), 0).rgb * weightTop +
+		tex.SampleLevel(samp, float2(tc0.x, tc12.y), 0).rgb * weightLeft +
+		tex.SampleLevel(samp, float2(tc12.x, tc12.y), 0).rgb * weightCenter +
+		tex.SampleLevel(samp, float2(tc3.x, tc12.y), 0).rgb * weightRight +
+		tex.SampleLevel(samp, float2(tc12.x, tc3.y), 0).rgb * weightBottom;
+
+	return max(result / weightSum, 0.0f.xxx);
+}
+
 [numthreads(8, 8, 1)]
 void main(uint2 id : SV_DispatchThreadID)
 {
@@ -77,19 +116,21 @@ void main(uint2 id : SV_DispatchThreadID)
 
 	if (TemporalEnabled != 0 && HistoryValid != 0 && !outOfBounds)
 	{
-		// Sample previous history color
-		float4 historySample = HistoryColor.SampleLevel(LinearSampler, prevUV, 0);
+		// Sample previous history color using 5-tap Catmull-Rom bicubic filter to preserve texture sharpness in motion
+		float3 historyColor = SampleHistoryCatmullRom(HistoryColor, LinearSampler, prevUV, texSize);
 
-		if (any(isnan(historySample.rgb)) || any(isinf(historySample.rgb)))
-			historySample.rgb = currentLinear;
+		if (any(isnan(historyColor)) || any(isinf(historyColor)))
+			historyColor = currentLinear;
 
-		// Disocclusion test using scale-invariant linear depth disparity
-		const float prevDepth = HistoryDepth.SampleLevel(PointSampler, prevUV, 0);
+		// Disocclusion test using sublinear scale-invariant linear depth disparity
+		// 4-tap footprint gather ensures closest occluding edge is detected
+		const float4 prevDepths = HistoryDepth.Gather(PointSampler, prevUV);
+		const float prevDepth = min(min(prevDepths.x, prevDepths.y), min(prevDepths.z, prevDepths.w));
 		const float currLinearDepth = GetLinearDepth(currDepth);
 		const float prevLinearDepth = GetLinearDepth(prevDepth);
 		const float depthDiff = abs(currLinearDepth - prevLinearDepth);
 		const float minDepth = min(currLinearDepth, prevLinearDepth);
-		const float depthThreshold = DepthDisocclusionThreshold * max(minDepth, 1.0f);
+		const float depthThreshold = DepthDisocclusionThreshold * sqrt(500.0f * max(minDepth, 10.0f));
 		const bool disoccluded = depthDiff > depthThreshold;
 
 		// Sample previous history accumulation count using point sampling
@@ -102,7 +143,7 @@ void main(uint2 id : SV_DispatchThreadID)
 			float alpha = 1.0f / currentSampleCount;
 			const float alphaMin = saturate(1.0f - HistoryWeight);
 			alpha = max(alpha, alphaMin);
-			stabilizedLinear = lerp(historySample.rgb, currentLinear, alpha);
+			stabilizedLinear = lerp(historyColor, currentLinear, alpha);
 		}
 		else
 		{

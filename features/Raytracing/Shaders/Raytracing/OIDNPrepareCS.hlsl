@@ -2,15 +2,27 @@
 //
 // Runs as a D3D11 compute pass right after the path tracer / PT composite writes
 // the game main texture. It linearizes the display-referred color (inverse of the
-// raytracing renderer's LLTrueLinearToGamma) and packs color, albedo and normal
-// into tightly packed fp16 buffers (stride 8, Half3 + padding) that are copied
-// into the OIDN-owned Vulkan buffers.
+// raytracing renderer's LLTrueLinearToGamma), transforms world-space normals
+// to camera/view space for OIDN, and packs color, albedo and normal into tightly
+// packed fp16 buffers (stride 8, Half3 + padding) that are copied into the
+// OIDN-owned Vulkan buffers.
+
+#include "Common/FrameBuffer.hlsli"
 
 cbuffer OIDNParams : register(b0)
 {
 	uint2 RenderSize;
 	float ColorDecodeExponent;
-	float pad;
+	float DepthDisocclusionThreshold;
+
+	uint TemporalEnabled;
+	float HistoryWeight;
+	uint HistoryValid;
+	float MaxAccumulationFrames;
+
+	float4 pad0;
+
+	float4 CameraData;
 };
 
 Texture2D<float4> InputColor : register(t0);
@@ -48,9 +60,10 @@ void main(uint2 id : SV_DispatchThreadID)
 	albedo = saturate(albedo);
 	OutputAlbedo[pixelIndex] = uint2(PackHalf2(albedo.rg), PackHalf2(float2(albedo.b, 0.0f)));
 
-	// Normal: decoded from the [0, 1] encoding.
-	float3 normal = InputNormal[id].rgb * 2.0f - 1.0f;
-	const float lenSq = dot(normal, normal);
-	normal = (lenSq > 1e-4f && !isnan(lenSq) && !isinf(lenSq)) ? normalize(normal) : float3(0.0f, 0.0f, 1.0f);
+	// Normal: transform world-space normal to camera view space for OIDN
+	float3 normalWS = InputNormal[id].rgb;
+	float3 normalVS = FrameBuffer::WorldToView(normalWS, false);
+	const float lenSq = dot(normalVS, normalVS);
+	float3 normal = (lenSq > 1e-4f && !isnan(lenSq) && !isinf(lenSq)) ? normalize(normalVS) : float3(0.0f, 0.0f, 1.0f);
 	OutputNormal[pixelIndex] = uint2(PackHalf2(normal.rg), PackHalf2(float2(normal.b, 0.0f)));
 }
