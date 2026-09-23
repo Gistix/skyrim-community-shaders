@@ -165,6 +165,9 @@ endif()
 # Streamline is linked as headers and loaded through its Vulkan interposer at runtime.
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
 
+# Intel Open Image Denoise (GPU path tracing denoiser).
+include(OIDN)
+
 target_compile_definitions(
     ${PROJECT_NAME}
     PRIVATE "$<$<BOOL:${TRACY_SUPPORT}>:TRACY_SUPPORT>"
@@ -732,6 +735,13 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
     )
         file(APPEND "${_runtime_paths_file}" "SKSE/Plugins/CommunityShaders/bin/${_runtime_name}\n")
     endforeach()
+    # Intel OIDN runtime (names exposed by cmake/OIDN.cmake). Must be listed
+    # or the AIO cleanup step deletes the post-build-staged DLLs as stale.
+    if(DEFINED OIDN_RUNTIME_BIN_NAMES)
+        foreach(_oidn_bin IN LISTS OIDN_RUNTIME_BIN_NAMES)
+            file(APPEND "${_runtime_paths_file}" "SKSE/Plugins/CommunityShaders/bin/${_oidn_bin}\n")
+        endforeach()
+    endif()
 
     # Ensure SKSE/Plugins dir exists
     # Note: DLL and PDB are copied via POST_BUILD command to avoid race conditions

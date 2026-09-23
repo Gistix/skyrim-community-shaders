@@ -3,6 +3,17 @@
 #include "CreationEngineRaytracing.h"
 #include "Feature.h"
 #include "FeatureCategories.h"
+#include "OIDNDenoiser.h"
+
+/** @brief Intel OIDN settings for the CommunityShaders-side denoiser. */
+struct PathTracingOIDNSettings
+{
+	OIDNDenoiser::Quality Quality = OIDNDenoiser::Quality::Balanced;
+	bool CleanAux = true;
+	int MemoryLimitMB = 1024;
+
+	bool operator==(const PathTracingOIDNSettings&) const = default;
+};
 
 /**
  * @brief Regular feature providing hardware-accelerated Path Tracing.
@@ -38,6 +49,9 @@ public:
 			.Denoiser = CreationEngineRaytracing::Denoiser::None,
 			.Mode = CreationEngineRaytracing::Mode::PathTracing
 		};
+		// Intel OIDN runs CommunityShaders-side (see OIDNDenoiser); the DLL only
+		// emits the auxiliary outputs when GeneralSettings.Denoiser is OIDN.
+		PathTracingOIDNSettings OIDN;
 		bool StablePlanes = false;
 		CreationEngineRaytracing::NRDSettings NRDSettings;
 		CreationEngineRaytracing::NRDReblurSettings NRDReblurSettings;
@@ -68,6 +82,7 @@ public:
 	void DrawWaterSettings();
 	void DrawSHaRCSettings();
 	void DrawExperimentalSettings();
+	void DrawOIDNSettings();
 
 	void UpdateSettings();
 	bool Available() const;

@@ -79,6 +79,9 @@ CreationEngineRaytracing::Settings Raytracing::GetSettings() const
 	if (IsPathTracing()) {
 		const auto& pt = globals::features::pathTracing.settings;
 		certSettings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::PathTracing;
+		// Passed through verbatim: Denoiser::OIDN tells the DLL to emit diffuse
+		// albedo + normals (no DLL-side denoising); the CS-side OIDNDenoiser
+		// consumes them using PathTracing::Settings::OIDN.
 		certSettings.GeneralSettings.Denoiser = pt.GeneralSettings.Denoiser;
 		certSettings.RaytracingSettings = pt.RaytracingSettings;
 		certSettings.AdvancedSettings.StablePlanes = pt.StablePlanes;
@@ -116,8 +119,11 @@ bool Raytracing::IsPathTracing() const
 
 bool Raytracing::IsPathTracingCull() const
 {
-	return Mode() == CreationEngineRaytracing::Mode::PathTracing 
-		&& settings.CreationEngineRaytracingSettings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
+	if (Mode() != CreationEngineRaytracing::Mode::PathTracing)
+		return false;
+	// PathTracingCull is owned by the PathTracing feature UI; the Raytracing
+	// copy of ExperimentalSettings is stale, so read the source of truth.
+	return globals::features::pathTracing.settings.ExperimentalSettings.PathTracingCull != CreationEngineRaytracing::PTCullMode::Disabled;
 }
 
 void Raytracing::UpdateJitter(float2 a_jitter)
@@ -161,6 +167,11 @@ void Raytracing::UpdateSettings()
 		return;
 
 	creationEngineRaytracing->UpdateSettings(GetSettings());
+
+	if (oidnDenoiser.IsAvailable()) {
+		const auto& pt = globals::features::pathTracing.settings;
+		oidnDenoiser.SetSettings(pt.OIDN.Quality, pt.OIDN.CleanAux, pt.OIDN.MemoryLimitMB);
+	}
 }
 
 void Raytracing::Execute()
@@ -205,8 +216,60 @@ void Raytracing::Execute()
 			screenCB->Update(screenData.get(), sizeof(ScreenData));
 		}
 
+		// Intel OIDN denoiser, executed right after the raytracing pass completes.
+		// It consumes the Creation Engine Raytracing outputs (shared main + RR albedo/normal),
+		// which the DLL emits when GeneralSettings.Denoiser is OIDN.
+		bool oidnRan = false;
+		if (globals::features::pathTracing.settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::OIDN && oidnDenoiser.IsAvailable() &&
+			sharedMainTextures[completedSlot].srv && normalRoughnessSRV) {
+			ID3D11Resource* rrDiffuse = nullptr;
+			ID3D11Resource* rrSpecular = nullptr;
+			ID3D11Resource* rrNormal = nullptr;
+			ID3D11Resource* rrHitDistance = nullptr;
+			GetRayReconstructionInputs(rrDiffuse, rrSpecular, rrNormal, rrHitDistance);
+
+			if (rrDiffuse != oidnAlbedoResource) {
+				oidnAlbedoResource = rrDiffuse;
+				oidnAlbedoSRV = nullptr;
+				if (rrDiffuse) {
+					D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+					rrDiffuse->GetType(&dimension);
+					if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+						auto* texture = static_cast<ID3D11Texture2D*>(rrDiffuse);
+						D3D11_TEXTURE2D_DESC textureDesc{};
+						texture->GetDesc(&textureDesc);
+						D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+						srvDesc.Format = textureDesc.Format;
+						srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+						srvDesc.Texture2D.MostDetailedMip = 0;
+						srvDesc.Texture2D.MipLevels = 1;
+						if (FAILED(globals::d3d::device->CreateShaderResourceView(texture, &srvDesc, oidnAlbedoSRV.put())))
+							logger::warn("[OIDN] Failed to create SRV for the raytracing diffuse albedo output");
+					}
+				}
+			}
+
+			if (oidnAlbedoSRV) {
+				oidnDenoiser.SetColorDecodeExponent(globals::features::linearLighting.settings.enableLinearLighting ? 1.0f : 2.2f);
+				oidnDenoiser.Denoise(
+					sharedMainTextures[completedSlot].srv.get(),
+					oidnAlbedoSRV.get(),
+					normalRoughnessSRV.get(),
+					main.UAV,
+					static_cast<uint32_t>(screenSize.x),
+					static_cast<uint32_t>(screenSize.y));
+				oidnRan = true;
+			} else {
+				// Throttled diagnostic: OIDN requested but albedo input unavailable,
+				// falling back to the standard PT composite for this frame.
+				static uint32_t oidnMissingInputFrames = 0;
+				if (++oidnMissingInputFrames == 1 || oidnMissingInputFrames % 300 == 0)
+					logger::warn("[OIDN] Denoiser selected but diffuse albedo input is unavailable; using PT composite fallback");
+			}
+		}
+
 		// Blend pathtracing and sky (colors and motion vectors)
-		if (ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
+		if (!oidnRan && ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
 			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
 			context->CSSetShader(ptCompositeCS.get(), nullptr, 0);
@@ -232,7 +295,7 @@ void Raytracing::Execute()
 			uavs[0] = nullptr;
 			uavs[1] = nullptr;
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-		} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
+		} else if (!oidnRan && sharedMainTextures[completedSlot].texture.shared && main.texture) {
 			context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
 		}
 
@@ -434,6 +497,11 @@ void Raytracing::SetupResourcesPostDeferred()
 		return;
 
 	creationEngineRaytracing->Initialize(GetSettings());
+
+	if (oidnDenoiser.Initialize()) {
+		const auto& pt = globals::features::pathTracing.settings;
+		oidnDenoiser.SetSettings(pt.OIDN.Quality, pt.OIDN.CleanAux, pt.OIDN.MemoryLimitMB);
+	}
 
 	if (!featureData)
 		featureData = std::make_unique<CreationEngineRaytracing::FeatureData>();

@@ -33,7 +33,11 @@ struct CreationEngineRaytracing
 		NRD_Reblur,
 		NRD_Relax,
 		DLSS_RR,
-		Accumulation
+		Accumulation,
+		// Host-side denoiser (CommunityShaders Intel OIDN): the DLL performs no
+		// denoising itself but emits diffuse albedo + normals for the host to consume.
+		// Must stay in sync with CreationEngineRaytracing's src/Types/Settings.h.
+		OIDN
 	};
 
 	struct GeneralSettings

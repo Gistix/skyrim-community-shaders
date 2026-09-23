@@ -3,6 +3,7 @@
 #include "Buffer.h"
 #include "CreationEngineRaytracing.h"
 #include "FeatureCategories.h"
+#include "OIDNDenoiser.h"
 #include "Features/OverlayFeature.h"
 #include "Globals.h"
 #include <EASTL/vector.h>
@@ -125,6 +126,11 @@ public:
 	uint2 m_Resolution{ 0, 0 };
 
 	eastl::unique_ptr<CreationEngineRaytracing> creationEngineRaytracing = nullptr;
+
+	// Intel Open Image Denoise denoiser (CommunityShaders-side, runs after raytracing).
+	OIDNDenoiser oidnDenoiser;
+	ID3D11Resource* oidnAlbedoResource = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> oidnAlbedoSRV;
 
 	// Sky Hemisphere
 	winrt::com_ptr<ID3D11Texture2D> skyHemisphere = nullptr;

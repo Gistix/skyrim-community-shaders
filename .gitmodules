@@ -9,3 +9,6 @@
 	path = extern/dxvk
 	url = https://github.com/community-shaders/dxvk.git
 	branch = interop
+[submodule "extern/OIDN"]
+	path = extern/OIDN
+	url = https://github.com/RenderKit/oidn.git

@@ -7,15 +7,24 @@
 #include "Upscaling/Streamline.h"
 #include "Util.h"
 
+#include <magic_enum/magic_enum.hpp>
+
 #define I18N_KEY_PREFIX "feature.path_tracing."
 #define RT_I18N_KEY_PREFIX "feature.raytracing."
 #define RT_TKEY(suffix) RT_I18N_KEY_PREFIX suffix
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PathTracingOIDNSettings,
+	Quality,
+	CleanAux,
+	MemoryLimitMB)
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PathTracing::Settings,
 	Enabled,
 	RaytracingSettings,
 	GeneralSettings,
+	OIDN,
 	StablePlanes,
 	NRDSettings,
 	NRDReblurSettings,
@@ -122,10 +131,27 @@ void PathTracing::DrawGeneralSettings()
 			settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
 		}
 
-		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
+		// Entries map 1:1 to CreationEngineRaytracing::Denoiser
+		// (None, NRD_Reblur, NRD_Relax, DLSS_RR, Accumulation, OIDN). OIDN runs
+		// CommunityShaders-side; the DLL only emits the auxiliary outputs for it.
+		// OIDN settings themselves live in PathTracingOIDNSettings (plain struct),
+		// not in include/CreationEngineRaytracing.h.
+		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation", "Intel OIDN" };
+		static_assert(IM_ARRAYSIZE(denoiserNames) == magic_enum::enum_count<CreationEngineRaytracing::Denoiser>());
 		int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
+		if (currentDenoiser < 0 || currentDenoiser >= IM_ARRAYSIZE(denoiserNames))
+			currentDenoiser = 0;
 		if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
 			settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
+		}
+
+		const bool useOIDN = (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::OIDN);
+		if (useOIDN) {
+			if (!globals::features::raytracing.oidnDenoiser.IsAvailable()) {
+				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+					T(TKEY("oidn_unavailable"), "Intel OIDN is not available (missing runtime or initialization failed)."));
+			}
+			DrawOIDNSettings();
 		}
 
 		if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
@@ -145,6 +171,33 @@ void PathTracing::DrawGeneralSettings()
 
 		ImGui::PopID();
 		ImGui::EndTabItem();
+	}
+}
+
+void PathTracing::DrawOIDNSettings()
+{
+	if (ImGui::TreeNodeEx(T(TKEY("oidn"), "Intel OIDN"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		auto& oidnSettings = settings.OIDN;
+
+		const char* qualityNames[] = { "Fast", "Balanced", "High" };
+		int currentQuality = static_cast<int>(oidnSettings.Quality);
+		currentQuality = std::clamp(currentQuality, 0, IM_ARRAYSIZE(qualityNames) - 1);
+		if (ImGui::Combo(T(TKEY("oidn_quality"), "Quality"), &currentQuality, qualityNames, IM_ARRAYSIZE(qualityNames))) {
+			oidnSettings.Quality = static_cast<OIDNDenoiser::Quality>(currentQuality);
+		}
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("oidn_quality_desc"), "Fast: preview quality, Balanced: real-time (recommended), High: final-frame quality."));
+
+		ImGui::Checkbox(T(TKEY("oidn_clean_aux"), "Clean Auxiliary"), &oidnSettings.CleanAux);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("oidn_clean_aux_desc"), "Pre-denoise the albedo and normal auxiliary inputs. Improves quality at a small extra cost."));
+
+		if (ImGui::InputInt(T(TKEY("oidn_memory_limit"), "Memory Limit (MB)"), &oidnSettings.MemoryLimitMB))
+			ClampSetting(oidnSettings.MemoryLimitMB, 128, 65536);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("oidn_memory_limit_desc"), "Upper memory target for the OIDN filter (-1 would mean unlimited; clamped here to keep the filter alive)."));
+
+		ImGui::TreePop();
 	}
 }
 
