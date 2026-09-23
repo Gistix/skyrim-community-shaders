@@ -1015,7 +1015,8 @@ void OIDNDenoiser::Impl::RecordCopyOut(uint32_t a_frame)
 
 void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResourceView* a_albedo,
 	ID3D11ShaderResourceView* a_normal, ID3D11ShaderResourceView* a_motionVectors,
-	ID3D11ShaderResourceView* a_depth, ID3D11UnorderedAccessView* a_output,
+	ID3D11ShaderResourceView* a_depth, ID3D11ShaderResourceView* a_raster,
+	ID3D11UnorderedAccessView* a_output,
 	ID3D11UnorderedAccessView* a_outputMotion,
 	uint32_t a_width, uint32_t a_height)
 {
@@ -1062,8 +1063,8 @@ void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResour
 		context->CSSetConstantBuffers(0, 1, &cb);
 		ID3D11Buffer* perFrameBuf = *globals::game::perFrame.get();
 		context->CSSetConstantBuffers(12, 1, &perFrameBuf);
-		ID3D11ShaderResourceView* srvs[3] = { a_color, a_albedo, a_normal };
-		context->CSSetShaderResources(0, 3, srvs);
+		ID3D11ShaderResourceView* srvs[4] = { a_color, a_albedo, a_normal, a_raster };
+		context->CSSetShaderResources(0, 4, srvs);
 		ID3D11UnorderedAccessView* uavs[3] = { self.colorUAV.get(), self.albedoUAV.get(), self.normalUAV.get() };
 		context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
 
@@ -1071,8 +1072,8 @@ void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResour
 
 		ID3D11Buffer* nullCb = nullptr;
 		context->CSSetConstantBuffers(12, 1, &nullCb);
-		ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
-		context->CSSetShaderResources(0, 3, nullSrvs);
+		ID3D11ShaderResourceView* nullSrvs[4] = { nullptr, nullptr, nullptr, nullptr };
+		context->CSSetShaderResources(0, 4, nullSrvs);
 		ID3D11UnorderedAccessView* nullUavs[3] = { nullptr, nullptr, nullptr };
 		context->CSSetUnorderedAccessViews(0, 3, nullUavs, nullptr);
 		context->CSSetShader(nullptr, nullptr, 0);

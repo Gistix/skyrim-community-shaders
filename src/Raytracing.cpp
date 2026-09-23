@@ -272,6 +272,7 @@ void Raytracing::Execute()
 					normalRoughnessSRV.get(),
 					sharedMotionVectorTextures[completedSlot].srv.get(),
 					sharedDepthTextures[completedSlot].srv.get(),
+					main.SRV,
 					main.UAV,
 					mv.UAV,
 					static_cast<uint32_t>(screenSize.x),

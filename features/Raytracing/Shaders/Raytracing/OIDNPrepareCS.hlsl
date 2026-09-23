@@ -28,6 +28,7 @@ cbuffer OIDNParams : register(b0)
 Texture2D<float4> InputColor : register(t0);
 Texture2D<float4> InputAlbedo : register(t1);
 Texture2D<float4> InputNormal : register(t2);
+Texture2D<float4> InputRaster : register(t3);
 
 RWStructuredBuffer<uint2> OutputColor : register(u0);
 RWStructuredBuffer<uint2> OutputAlbedo : register(u1);
@@ -46,11 +47,20 @@ void main(uint2 id : SV_DispatchThreadID)
 
 	const uint pixelIndex = id.y * RenderSize.x + id.x;
 
-	// Color: full HDR radiance, converted to the "true linear" space OIDN expects.
-	float4 color = InputColor[id];
-	if (any(isnan(color.rgb)) || any(isinf(color.rgb)))
-		color.rgb = 0.0f.xxx;
-	color.rgb = pow(abs(color.rgb), ColorDecodeExponent);
+	// Color: blend path tracing with raster sky using alpha, both converted with ColorDecodeExponent to true linear space
+	float4 ptColor = InputColor[id];
+	if (any(isnan(ptColor.rgb)) || any(isinf(ptColor.rgb)))
+		ptColor.rgb = 0.0f.xxx;
+
+	float4 rasterColor = InputRaster[id];
+	if (any(isnan(rasterColor.rgb)) || any(isinf(rasterColor.rgb)))
+		rasterColor.rgb = 0.0f.xxx;
+
+	float3 ptLinear = pow(abs(ptColor.rgb), ColorDecodeExponent);
+	float3 rasterLinear = pow(abs(rasterColor.rgb), ColorDecodeExponent);
+
+	const float blend = saturate(ptColor.a);
+	float3 color = lerp(rasterLinear, ptLinear, blend);
 	OutputColor[pixelIndex] = uint2(PackHalf2(color.rg), PackHalf2(float2(color.b, 0.0f)));
 
 	// Albedo: raw diffuse albedo in [0, 1].

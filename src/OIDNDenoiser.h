@@ -80,12 +80,14 @@ public:
 	 * @param a_normal         Normal/roughness output from the raytracing renderer.
 	 * @param a_motionVectors  Motion vector output from the raytracing renderer.
 	 * @param a_depth          Depth output from the raytracing renderer.
+	 * @param a_raster         Game main texture SRV containing the raster sky and scene.
 	 * @param a_output         Game main texture UAV that receives the denoised result.
 	 * @param a_outputMotion   Game motion vector UAV that receives the composited motion vectors.
 	 */
 	void Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResourceView* a_albedo,
 		ID3D11ShaderResourceView* a_normal, ID3D11ShaderResourceView* a_motionVectors,
-		ID3D11ShaderResourceView* a_depth, ID3D11UnorderedAccessView* a_output,
+		ID3D11ShaderResourceView* a_depth, ID3D11ShaderResourceView* a_raster,
+		ID3D11UnorderedAccessView* a_output,
 		ID3D11UnorderedAccessView* a_outputMotion,
 		uint32_t a_width, uint32_t a_height);
 
