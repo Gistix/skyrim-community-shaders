@@ -11,6 +11,10 @@ struct PathTracingOIDNSettings
 	OIDNDenoiser::Quality Quality = OIDNDenoiser::Quality::Balanced;
 	bool CleanAux = true;
 	int MemoryLimitMB = 1024;
+	bool TemporalStabilization = true;
+	float HistoryWeight = 0.95f;
+	float DepthThreshold = 0.03f;
+	int MaxAccumulationFrames = 48;
 
 	bool operator==(const PathTracingOIDNSettings&) const = default;
 };

@@ -171,6 +171,12 @@ void Raytracing::UpdateSettings()
 	if (oidnDenoiser.IsAvailable()) {
 		const auto& pt = globals::features::pathTracing.settings;
 		oidnDenoiser.SetSettings(pt.OIDN.Quality, pt.OIDN.CleanAux, pt.OIDN.MemoryLimitMB);
+		oidnDenoiser.SetTemporalSettings({
+			.enabled = pt.OIDN.TemporalStabilization,
+			.historyWeight = pt.OIDN.HistoryWeight,
+			.depthThreshold = pt.OIDN.DepthThreshold,
+			.maxAccumulationFrames = pt.OIDN.MaxAccumulationFrames
+		});
 	}
 }
 
@@ -250,12 +256,24 @@ void Raytracing::Execute()
 			}
 
 			if (oidnAlbedoSRV) {
+				const auto& pt = globals::features::pathTracing.settings;
+				oidnDenoiser.SetSettings(pt.OIDN.Quality, pt.OIDN.CleanAux, pt.OIDN.MemoryLimitMB);
+				oidnDenoiser.SetTemporalSettings({
+					.enabled = pt.OIDN.TemporalStabilization,
+					.historyWeight = pt.OIDN.HistoryWeight,
+					.depthThreshold = pt.OIDN.DepthThreshold,
+					.maxAccumulationFrames = pt.OIDN.MaxAccumulationFrames
+				});
 				oidnDenoiser.SetColorDecodeExponent(globals::features::linearLighting.settings.enableLinearLighting ? 1.0f : 2.2f);
+				auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 				oidnDenoiser.Denoise(
 					sharedMainTextures[completedSlot].srv.get(),
 					oidnAlbedoSRV.get(),
 					normalRoughnessSRV.get(),
+					sharedMotionVectorTextures[completedSlot].srv.get(),
+					sharedDepthTextures[completedSlot].srv.get(),
 					main.UAV,
+					mv.UAV,
 					static_cast<uint32_t>(screenSize.x),
 					static_cast<uint32_t>(screenSize.y));
 				oidnRan = true;
@@ -501,6 +519,12 @@ void Raytracing::SetupResourcesPostDeferred()
 	if (oidnDenoiser.Initialize()) {
 		const auto& pt = globals::features::pathTracing.settings;
 		oidnDenoiser.SetSettings(pt.OIDN.Quality, pt.OIDN.CleanAux, pt.OIDN.MemoryLimitMB);
+		oidnDenoiser.SetTemporalSettings({
+			.enabled = pt.OIDN.TemporalStabilization,
+			.historyWeight = pt.OIDN.HistoryWeight,
+			.depthThreshold = pt.OIDN.DepthThreshold,
+			.maxAccumulationFrames = pt.OIDN.MaxAccumulationFrames
+		});
 	}
 
 	if (!featureData)

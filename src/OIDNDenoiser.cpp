@@ -18,6 +18,7 @@
 #include "Features/Upscaling/DXVKInterop.h"
 #include "Globals.h"
 #include "Utils/D3D.h"
+#include "Utils/Game.h"
 
 #include <cstring>
 #include <d3d11.h>
@@ -30,10 +31,19 @@ namespace
 	{
 		uint32_t width;
 		uint32_t height;
-		float exponent;
-		float pad;
+		float colorExponent;
+		float depthThreshold;
+
+		uint32_t temporalEnabled;
+		float historyWeight;
+		uint32_t historyValid;
+		float maxAccumulationFrames;
+
+		float pad[4];
+
+		float cameraData[4];
 	};
-	static_assert(sizeof(OIDNParams) == 16);
+	static_assert(sizeof(OIDNParams) == 64);
 
 	constexpr uint32_t kFramesInFlight = 3;
 	constexpr const wchar_t* kPrepareShaderPath = L"Data\\Shaders\\Raytracing\\OIDNPrepareCS.hlsl";
@@ -131,6 +141,20 @@ struct OIDNDenoiser::Impl
 	int memoryLimitMB = 1024;
 	float colorDecodeExponent = 2.2f;
 
+	TemporalSettings temporalSettings;
+	winrt::com_ptr<ID3D11SamplerState> linearSampler;
+	winrt::com_ptr<ID3D11SamplerState> pointSampler;
+
+	winrt::com_ptr<ID3D11Texture2D> historyColor[2];
+	winrt::com_ptr<ID3D11ShaderResourceView> historyColorSRV[2];
+	winrt::com_ptr<ID3D11UnorderedAccessView> historyColorUAV[2];
+	winrt::com_ptr<ID3D11Texture2D> historyDepth[2];
+	winrt::com_ptr<ID3D11ShaderResourceView> historyDepthSRV[2];
+	winrt::com_ptr<ID3D11UnorderedAccessView> historyDepthUAV[2];
+	uint32_t historyReadIndex = 0;
+	uint32_t historyWriteIndex = 1;
+	bool historyValid = false;
+
 	bool initialized = false;
 
 	void DestroyResources();
@@ -182,6 +206,18 @@ void OIDNDenoiser::SetSettings(Quality a_quality, bool a_cleanAux, int a_memoryL
 			logger::error("[OIDN] Failed to apply filter settings: {}", e.what());
 		}
 	}
+}
+
+void OIDNDenoiser::SetTemporalSettings(const TemporalSettings& a_settings)
+{
+	if (impl)
+		impl->temporalSettings = a_settings;
+}
+
+void OIDNDenoiser::ResetHistory()
+{
+	if (impl)
+		impl->historyValid = false;
 }
 
 void OIDNDenoiser::SetColorDecodeExponent(float a_exponent)
@@ -497,6 +533,26 @@ bool OIDNDenoiser::Initialize()
 		return false;
 	}
 
+	D3D11_SAMPLER_DESC samplerDesc = {
+		.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+		.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+		.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+		.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+		.ComparisonFunc = D3D11_COMPARISON_NEVER,
+		.MinLOD = 0,
+		.MaxLOD = D3D11_FLOAT32_MAX
+	};
+	if (FAILED(device->CreateSamplerState(&samplerDesc, self.linearSampler.put()))) {
+		logger::error("[OIDN] Failed to create linear sampler");
+		return false;
+	}
+
+	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+	if (FAILED(device->CreateSamplerState(&samplerDesc, self.pointSampler.put()))) {
+		logger::error("[OIDN] Failed to create point sampler");
+		return false;
+	}
+
 	// Command pool + command buffers + fences.
 	VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -564,6 +620,8 @@ void OIDNDenoiser::Shutdown()
 	self.prepareCS = nullptr;
 	self.compositeCS = nullptr;
 	self.paramsCB = nullptr;
+	self.linearSampler = nullptr;
+	self.pointSampler = nullptr;
 	self.initialized = false;
 }
 
@@ -709,6 +767,66 @@ bool OIDNDenoiser::Impl::CreateResources(uint32_t a_width, uint32_t a_height)
 		return false;
 	}
 
+	// History color textures (RGBA16_FLOAT)
+	D3D11_TEXTURE2D_DESC historyColorDesc{};
+	historyColorDesc.Width = width;
+	historyColorDesc.Height = height;
+	historyColorDesc.MipLevels = 1;
+	historyColorDesc.ArraySize = 1;
+	historyColorDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	historyColorDesc.SampleDesc.Count = 1;
+	historyColorDesc.SampleDesc.Quality = 0;
+	historyColorDesc.Usage = D3D11_USAGE_DEFAULT;
+	historyColorDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDescColor{};
+	srvDescColor.Format = historyColorDesc.Format;
+	srvDescColor.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDescColor.Texture2D.MostDetailedMip = 0;
+	srvDescColor.Texture2D.MipLevels = 1;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDescColor{};
+	uavDescColor.Format = historyColorDesc.Format;
+	uavDescColor.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+	uavDescColor.Texture2D.MipSlice = 0;
+
+	// History depth textures (R32_FLOAT)
+	D3D11_TEXTURE2D_DESC historyDepthDesc = historyColorDesc;
+	historyDepthDesc.Format = DXGI_FORMAT_R32_FLOAT;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDescDepth{};
+	srvDescDepth.Format = historyDepthDesc.Format;
+	srvDescDepth.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDescDepth.Texture2D.MostDetailedMip = 0;
+	srvDescDepth.Texture2D.MipLevels = 1;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDescDepth{};
+	uavDescDepth.Format = historyDepthDesc.Format;
+	uavDescDepth.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+	uavDescDepth.Texture2D.MipSlice = 0;
+
+	for (uint32_t i = 0; i < 2; ++i) {
+		if (FAILED(d3dDevice->CreateTexture2D(&historyColorDesc, nullptr, historyColor[i].put())) ||
+			FAILED(d3dDevice->CreateShaderResourceView(historyColor[i].get(), &srvDescColor, historyColorSRV[i].put())) ||
+			FAILED(d3dDevice->CreateUnorderedAccessView(historyColor[i].get(), &uavDescColor, historyColorUAV[i].put()))) {
+			logger::error("[OIDN] Failed to create history color resources");
+			DestroyResources();
+			return false;
+		}
+
+		if (FAILED(d3dDevice->CreateTexture2D(&historyDepthDesc, nullptr, historyDepth[i].put())) ||
+			FAILED(d3dDevice->CreateShaderResourceView(historyDepth[i].get(), &srvDescDepth, historyDepthSRV[i].put())) ||
+			FAILED(d3dDevice->CreateUnorderedAccessView(historyDepth[i].get(), &uavDescDepth, historyDepthUAV[i].put()))) {
+			logger::error("[OIDN] Failed to create history depth resources");
+			DestroyResources();
+			return false;
+		}
+	}
+
+	historyReadIndex = 0;
+	historyWriteIndex = 1;
+	historyValid = false;
+
 	if (!semaphoresReady)
 		CreateSemaphores();
 
@@ -745,6 +863,16 @@ void OIDNDenoiser::Impl::DestroyResources()
 	albedoUAV = nullptr;
 	normalUAV = nullptr;
 	outputSRV = nullptr;
+
+	for (uint32_t i = 0; i < 2; ++i) {
+		historyColor[i] = nullptr;
+		historyColorSRV[i] = nullptr;
+		historyColorUAV[i] = nullptr;
+		historyDepth[i] = nullptr;
+		historyDepthSRV[i] = nullptr;
+		historyDepthUAV[i] = nullptr;
+	}
+	historyValid = false;
 
 	width = 0;
 	height = 0;
@@ -886,7 +1014,9 @@ void OIDNDenoiser::Impl::RecordCopyOut(uint32_t a_frame)
 }
 
 void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResourceView* a_albedo,
-	ID3D11ShaderResourceView* a_normal, ID3D11UnorderedAccessView* a_output,
+	ID3D11ShaderResourceView* a_normal, ID3D11ShaderResourceView* a_motionVectors,
+	ID3D11ShaderResourceView* a_depth, ID3D11UnorderedAccessView* a_output,
+	ID3D11UnorderedAccessView* a_outputMotion,
 	uint32_t a_width, uint32_t a_height)
 {
 	auto& self = *impl;
@@ -909,8 +1039,17 @@ void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResour
 		OIDNParams params{};
 		params.width = a_width;
 		params.height = a_height;
-		params.exponent = self.colorDecodeExponent;
-		params.pad = 0.0f;
+		params.colorExponent = self.colorDecodeExponent;
+		params.depthThreshold = 0.0f;
+		params.temporalEnabled = 0;
+		params.historyWeight = 0.0f;
+		params.historyValid = 0;
+		params.maxAccumulationFrames = 1.0f;
+		const auto cam = Util::GetCameraData();
+		params.cameraData[0] = cam.x;
+		params.cameraData[1] = cam.y;
+		params.cameraData[2] = cam.z;
+		params.cameraData[3] = cam.w;
 
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(self.paramsCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -1003,13 +1142,26 @@ void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResour
 		vkWaitForFences(self.device, 1, &self.frameFences[frame], VK_TRUE, UINT64_MAX);
 	}
 
-	// ---- Step 4: D3D11 composite pass back into the main texture ----
+	// ---- Step 4: D3D11 composite & temporal stabilization pass ----
 	{
+		const bool temporalActive = self.temporalSettings.enabled && a_motionVectors && a_depth;
+
 		OIDNParams params{};
 		params.width = a_width;
 		params.height = a_height;
-		params.exponent = self.colorDecodeExponent > 0.0f ? 1.0f / self.colorDecodeExponent : 1.0f;
-		params.pad = 0.0f;
+		params.colorExponent = self.colorDecodeExponent > 0.0f ? 1.0f / self.colorDecodeExponent : 1.0f;
+		params.depthThreshold = std::clamp(self.temporalSettings.depthThreshold, 0.0001f, 1.0f);
+
+		params.temporalEnabled = temporalActive ? 1 : 0;
+		params.historyWeight = std::clamp(self.temporalSettings.historyWeight, 0.0f, 1.0f);
+		params.historyValid = (self.historyValid && temporalActive) ? 1 : 0;
+		params.maxAccumulationFrames = static_cast<float>(std::clamp(self.temporalSettings.maxAccumulationFrames, 1, 128));
+
+		const auto cam = Util::GetCameraData();
+		params.cameraData[0] = cam.x;
+		params.cameraData[1] = cam.y;
+		params.cameraData[2] = cam.z;
+		params.cameraData[3] = cam.w;
 
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(self.paramsCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -1020,16 +1172,41 @@ void OIDNDenoiser::Denoise(ID3D11ShaderResourceView* a_color, ID3D11ShaderResour
 		context->CSSetShader(self.compositeCS.get(), nullptr, 0);
 		ID3D11Buffer* cb = self.paramsCB.get();
 		context->CSSetConstantBuffers(0, 1, &cb);
-		ID3D11ShaderResourceView* srvs[] = { self.outputSRV.get(), a_color };
-		context->CSSetShaderResources(0, 2, srvs);
-		context->CSSetUnorderedAccessViews(0, 1, &a_output, nullptr);
+
+		ID3D11SamplerState* samplers[2] = { self.linearSampler.get(), self.pointSampler.get() };
+		context->CSSetSamplers(0, 2, samplers);
+
+		ID3D11ShaderResourceView* srvs[6] = {
+			self.outputSRV.get(),
+			a_color,
+			a_motionVectors,
+			a_depth,
+			self.historyColorSRV[self.historyReadIndex].get(),
+			self.historyDepthSRV[self.historyReadIndex].get()
+		};
+		context->CSSetShaderResources(0, 6, srvs);
+
+		ID3D11UnorderedAccessView* uavs[4] = {
+			a_output,
+			a_outputMotion,
+			self.historyColorUAV[self.historyWriteIndex].get(),
+			self.historyDepthUAV[self.historyWriteIndex].get()
+		};
+		context->CSSetUnorderedAccessViews(0, 4, uavs, nullptr);
 
 		context->Dispatch((a_width + 7) / 8, (a_height + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullSrvs[2] = { nullptr, nullptr };
-		context->CSSetShaderResources(0, 2, nullSrvs);
-		ID3D11UnorderedAccessView* nullUav = nullptr;
-		context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+		ID3D11ShaderResourceView* nullSrvs[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+		context->CSSetShaderResources(0, 6, nullSrvs);
+		ID3D11UnorderedAccessView* nullUavs[4] = { nullptr, nullptr, nullptr, nullptr };
+		context->CSSetUnorderedAccessViews(0, 4, nullUavs, nullptr);
+		ID3D11SamplerState* nullSamplers[2] = { nullptr, nullptr };
+		context->CSSetSamplers(0, 2, nullSamplers);
 		context->CSSetShader(nullptr, nullptr, 0);
+
+		if (temporalActive) {
+			std::swap(self.historyReadIndex, self.historyWriteIndex);
+			self.historyValid = true;
+		}
 	}
 }

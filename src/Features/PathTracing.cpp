@@ -17,7 +17,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PathTracingOIDNSettings,
 	Quality,
 	CleanAux,
-	MemoryLimitMB)
+	MemoryLimitMB,
+	TemporalStabilization,
+	HistoryWeight,
+	DepthThreshold,
+	MaxAccumulationFrames)
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PathTracing::Settings,
@@ -196,6 +200,25 @@ void PathTracing::DrawOIDNSettings()
 			ClampSetting(oidnSettings.MemoryLimitMB, 128, 65536);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("oidn_memory_limit_desc"), "Upper memory target for the OIDN filter (-1 would mean unlimited; clamped here to keep the filter alive)."));
+
+		ImGui::Separator();
+		ImGui::Checkbox(T(TKEY("oidn_temporal"), "Temporal Stabilization"), &oidnSettings.TemporalStabilization);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(TKEY("oidn_temporal_desc"), "Stabilizes the denoised output over time using motion vectors, depth rejection, and variance clipping. Eliminates temporal boiling and flicker."));
+
+		if (oidnSettings.TemporalStabilization) {
+			ImGui::SliderFloat(T(TKEY("oidn_history_weight"), "History Weight"), &oidnSettings.HistoryWeight, 0.0f, 1.0f, "%.3f");
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("oidn_history_weight_desc"), "Higher values yield stronger temporal smoothing and stability (default: 0.95). With dynamic accumulation, 1.0 allows full multi-frame integration capped by Max Accumulation Frames."));
+
+			ImGui::SliderFloat(T(TKEY("oidn_depth_threshold"), "Depth Disocclusion Threshold"), &oidnSettings.DepthThreshold, 0.005f, 0.20f, "%.3f");
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("oidn_depth_threshold_desc"), "Scale-invariant relative linear depth difference threshold to reject history when a moving foreground object reveals background geometry (default: 0.030)."));
+
+			ImGui::SliderInt(T(TKEY("oidn_max_accum_frames"), "Max Accumulation Frames"), &oidnSettings.MaxAccumulationFrames, 1, 128);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("oidn_max_accum_frames_desc"), "Caps dynamic per-pixel temporal frame integration (default: 48). Higher values yield maximum stability in stationary scenes; lower values adapt faster."));
+		}
 
 		ImGui::TreePop();
 	}
