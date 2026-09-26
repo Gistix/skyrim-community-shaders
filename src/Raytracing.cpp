@@ -166,6 +166,10 @@ void Raytracing::UpdateSettings()
 		return;
 
 	creationEngineRaytracing->UpdateSettings(GetSettings());
+
+	if (GetSettings().GeneralSettings.Denoiser != CreationEngineRaytracing::Denoiser::FSRRR && fsrrrDenoiser.IsAvailable()) {
+		fsrrrDenoiser.Shutdown();
+	}
 }
 
 void Raytracing::Execute()
@@ -234,8 +238,67 @@ void Raytracing::Execute()
 			screenCB->Update(screenData.get(), sizeof(ScreenData));
 		}
 
+		// FidelityFX Ray Regeneration (MLD / FSR-RR) denoiser
+		bool fsrrrRan = false;
+		if (globals::features::pathTracing.settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR) {
+			if (!fsrrrDenoiser.IsAvailable()) {
+				fsrrrDenoiser.Initialize();
+			}
+			if (fsrrrDenoiser.IsAvailable() && sharedMainTextures[completedSlot].srv && normalRoughnessSRV) {
+				ID3D11Resource* rrDiffuse = nullptr;
+				ID3D11Resource* rrSpecular = nullptr;
+				ID3D11Resource* rrNormal = nullptr;
+				ID3D11Resource* rrHitDistance = nullptr;
+				GetRayReconstructionInputs(rrDiffuse, rrSpecular, rrNormal, rrHitDistance);
+
+				auto updateSRV = [&](ID3D11Resource* res, ID3D11Resource*& cachedRes, winrt::com_ptr<ID3D11ShaderResourceView>& srv) {
+					if (res != cachedRes) {
+						cachedRes = res;
+						srv = nullptr;
+						if (res) {
+							D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+							res->GetType(&dim);
+							if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+								auto* tex = static_cast<ID3D11Texture2D*>(res);
+								D3D11_TEXTURE2D_DESC desc{};
+								tex->GetDesc(&desc);
+								D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+								srvDesc.Format = desc.Format;
+								srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+								srvDesc.Texture2D.MostDetailedMip = 0;
+								srvDesc.Texture2D.MipLevels = 1;
+								globals::d3d::device->CreateShaderResourceView(tex, &srvDesc, srv.put());
+							}
+						}
+					}
+				};
+
+				updateSRV(rrDiffuse, fsrrrDiffuseResource, fsrrrDiffuseSRV);
+				updateSRV(rrSpecular, fsrrrSpecularResource, fsrrrSpecularSRV);
+				updateSRV(rrHitDistance, fsrrrHitDistResource, fsrrrHitDistSRV);
+
+				fsrrrDenoiser.SetColorDecodeExponent(globals::features::linearLighting.settings.enableLinearLighting ? 1.0f : 2.2f);
+				auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+				fsrrrDenoiser.Denoise(
+					sharedMainTextures[completedSlot].srv.get(),
+					fsrrrDiffuseSRV.get(),
+					fsrrrSpecularSRV.get(),
+					normalRoughnessSRV.get(),
+					sharedMotionVectorTextures[completedSlot].srv.get(),
+					sharedDepthTextures[completedSlot].srv.get(),
+					fsrrrHitDistSRV.get(),
+					main.UAV,
+					mv.UAV,
+					static_cast<uint32_t>(screenSize.x),
+					static_cast<uint32_t>(screenSize.y));
+				fsrrrRan = true;
+			}
+		} else if (fsrrrDenoiser.IsAvailable()) {
+			fsrrrDenoiser.Shutdown();
+		}
+
 		// Blend pathtracing and sky (colors and motion vectors)
-		if (ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
+		if (!fsrrrRan && ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
 			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
 			context->CSSetShader(ptCompositeCS.get(), nullptr, 0);
@@ -261,7 +324,7 @@ void Raytracing::Execute()
 			uavs[0] = nullptr;
 			uavs[1] = nullptr;
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-		} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
+		} else if (!fsrrrRan && sharedMainTextures[completedSlot].texture.shared && main.texture) {
 			context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
 		}
 
@@ -463,6 +526,10 @@ void Raytracing::SetupResourcesPostDeferred()
 		return;
 
 	creationEngineRaytracing->Initialize(GetSettings());
+
+	if (GetSettings().GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR) {
+		fsrrrDenoiser.Initialize();
+	}
 
 	if (!featureData)
 		featureData = std::make_unique<CreationEngineRaytracing::FeatureData>();

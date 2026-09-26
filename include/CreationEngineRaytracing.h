@@ -33,7 +33,8 @@ struct CreationEngineRaytracing
 		NRD_Reblur,
 		NRD_Relax,
 		DLSS_RR,
-		Accumulation
+		Accumulation,
+		FSRRR
 	};
 
 	struct GeneralSettings

@@ -12,10 +12,15 @@
 #define RT_TKEY(suffix) RT_I18N_KEY_PREFIX suffix
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	PathTracingFSRRRSettings,
+	Enabled)
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	PathTracing::Settings,
 	Enabled,
 	RaytracingSettings,
 	GeneralSettings,
+	FSRRR,
 	StablePlanes,
 	NRDSettings,
 	NRDReblurSettings,
@@ -125,10 +130,21 @@ void PathTracing::DrawGeneralSettings()
 			settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
 		}
 
-		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
+		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation", "FidelityFX Ray Regeneration" };
 		int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
+		if (currentDenoiser < 0 || currentDenoiser >= IM_ARRAYSIZE(denoiserNames))
+			currentDenoiser = 0;
 		if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
 			settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
+		}
+
+		const bool useFSRRR = (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR);
+		if (useFSRRR) {
+			if (!globals::features::raytracing.fsrrrDenoiser.IsAvailable()) {
+				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+					T(TKEY("fsrrr_unavailable"), "FSR Ray Regeneration is not available (initialization failed or missing shaders)."));
+			}
+			DrawFSRRRSettings();
 		}
 
 		if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
@@ -149,6 +165,11 @@ void PathTracing::DrawGeneralSettings()
 		ImGui::PopID();
 		ImGui::EndTabItem();
 	}
+}
+
+void PathTracing::DrawFSRRRSettings()
+{
+	// Native neural ray regeneration; no OIDN temporal or disocclusion post-processing needed.
 }
 
 void PathTracing::DrawAdvancedSettings()

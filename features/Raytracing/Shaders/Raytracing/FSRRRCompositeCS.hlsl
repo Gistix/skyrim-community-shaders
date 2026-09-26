@@ -1,0 +1,80 @@
+// FidelityFX Ray Regeneration (MLD / FSR-RR) composite pass.
+//
+// Reads the 16-channel denoised tensor, re-modulates diffuse and specular radiance
+// with albedo guides, and composites into the main render target (blending with raster sky)
+// and motion vector buffer.
+
+#include "Common/FrameBuffer.hlsli"
+
+cbuffer FSRRRCompositeParams : register(b0)
+{
+	uint2 RenderSize;
+	float ColorDecodeExponent;
+	float Padding;
+};
+
+StructuredBuffer<uint4> DenoisedTensor : register(t0); // 16-channel FP16 tensor
+Texture2D<float4> PathTracingColor : register(t1);     // Raw PT radiance (alpha contains blend weight)
+Texture2D<float4> InputDiffuseAlbedo : register(t2);   // Diffuse albedo guide
+Texture2D<float4> InputSpecularAlbedo : register(t3);  // Specular albedo guide
+Texture2D<float4> InputMotionVectors : register(t4);   // Screen motion vectors
+
+RWTexture2D<float4> MainOutput : register(u0);
+RWTexture2D<float2> MotionVectorOutput : register(u1);
+
+float2 UnpackHalf2(uint packed)
+{
+	return float2(f16tof32(packed & 0xFFFFu), f16tof32(packed >> 16));
+}
+
+[numthreads(8, 8, 1)]
+void main(uint2 id : SV_DispatchThreadID)
+{
+	if (any(id >= RenderSize))
+		return;
+
+	const uint pixelIndex = id.y * RenderSize.x + id.x;
+
+	// Unpack 16-channel denoised tensor:
+	// Channels 0..2: demodulated diffuse radiance (RGB)
+	// Channels 3..5: demodulated specular radiance (RGB)
+	uint4 uLow = DenoisedTensor[pixelIndex * 2 + 0];
+
+	float2 ch01 = UnpackHalf2(uLow.x); // Diffuse R, G
+	float2 ch23 = UnpackHalf2(uLow.y); // Diffuse B, Specular R
+	float2 ch45 = UnpackHalf2(uLow.z); // Specular G, B
+
+	float3 denoisedDemodDiffuse = max(float3(ch01.x, ch01.y, ch23.x), 0.0f.xxx);
+	float3 denoisedSpecular = max(float3(ch23.y, ch45.x, ch45.y), 0.0f.xxx);
+
+	// Fetch albedo guides
+	float3 diffAlbedo = saturate(InputDiffuseAlbedo[id].rgb);
+	float3 specAlbedo = saturate(InputSpecularAlbedo[id].rgb);
+
+	// Re-modulate
+	float3 diffuseRadiance = denoisedDemodDiffuse * max(diffAlbedo, 0.02f);
+	float3 specularRadiance = denoisedSpecular * max(specAlbedo, 0.02f);
+	float3 reconstructedRadiance = diffuseRadiance + specularRadiance;
+
+	// Fetch raw path tracing input for alpha blending
+	float4 ptSample = PathTracingColor[id];
+	float blend = saturate(ptSample.a);
+
+	// Fetch raster sky from game main texture (MainOutput UAV in-out)
+	float4 mainRaster = MainOutput[id];
+	if (any(isnan(mainRaster.rgb)) || any(isinf(mainRaster.rgb)))
+		mainRaster.rgb = 0.0f.xxx;
+
+	// Gamma re-encode to display-referred space and blend with raster
+	float3 displayColor = pow(max(reconstructedRadiance, 0.0f.xxx), 1.0f / ColorDecodeExponent);
+	const float3 finalMain = lerp(mainRaster.rgb, displayColor, blend);
+
+	MainOutput[id] = float4(finalMain, mainRaster.a);
+
+	// Composite motion vectors
+	float4 mvSample = InputMotionVectors[id];
+	float2 motion = mvSample.xy;
+	const float2 mvRaster = MotionVectorOutput[id];
+	const float2 finalMV = lerp(mvRaster, motion, blend);
+	MotionVectorOutput[id] = finalMV;
+}

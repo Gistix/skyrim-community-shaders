@@ -3,6 +3,15 @@
 #include "CreationEngineRaytracing.h"
 #include "Feature.h"
 #include "FeatureCategories.h"
+#include "Features/Raytracing/FSRRRDenoiser.h"
+
+/** @brief FidelityFX Ray Regeneration (MLD / FSR-RR) settings. */
+struct PathTracingFSRRRSettings
+{
+	bool Enabled = true;
+
+	bool operator==(const PathTracingFSRRRSettings&) const = default;
+};
 
 /**
  * @brief Regular feature providing hardware-accelerated Path Tracing.
@@ -37,6 +46,7 @@ public:
 			.Denoiser = CreationEngineRaytracing::Denoiser::None,
 			.Mode = CreationEngineRaytracing::Mode::PathTracing
 		};
+		PathTracingFSRRRSettings FSRRR;
 		bool StablePlanes = false;
 
 		CreationEngineRaytracing::NRDSettings NRDSettings;
@@ -70,6 +80,7 @@ public:
 	void DrawWaterSettings();
 	void DrawSHaRCSettings();
 	void DrawExperimentalSettings();
+	void DrawFSRRRSettings();
 
 	void UpdateSettings();
 	bool Available() const;

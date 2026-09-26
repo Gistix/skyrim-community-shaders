@@ -3,6 +3,7 @@
 #include "Buffer.h"
 #include "CreationEngineRaytracing.h"
 #include "FeatureCategories.h"
+#include "Features/Raytracing/FSRRRDenoiser.h"
 #include "Features/OverlayFeature.h"
 #include "Globals.h"
 #include <EASTL/vector.h>
@@ -125,6 +126,15 @@ public:
 	uint2 m_Resolution{ 0, 0 };
 
 	eastl::unique_ptr<CreationEngineRaytracing> creationEngineRaytracing = nullptr;
+
+	// FidelityFX Ray Regeneration (MLD / FSR-RR) denoiser
+	FSRRRDenoiser fsrrrDenoiser;
+	ID3D11Resource* fsrrrDiffuseResource = nullptr;
+	ID3D11Resource* fsrrrSpecularResource = nullptr;
+	ID3D11Resource* fsrrrHitDistResource = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> fsrrrDiffuseSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> fsrrrSpecularSRV;
+	winrt::com_ptr<ID3D11ShaderResourceView> fsrrrHitDistSRV;
 
 	// Sky Hemisphere
 	winrt::com_ptr<ID3D11Texture2D> skyHemisphere = nullptr;
