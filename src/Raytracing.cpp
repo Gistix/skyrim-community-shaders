@@ -90,6 +90,7 @@ CreationEngineRaytracing::Settings Raytracing::GetSettings() const
 		certSettings.NRDSettings = pt.NRDSettings;
 		certSettings.NRDReblurSettings = pt.NRDReblurSettings;
 		certSettings.NRDRelaxSettings = pt.NRDRelaxSettings;
+		certSettings.AdvancedSettings.HairBSDF = pt.HairBSDF;
 		certSettings.AdvancedSettings.SSSSettings = pt.SSSSettings;
 		certSettings.MaterialSettings = pt.MaterialSettings;
 		certSettings.LightingSettings = pt.LightingSettings;

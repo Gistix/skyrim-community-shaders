@@ -20,6 +20,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	NRDSettings,
 	NRDReblurSettings,
 	NRDRelaxSettings,
+	HairBSDF,
 	SSSSettings,
 	MaterialSettings,
 	LightingSettings,
@@ -156,6 +157,8 @@ void PathTracing::DrawAdvancedSettings()
 		ImGui::PushID("AdvancedSettings");
 
 		ImGui::Checkbox(T(RT_TKEY("stable_planes"), "Stable Planes"), &settings.StablePlanes);
+
+		DrawHairBSDFSettings();
 
 		DrawSSSSettings();
 
@@ -331,6 +334,19 @@ void PathTracing::DrawRelaxSettings()
 	}
 
 	ImGui::TreePop();
+}
+
+void PathTracing::DrawHairBSDFSettings()
+{
+	const char* hairBSDFNames[] = {
+		T(RT_TKEY("hair_bsdf_none"), "None"),
+		T(RT_TKEY("hair_bsdf_chiang"), "Chiang BSDF"),
+		T(RT_TKEY("hair_bsdf_far_field"), "Far Field BCSDF")
+	};
+	int currentHairBSDF = static_cast<int>(settings.HairBSDF);
+	if (ImGui::Combo(T(RT_TKEY("hair_bsdf"), "Hair BSDF"), &currentHairBSDF, hairBSDFNames, IM_ARRAYSIZE(hairBSDFNames))) {
+		settings.HairBSDF = static_cast<CreationEngineRaytracing::HairBSDF>(currentHairBSDF);
+	}
 }
 
 void PathTracing::DrawSSSSettings()

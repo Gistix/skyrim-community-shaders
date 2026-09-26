@@ -42,6 +42,7 @@ public:
 		CreationEngineRaytracing::NRDSettings NRDSettings;
 		CreationEngineRaytracing::NRDReblurSettings NRDReblurSettings;
 		CreationEngineRaytracing::NRDRelaxSettings NRDRelaxSettings;
+		CreationEngineRaytracing::HairBSDF HairBSDF = CreationEngineRaytracing::HairBSDF::FarFieldBCSDF;
 		CreationEngineRaytracing::SSSSettings SSSSettings;
 		CreationEngineRaytracing::MaterialSettings MaterialSettings;
 		CreationEngineRaytracing::LightingSettings LightingSettings;
@@ -62,6 +63,7 @@ public:
 	void DrawNRDSettings();
 	void DrawReblurSettings();
 	void DrawRelaxSettings();
+	void DrawHairBSDFSettings();
 	void DrawSSSSettings();
 	void DrawMaterialSettings();
 	void DrawLightingSettings();
