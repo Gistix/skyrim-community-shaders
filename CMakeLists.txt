@@ -165,6 +165,9 @@ endif()
 # Streamline is linked as headers and loaded through its Vulkan interposer at runtime.
 add_subdirectory(${CMAKE_SOURCE_DIR}/cmake/Streamline)
 
+# ONNX Runtime (DirectML / Tensor Core neural denoiser).
+include(ONNXRuntime)
+
 target_compile_definitions(
     ${PROJECT_NAME}
     PRIVATE "$<$<BOOL:${TRACY_SUPPORT}>:TRACY_SUPPORT>"
@@ -732,6 +735,11 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
     )
         file(APPEND "${_runtime_paths_file}" "SKSE/Plugins/CommunityShaders/bin/${_runtime_name}\n")
     endforeach()
+    if(DEFINED ONNXRUNTIME_BIN_NAMES)
+        foreach(_ort_bin IN LISTS ONNXRUNTIME_BIN_NAMES)
+            file(APPEND "${_runtime_paths_file}" "SKSE/Plugins/CommunityShaders/bin/${_ort_bin}\n")
+        endforeach()
+    endif()
 
     # Ensure SKSE/Plugins dir exists
     # Note: DLL and PDB are copied via POST_BUILD command to avoid race conditions

@@ -23,14 +23,9 @@ Texture2D<float4> InputMotionVectors : register(t4);  // Screen motion vectors
 Texture2D<float>  InputDepth : register(t5);          // Hardware depth
 Texture2D<float>  InputHitDist : register(t6);        // Hit distance / AO guide
 
-// Output 16-channel FP16 tensor buffer.
-// Each pixel occupies 32 bytes (16 x fp16 = 8 uints = 2 x uint4).
-RWStructuredBuffer<uint4> OutputTensor : register(u0);
-
-uint PackHalf2(float2 value)
-{
-	return (f32tof16(value.x) & 0xFFFFu) | (f32tof16(value.y) << 16);
-}
+// Output 16-channel planar NCHW float tensor buffer.
+// Layout: [1, 16, Height, Width] -> channel * (Width * Height) + pixelIndex.
+RWStructuredBuffer<float> OutputTensor : register(u0);
 
 float GetLinearDepth(float rawDepth)
 {
@@ -107,25 +102,23 @@ void main(uint2 id : SV_DispatchThreadID)
 	// 8. Confidence indicator
 	float confidence = 1.0f;
 
-	// Pack 16 channels into 8 uints (2 x uint4)
-	// Channels:
-	//  0, 1: Demodulated Diffuse R, G
-	//  2, 3: Demodulated Diffuse B, Specular R
-	//  4, 5: Specular G, B
-	//  6, 7: Linear Depth, Normal X
-	//  8, 9: Normal Y, Normal Z
-	// 10,11: Roughness, Motion Vector X
-	// 12,13: Motion Vector Y, Curvature
-	// 14,15: Hit Distance / AO, Confidence
-	uint u0 = PackHalf2(demodDiffuse.rg);
-	uint u1 = PackHalf2(float2(demodDiffuse.b, demodSpecular.r));
-	uint u2 = PackHalf2(demodSpecular.gb);
-	uint u3 = PackHalf2(float2(normLinearDepth, normal.x));
-	uint u4 = PackHalf2(normal.yz);
-	uint u5 = PackHalf2(float2(roughness, motionVectors.x));
-	uint u6 = PackHalf2(float2(motionVectors.y, curvature));
-	uint u7 = PackHalf2(float2(hitDist, confidence));
+	const uint pixelCount = RenderSize.x * RenderSize.y;
 
-	OutputTensor[pixelIndex * 2 + 0] = uint4(u0, u1, u2, u3);
-	OutputTensor[pixelIndex * 2 + 1] = uint4(u4, u5, u6, u7);
+	// Planar NCHW layout: [1, 16, Height, Width] -> channel * pixelCount + pixelIndex
+	OutputTensor[0 * pixelCount + pixelIndex] = demodDiffuse.r;
+	OutputTensor[1 * pixelCount + pixelIndex] = demodDiffuse.g;
+	OutputTensor[2 * pixelCount + pixelIndex] = demodDiffuse.b;
+	OutputTensor[3 * pixelCount + pixelIndex] = demodSpecular.r;
+	OutputTensor[4 * pixelCount + pixelIndex] = demodSpecular.g;
+	OutputTensor[5 * pixelCount + pixelIndex] = demodSpecular.b;
+	OutputTensor[6 * pixelCount + pixelIndex] = normLinearDepth;
+	OutputTensor[7 * pixelCount + pixelIndex] = normal.x;
+	OutputTensor[8 * pixelCount + pixelIndex] = normal.y;
+	OutputTensor[9 * pixelCount + pixelIndex] = normal.z;
+	OutputTensor[10 * pixelCount + pixelIndex] = roughness;
+	OutputTensor[11 * pixelCount + pixelIndex] = motionVectors.x;
+	OutputTensor[12 * pixelCount + pixelIndex] = motionVectors.y;
+	OutputTensor[13 * pixelCount + pixelIndex] = curvature;
+	OutputTensor[14 * pixelCount + pixelIndex] = hitDist;
+	OutputTensor[15 * pixelCount + pixelIndex] = confidence;
 }

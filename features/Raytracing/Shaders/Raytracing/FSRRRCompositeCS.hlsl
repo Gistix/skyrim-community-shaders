@@ -13,7 +13,7 @@ cbuffer FSRRRCompositeParams : register(b0)
 	float Padding;
 };
 
-StructuredBuffer<uint4> DenoisedTensor : register(t0); // 16-channel FP16 tensor
+StructuredBuffer<float> DenoisedTensor : register(t0); // 16-channel planar NCHW float tensor
 Texture2D<float4> PathTracingColor : register(t1);     // Raw PT radiance (alpha contains blend weight)
 Texture2D<float4> InputDiffuseAlbedo : register(t2);   // Diffuse albedo guide
 Texture2D<float4> InputSpecularAlbedo : register(t3);  // Specular albedo guide
@@ -22,11 +22,6 @@ Texture2D<float4> InputMotionVectors : register(t4);   // Screen motion vectors
 RWTexture2D<float4> MainOutput : register(u0);
 RWTexture2D<float2> MotionVectorOutput : register(u1);
 
-float2 UnpackHalf2(uint packed)
-{
-	return float2(f16tof32(packed & 0xFFFFu), f16tof32(packed >> 16));
-}
-
 [numthreads(8, 8, 1)]
 void main(uint2 id : SV_DispatchThreadID)
 {
@@ -34,18 +29,22 @@ void main(uint2 id : SV_DispatchThreadID)
 		return;
 
 	const uint pixelIndex = id.y * RenderSize.x + id.x;
+	const uint pixelCount = RenderSize.x * RenderSize.y;
 
-	// Unpack 16-channel denoised tensor:
+	// Planar NCHW layout:
 	// Channels 0..2: demodulated diffuse radiance (RGB)
 	// Channels 3..5: demodulated specular radiance (RGB)
-	uint4 uLow = DenoisedTensor[pixelIndex * 2 + 0];
+	float3 denoisedDemodDiffuse = max(float3(
+		DenoisedTensor[0 * pixelCount + pixelIndex],
+		DenoisedTensor[1 * pixelCount + pixelIndex],
+		DenoisedTensor[2 * pixelCount + pixelIndex]
+	), 0.0f.xxx);
 
-	float2 ch01 = UnpackHalf2(uLow.x); // Diffuse R, G
-	float2 ch23 = UnpackHalf2(uLow.y); // Diffuse B, Specular R
-	float2 ch45 = UnpackHalf2(uLow.z); // Specular G, B
-
-	float3 denoisedDemodDiffuse = max(float3(ch01.x, ch01.y, ch23.x), 0.0f.xxx);
-	float3 denoisedSpecular = max(float3(ch23.y, ch45.x, ch45.y), 0.0f.xxx);
+	float3 denoisedSpecular = max(float3(
+		DenoisedTensor[3 * pixelCount + pixelIndex],
+		DenoisedTensor[4 * pixelCount + pixelIndex],
+		DenoisedTensor[5 * pixelCount + pixelIndex]
+	), 0.0f.xxx);
 
 	// Fetch albedo guides
 	float3 diffAlbedo = saturate(InputDiffuseAlbedo[id].rgb);
