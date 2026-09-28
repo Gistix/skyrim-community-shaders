@@ -146,13 +146,13 @@ public:
 
 	struct SharedTextureWrapper
 	{
-		CreationEngineRaytracing::SharedTexture texture{};
+		CreationEngineRaytracing::SharedTexture texture;
 		winrt::com_ptr<ID3D11ShaderResourceView> srv = nullptr;
 	};
 
-	SharedTextureWrapper sharedDepthTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-	SharedTextureWrapper sharedMotionVectorTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-	SharedTextureWrapper sharedMainTextures[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	SharedTextureWrapper sharedDepthTextures;
+	SharedTextureWrapper sharedMotionVectorTextures;
+	SharedTextureWrapper sharedMainTextures;
 
 	struct alignas(16) ScreenData
 	{

@@ -753,7 +753,7 @@ struct CreationEngineRaytracing
 	using UpdateSettingsFn = void (*)(Settings);
 	using GetRRInputFn = void (*)(void*&, void*&, void*&);
 	using SetSharedTexturesFn = void (*)(void*, void*, void*);
-	using GetSharedTexturesFn = void (*)(SharedTexture*, SharedTexture*, SharedTexture*);
+	using GetSharedTexturesFn = void (*)(SharedTexture&, SharedTexture&, SharedTexture&);
 	using UpdateJitterFn = void (*)(float2);
 	using SetSkinDetailNormalFn = void (*)(void*);
 	using GetAccumulatedFrameCountFn = uint32_t (*)();

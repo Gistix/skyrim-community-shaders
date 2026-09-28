@@ -196,10 +196,9 @@ void Raytracing::Execute()
 		}
 	}
 
-	uint32_t completedSlot;
 	try {
 		creationEngineRaytracing->Execute();
-		completedSlot = creationEngineRaytracing->PostExecution();
+		creationEngineRaytracing->PostExecution();
 
 		if (settings.PerfOverlay != OverlayMode::None && creationEngineRaytracing->GetPassTimings) {
 			creationEngineRaytracing->GetPassTimings(passTimings);
@@ -209,9 +208,6 @@ void Raytracing::Execute()
 		Aftermath::WaitForCrashDump();
 		throw;
 	}
-
-	if (completedSlot >= CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT)
-		return;
 
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
@@ -235,7 +231,7 @@ void Raytracing::Execute()
 		}
 
 		// Blend pathtracing and sky (colors and motion vectors)
-		if (ptCompositeCS && screenCB && sharedMainTextures[completedSlot].srv && sharedMotionVectorTextures[completedSlot].srv) {
+		if (ptCompositeCS && screenCB && sharedMainTextures.srv && sharedMotionVectorTextures.srv) {
 			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
 			context->CSSetShader(ptCompositeCS.get(), nullptr, 0);
@@ -244,8 +240,8 @@ void Raytracing::Execute()
 			context->CSSetConstantBuffers(0, 1, &cb);
 
 			ID3D11ShaderResourceView* srvs[] = {
-				sharedMainTextures[completedSlot].srv.get(),
-				sharedMotionVectorTextures[completedSlot].srv.get()
+				sharedMainTextures.srv.get(),
+				sharedMotionVectorTextures.srv.get()
 			};
 			context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
@@ -261,12 +257,12 @@ void Raytracing::Execute()
 			uavs[0] = nullptr;
 			uavs[1] = nullptr;
 			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
-		} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
-			context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
+		} else if (sharedMainTextures.texture.shared && main.texture) {
+			context->CopyResource(main.texture, sharedMainTextures.texture.shared);
 		}
 
 		// Copy Depth buffer
-		if (copyDepthVS && copyDepthPS && sharedDepthTextures[completedSlot].srv) {
+		if (copyDepthVS && copyDepthPS && sharedDepthTextures.srv) {
 			auto depthStencils = renderer->GetDepthStencilData().depthStencils;
 
 			auto& mainDepth = depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
@@ -312,7 +308,7 @@ void Raytracing::Execute()
 			context->VSSetShader(copyDepthVS.get(), nullptr, 0);
 			context->PSSetShader(copyDepthPS.get(), nullptr, 0);
 
-			ID3D11ShaderResourceView* srvs[] = { sharedDepthTextures[completedSlot].srv.get() };
+			ID3D11ShaderResourceView* srvs[] = { sharedDepthTextures.srv.get() };
 			context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 			context->Draw(3, 0);
@@ -346,8 +342,8 @@ void Raytracing::Execute()
 			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kINDIRECT_DOWNSCALED].RTV, clearColor);
 		}
-	} else if (sharedMainTextures[completedSlot].texture.shared && main.texture) {
-		context->CopyResource(main.texture, sharedMainTextures[completedSlot].texture.shared);
+	} else if (sharedMainTextures.texture.shared && main.texture) {
+		context->CopyResource(main.texture, sharedMainTextures.texture.shared);
 	}
 }
 
@@ -668,9 +664,9 @@ void Raytracing::SetupSharedTextures()
 
 	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTexture.get(), gnmaoTex);
 
-	CreationEngineRaytracing::SharedTexture depth[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-	CreationEngineRaytracing::SharedTexture motionVector[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
-	CreationEngineRaytracing::SharedTexture main[CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT]{};
+	CreationEngineRaytracing::SharedTexture depth{};
+	CreationEngineRaytracing::SharedTexture motionVector{};
+	CreationEngineRaytracing::SharedTexture main{};
 	creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
 
 	auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
@@ -690,11 +686,9 @@ void Raytracing::SetupSharedTextures()
 		}
 	};
 
-	for (uint32_t i = 0; i < CreationEngineRaytracing::MAX_FRAMES_IN_FLIGHT; i++) {
-		setupSharedWrapper(sharedDepthTextures[i], depth[i]);
-		setupSharedWrapper(sharedMotionVectorTextures[i], motionVector[i]);
-		setupSharedWrapper(sharedMainTextures[i], main[i]);
-	}
+	setupSharedWrapper(sharedDepthTextures, depth);
+	setupSharedWrapper(sharedMotionVectorTextures, motionVector);
+	setupSharedWrapper(sharedMainTextures, main);
 }
 
 void Raytracing::CompileShaders()
