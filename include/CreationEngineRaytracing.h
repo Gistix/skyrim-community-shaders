@@ -734,7 +734,7 @@ struct CreationEngineRaytracing
 	};
 	static_assert(sizeof(FeatureData) % 16 == 0);
 
-	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 
 	HMODULE handle = nullptr;
 
