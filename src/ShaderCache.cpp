@@ -1439,12 +1439,16 @@ namespace SIE
 
 			// Atomically check the shaderMap and either:
 			//  - return the blob if already Completed (cache hit),
+			//  - return nullptr if a previous attempt Failed,
 			//  - wait if another thread is compiling (Pending),
 			//  - claim the slot with Pending if nobody started yet.
 			auto [claimResult, cachedBlob] = cache.ClaimCompilation(key);
 			if (claimResult == ShaderCache::ClaimResult::CacheHit) {
 				cache.IncCacheHitTasks();
 				return cachedBlob;
+			}
+			if (claimResult == ShaderCache::ClaimResult::Failed) {
+				return nullptr;
 			}
 
 			const auto type = shader.shaderType.get();
@@ -2147,6 +2151,7 @@ namespace SIE
 			hlslToShaderMap.clear();
 		}
 		compilationSet.Clear();
+		Util::ClearShaderCompileFailures();
 		globals::deferred->ClearShaderCache();
 		for (auto* feature : Feature::GetFeatureList()) {
 			if (feature->loaded) {
@@ -2330,7 +2335,7 @@ namespace SIE
 					break;  // Completed with nullptr blob — re-compile
 				}
 				if (entry.status == ShaderCompilationTask::Status::Failed) {
-					break;  // Previous attempt failed — re-compile
+					return { ClaimResult::Failed, nullptr };
 				}
 				// Status is Pending — another thread is compiling this shader.
 				logger::debug("Shader compilation in progress, waiting: {}", key);
@@ -3997,6 +4002,8 @@ namespace SIE
 					if (fileDone)
 						continue;
 				}
+				// Feature shaders are not dependency-tracked, so any edit may fix a failed compile.
+				Util::ClearShaderCompileFailures();
 				if (clearCache) {
 					cache->DeleteDiskCache();
 					cache->Clear();
