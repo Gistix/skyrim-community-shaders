@@ -33,7 +33,7 @@ public:
 	virtual bool IsCore() const override { return true; }
 	virtual bool IsInMenu() const override { return true; }
 	virtual bool DrawFailLoadMessage() const override { return false; }
-	virtual ReleaseStage GetReleaseStage() const override { return ReleaseStage::Alpha; }
+	virtual ReleaseStage GetReleaseStage() const override { return ReleaseStage::Release; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
