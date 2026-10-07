@@ -34,7 +34,6 @@ public:
 		bool Enabled = true;
 		CreationEngineRaytracing::RaytracingSettings RaytracingSettings;
 		CreationEngineRaytracing::GeneralSettings GeneralSettings{
-			.Denoiser = CreationEngineRaytracing::Denoiser::None,
 			.Mode = CreationEngineRaytracing::Mode::PathTracing
 		};
 		bool StablePlanes = false;

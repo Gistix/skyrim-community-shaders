@@ -38,8 +38,8 @@ struct CreationEngineRaytracing
 
 	struct GeneralSettings
 	{
-		Denoiser Denoiser = Denoiser::NRD_Reblur;
-		Mode Mode = Mode::GlobalIllumination;
+		Denoiser Denoiser = Denoiser::NRD_Relax;
+		Mode Mode = Mode::None;
 		bool RaytracedShadows = false;
 
 		bool operator==(const GeneralSettings&) const = default;
@@ -88,13 +88,13 @@ struct CreationEngineRaytracing
 		float minHitDistanceWeight = 0.1f;
 
 		// (normalized %) - base fraction of diffuse or specular lobe angle used to drive normal based rejection
-		float lobeAngleFraction = 0.15f;
+		float lobeAngleFraction = 0.65f;
 
 		// (normalized %) - base fraction of center roughness used to drive roughness based rejection
 		float roughnessFraction = 0.15f;
 
 		// Helps to mitigate fireflies emphasized by DLSS. Very cheap and unbiased in most of the cases, better keep in enabled to maximize quality
-		bool enableAntiFirefly = true;
+		bool enableAntiFirefly = false;
 
 		bool operator==(const NRDSettings&) const = default;
 
@@ -172,8 +172,8 @@ struct CreationEngineRaytracing
 	{
 		// Accumulation time in seconds (per NRD best practices: accumulate in seconds, not frames).
 		// Converted to max accumulated frames dynamically based on smoothed FPS.
-		float diffuseAccumulationSeconds = 0.33f;
-		float specularAccumulationSeconds = 0.25f;
+		float diffuseAccumulationSeconds = 0.65f;
+		float specularAccumulationSeconds = 0.65f;
 
 		// [0; RELAX_MAX_HISTORY_FRAME_NUM] - maximum number of linearly accumulated frames
 		uint32_t diffuseMaxAccumulatedFrameNum = 30;
