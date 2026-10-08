@@ -173,10 +173,6 @@ void Raytracing::Execute()
 	if (!Available() || Mode() == CreationEngineRaytracing::Mode::None)
 		return;
 
-	auto& skin = globals::features::skin;
-	if (creationEngineRaytracing->SetSkinDetailNormal)
-		creationEngineRaytracing->SetSkinDetailNormal(skin.loaded && skin.texSkinDetail ? skin.texSkinDetail->resource.get() : nullptr);
-
 	auto& isl = globals::features::inverseSquareLighting;
 	if (isl.loaded) {
 		const auto updateLights = [&](const auto& lights) {
@@ -507,6 +503,8 @@ void Raytracing::SetupResourcesPostDeferred()
 	SetupSkyHemisphere();
 	SetupWaterFlowMap();
 	SetupSharedTextures();
+	auto& skin = globals::features::skin;
+	SetSkinDetailNormal(skin.loaded && skin.texSkinDetail ? skin.texSkinDetail->resource.get() : nullptr);
 	CompileShaders();
 }
 
@@ -689,6 +687,14 @@ void Raytracing::SetupSharedTextures()
 	setupSharedWrapper(sharedDepthTextures, depth);
 	setupSharedWrapper(sharedMotionVectorTextures, motionVector);
 	setupSharedWrapper(sharedMainTextures, main);
+}
+
+void Raytracing::SetSkinDetailNormal(ID3D11Resource* a_resource)
+{
+	if (!initialized || forcedDisabled)
+		return;
+
+	creationEngineRaytracing->SetSkinDetailNormal(a_resource);
 }
 
 void Raytracing::CompileShaders()

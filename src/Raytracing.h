@@ -83,6 +83,7 @@ public:
 	void SetupSkyHemisphere();
 	void SetupWaterFlowMap();
 	void SetupSharedTextures();
+	void SetSkinDetailNormal(ID3D11Resource* a_resource);
 	void SkyCubeToHemi() const;
 	void CopyWaterFlowMap() const;
 	void CompileShaders();
@@ -260,6 +261,7 @@ public:
 		static void Install()
 		{
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
+
 			if (!REL::Module::IsVR()) {
 				stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
 				stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));

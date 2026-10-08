@@ -5,6 +5,7 @@
 #include "Globals.h"
 #include "Hooks.h"
 #include "Menu.h"
+#include "Raytracing.h"
 #include "ShaderCache.h"
 #include "State.h"
 
@@ -214,6 +215,8 @@ void Skin::LoadSkinDetailTexture()
 			.MipLevels = static_cast<UINT>(image.GetMetadata().mipLevels) }
 	};
 	texSkinDetail->CreateSRV(srvDesc);
+
+	globals::features::raytracing.SetSkinDetailNormal(texSkinDetail ? texSkinDetail->resource.get() : nullptr);
 }
 
 void Skin::SetupResources()
