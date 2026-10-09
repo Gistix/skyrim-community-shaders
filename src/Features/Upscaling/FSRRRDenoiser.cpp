@@ -92,18 +92,20 @@ void FSRRRDenoiser::Shutdown()
 }
 
 bool FSRRRDenoiser::Evaluate(
-	ID3D11Resource* a_colorIn,
+	ID3D11Resource* a_directDiffuse,
+	ID3D11Resource* /*a_directSpecular*/,
+	ID3D11Resource* /*a_indirectDiffuse*/,
+	ID3D11Resource* /*a_indirectSpecular*/,
 	ID3D11Resource* /*a_diffuseAlbedo*/,
 	ID3D11Resource* /*a_specularAlbedo*/,
 	ID3D11Resource* a_normalRoughness,
-	ID3D11Resource* a_depth,
+	ID3D11Resource* a_linearDepth,
 	ID3D11Resource* a_motionVectors,
-	ID3D11Resource* /*a_specHitDist*/,
 	ID3D11Resource* a_outputMain,
 	uint32_t a_renderWidth, uint32_t a_renderHeight,
 	float /*a_jitterX*/, float /*a_jitterY*/)
 {
-	if (!initialized || !a_colorIn || !a_outputMain)
+	if (!initialized || !a_outputMain)
 		return false;
 
 	if (a_renderWidth != currentWidth || a_renderHeight != currentHeight) {
@@ -121,13 +123,13 @@ bool FSRRRDenoiser::Evaluate(
 	if (tx) {
 		VkCommandBuffer cb = tx.GetCommandBuffer();
 
-		VkImage srcColor = VK_NULL_HANDLE;
+		VkImage srcDirectDiff = VK_NULL_HANDLE;
 		VkImage srcDepth = VK_NULL_HANDLE;
 		VkImage srcMotion = VK_NULL_HANDLE;
 		VkImage srcNormals = VK_NULL_HANDLE;
 
-		dxvk->GetVkImage(a_colorIn, &srcColor);
-		if (a_depth) dxvk->GetVkImage(a_depth, &srcDepth);
+		if (a_directDiffuse) dxvk->GetVkImage(a_directDiffuse, &srcDirectDiff);
+		if (a_linearDepth) dxvk->GetVkImage(a_linearDepth, &srcDepth);
 		if (a_motionVectors) dxvk->GetVkImage(a_motionVectors, &srcMotion);
 		if (a_normalRoughness) dxvk->GetVkImage(a_normalRoughness, &srcNormals);
 
@@ -138,8 +140,8 @@ bool FSRRRDenoiser::Evaluate(
 		copyRegion.dstSubresource.layerCount = 1;
 		copyRegion.extent = { currentWidth, currentHeight, 1 };
 
-		if (srcColor && sharedColorIn.vkImage) {
-			vkCmdCopyImage(cb, srcColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		if (srcDirectDiff && sharedColorIn.vkImage) {
+			vkCmdCopyImage(cb, srcDirectDiff, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 				sharedColorIn.vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 		}
 

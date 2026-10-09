@@ -33,8 +33,8 @@ struct CreationEngineRaytracing
 		NRD_Reblur,
 		NRD_Relax,
 		DLSS_RR,
-		Accumulation,
-		FSRRR
+		FSR_RR,
+		Accumulation
 	};
 
 	struct GeneralSettings
@@ -753,6 +753,7 @@ struct CreationEngineRaytracing
 	using GetPassTimingsFn = void (*)(eastl::vector<PassTiming>&);
 	using UpdateSettingsFn = void (*)(Settings);
 	using GetRRInputFn = void (*)(void*&, void*&, void*&);
+	using GetFSR4RRInputFn = void (*)(void*& directDiffuse, void*& directSpecular, void*& indirectDiffuse, void*& indirectSpecular, void*& diffuseAlbedo, void*& specularAlbedo, void*& linearDepth);
 	using SetSharedTexturesFn = void (*)(void*, void*, void*);
 	using GetSharedTexturesFn = void (*)(SharedTexture&, SharedTexture&, SharedTexture&);
 	using UpdateJitterFn = void (*)(float2);
@@ -776,6 +777,7 @@ struct CreationEngineRaytracing
 	GetSceneGraphCountersFn GetSceneGraphCounters = nullptr;
 	UpdateSettingsFn UpdateSettings = nullptr;
 	GetRRInputFn GetRRInput = nullptr;
+	GetFSR4RRInputFn GetFSR4RRInput = nullptr;
 	SetSharedTexturesFn SetSharedTextures = nullptr;
 	GetSharedTexturesFn GetSharedTextures = nullptr;
 	UpdateJitterFn UpdateJitter = nullptr;
@@ -810,6 +812,7 @@ struct CreationEngineRaytracing
 		LOAD_FN(GetSceneGraphCounters);
 		LOAD_FN(UpdateSettings);
 		LOAD_FN(GetRRInput);
+		LOAD_FN(GetFSR4RRInput);
 		LOAD_FN(SetSharedTextures);
 		LOAD_FN(GetSharedTextures);
 		LOAD_FN(UpdateJitter);

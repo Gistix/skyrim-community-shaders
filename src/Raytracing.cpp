@@ -161,6 +161,49 @@ void Raytracing::GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D
 	normalRoughness = normalRoughnessTexture.get();
 }
 
+void Raytracing::GetFSR4RayReconstructionInputs(
+	ID3D11Resource*& directDiffuse, ID3D11Resource*& directSpecular,
+	ID3D11Resource*& indirectDiffuse, ID3D11Resource*& indirectSpecular,
+	ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
+	ID3D11Resource*& normalRoughness, ID3D11Resource*& linearDepth)
+{
+	directDiffuse = nullptr;
+	directSpecular = nullptr;
+	indirectDiffuse = nullptr;
+	indirectSpecular = nullptr;
+	diffuseAlbedo = nullptr;
+	specularAlbedo = nullptr;
+	normalRoughness = nullptr;
+	linearDepth = nullptr;
+
+	if (!creationEngineRaytracing || !creationEngineRaytracing->GetFSR4RRInput)
+		return;
+
+	const auto mode = Mode();
+	if (mode != CreationEngineRaytracing::Mode::GlobalIllumination &&
+		mode != CreationEngineRaytracing::Mode::PathTracing)
+		return;
+
+	void* dDiff = nullptr;
+	void* dSpec = nullptr;
+	void* iDiff = nullptr;
+	void* iSpec = nullptr;
+	void* diffAlb = nullptr;
+	void* specAlb = nullptr;
+	void* linDepth = nullptr;
+
+	creationEngineRaytracing->GetFSR4RRInput(dDiff, dSpec, iDiff, iSpec, diffAlb, specAlb, linDepth);
+
+	directDiffuse = static_cast<ID3D11Resource*>(dDiff);
+	directSpecular = static_cast<ID3D11Resource*>(dSpec);
+	indirectDiffuse = static_cast<ID3D11Resource*>(iDiff);
+	indirectSpecular = static_cast<ID3D11Resource*>(iSpec);
+	diffuseAlbedo = static_cast<ID3D11Resource*>(diffAlb);
+	specularAlbedo = static_cast<ID3D11Resource*>(specAlb);
+	normalRoughness = normalRoughnessTexture.get();
+	linearDepth = static_cast<ID3D11Resource*>(linDepth);
+}
+
 void Raytracing::UpdateSettings()
 {
 	if (!initialized)
@@ -343,22 +386,28 @@ void Raytracing::Execute()
 		context->CopyResource(main.texture, sharedMainTextures.texture.shared);
 	}
 
-	if (GetSettings().GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR && main.texture) {
+	if (GetSettings().GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSR_RR && main.texture) {
+		ID3D11Resource* directDiffuse = nullptr;
+		ID3D11Resource* directSpecular = nullptr;
+		ID3D11Resource* indirectDiffuse = nullptr;
+		ID3D11Resource* indirectSpecular = nullptr;
 		ID3D11Resource* diffuseAlbedo = nullptr;
 		ID3D11Resource* specularAlbedo = nullptr;
 		ID3D11Resource* normalRoughness = nullptr;
-		ID3D11Resource* specHitDist = nullptr;
-		GetRayReconstructionInputs(diffuseAlbedo, specularAlbedo, normalRoughness, specHitDist);
+		ID3D11Resource* linearDepth = nullptr;
+		GetFSR4RayReconstructionInputs(
+			directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
+			diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth);
 
-		auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 		auto& motionVector = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
 		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
 
 		auto& upscaling = globals::features::upscaling;
 		upscaling.EvaluateRayRegeneration(
-			main.texture, diffuseAlbedo, specularAlbedo, normalRoughness,
-			depthTex.texture, motionVector.texture, specHitDist, main.texture,
+			directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
+			diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth,
+			motionVector.texture, main.texture,
 			static_cast<uint32_t>(dynamicScreenSize.x), static_cast<uint32_t>(dynamicScreenSize.y),
 			upscaling.jitter.x, upscaling.jitter.y);
 	}

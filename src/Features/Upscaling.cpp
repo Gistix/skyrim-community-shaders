@@ -1744,7 +1744,6 @@ void Upscaling::Upscale()
 					settings.qualityMode, settings.sharpnessFSR, jitter.x, jitter.y);
 				break;
 			case UpscaleMethod::kFSR4:
-			case UpscaleMethod::kFSR4_RR:
 				{
 					bool ok = FSR4Backend::GetSingleton()->Evaluate(
 						main.texture, upscaledTexture->resource.get(), depthTex.texture, motionVector.texture,
@@ -1763,6 +1762,56 @@ void Upscaling::Upscale()
 							logger::warn("[Upscaling] FSR 4 evaluation failed; retaining input color");
 						}
 						lastFsr4Ok = ok;
+					}
+					break;
+				}
+			case UpscaleMethod::kFSR4_RR:
+				{
+					ID3D11Resource* directDiffuse = nullptr;
+					ID3D11Resource* directSpecular = nullptr;
+					ID3D11Resource* indirectDiffuse = nullptr;
+					ID3D11Resource* indirectSpecular = nullptr;
+					ID3D11Resource* diffuseAlbedo = nullptr;
+					ID3D11Resource* specularAlbedo = nullptr;
+					ID3D11Resource* normalRoughness = nullptr;
+					ID3D11Resource* linearDepth = nullptr;
+
+					globals::features::raytracing.GetFSR4RayReconstructionInputs(
+						directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
+						diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth);
+
+					static bool fsrRrInputsMissing = false;
+					const bool missing = !directDiffuse || !directSpecular || !indirectDiffuse || !indirectSpecular ||
+					                     !diffuseAlbedo || !specularAlbedo || !normalRoughness || !linearDepth;
+					if (missing && !fsrRrInputsMissing) {
+						logger::warn("[Upscaling] FSR 4 RR inputs missing: dDiff={} dSpec={} iDiff={} iSpec={} diffAlb={} specAlb={} normals={} linDepth={}",
+							directDiffuse != nullptr, directSpecular != nullptr, indirectDiffuse != nullptr, indirectSpecular != nullptr,
+							diffuseAlbedo != nullptr, specularAlbedo != nullptr, normalRoughness != nullptr, linearDepth != nullptr);
+					}
+					fsrRrInputsMissing = missing;
+
+					bool ok = false;
+					if (!missing) {
+						ok = FSRRRDenoiser::GetSingleton()->Evaluate(
+							directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
+							diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth,
+							motionVector.texture, upscaledTexture->resource.get(),
+							(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+							jitter.x, jitter.y);
+					}
+
+					result = ok ? Streamline::EvaluationResult::kReady : Streamline::EvaluationResult::kFailed;
+
+					static bool lastFsrRrOk = false;
+					if (ok != lastFsrRrOk) {
+						if (ok) {
+							logger::info("[Upscaling] FSR 4 RR evaluation active ({}x{} -> {}x{})",
+								(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+								(uint32_t)displaySize.x, (uint32_t)displaySize.y);
+						} else {
+							logger::warn("[Upscaling] FSR 4 RR evaluation failed or skipped");
+						}
+						lastFsrRrOk = ok;
 					}
 					break;
 				}
@@ -2106,13 +2155,15 @@ void Upscaling::BSFaceGenManager_UpdatePendingCustomizationTextures::thunk()
 }
 
 bool Upscaling::EvaluateRayRegeneration(
-	ID3D11Resource* a_colorIn,
+	ID3D11Resource* a_directDiffuse,
+	ID3D11Resource* a_directSpecular,
+	ID3D11Resource* a_indirectDiffuse,
+	ID3D11Resource* a_indirectSpecular,
 	ID3D11Resource* a_diffuseAlbedo,
 	ID3D11Resource* a_specularAlbedo,
 	ID3D11Resource* a_normalRoughness,
-	ID3D11Resource* a_depth,
+	ID3D11Resource* a_linearDepth,
 	ID3D11Resource* a_motionVectors,
-	ID3D11Resource* a_specHitDist,
 	ID3D11Resource* a_outputMain,
 	uint32_t a_renderWidth, uint32_t a_renderHeight,
 	float a_jitterX, float a_jitterY)
@@ -2122,7 +2173,8 @@ bool Upscaling::EvaluateRayRegeneration(
 	}
 
 	return FSRRRDenoiser::GetSingleton()->Evaluate(
-		a_colorIn, a_diffuseAlbedo, a_specularAlbedo, a_normalRoughness,
-		a_depth, a_motionVectors, a_specHitDist, a_outputMain,
+		a_directDiffuse, a_directSpecular, a_indirectDiffuse, a_indirectSpecular,
+		a_diffuseAlbedo, a_specularAlbedo, a_normalRoughness,
+		a_linearDepth, a_motionVectors, a_outputMain,
 		a_renderWidth, a_renderHeight, a_jitterX, a_jitterY);
 }

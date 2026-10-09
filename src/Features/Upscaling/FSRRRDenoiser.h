@@ -25,13 +25,15 @@ public:
 	 * @brief Evaluates FidelityFX Ray Regeneration for path-traced lighting.
 	 */
 	bool Evaluate(
-		ID3D11Resource* a_colorIn,
+		ID3D11Resource* a_directDiffuse,
+		ID3D11Resource* a_directSpecular,
+		ID3D11Resource* a_indirectDiffuse,
+		ID3D11Resource* a_indirectSpecular,
 		ID3D11Resource* a_diffuseAlbedo,
 		ID3D11Resource* a_specularAlbedo,
 		ID3D11Resource* a_normalRoughness,
-		ID3D11Resource* a_depth,
+		ID3D11Resource* a_linearDepth,
 		ID3D11Resource* a_motionVectors,
-		ID3D11Resource* a_specHitDist,
 		ID3D11Resource* a_outputMain,
 		uint32_t a_renderWidth, uint32_t a_renderHeight,
 		float a_jitterX, float a_jitterY);

@@ -75,6 +75,11 @@ public:
 
 	void GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
 		ID3D11Resource*& normalRoughness, ID3D11Resource*& specHitDist);
+	void GetFSR4RayReconstructionInputs(
+		ID3D11Resource*& directDiffuse, ID3D11Resource*& directSpecular,
+		ID3D11Resource*& indirectDiffuse, ID3D11Resource*& indirectSpecular,
+		ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
+		ID3D11Resource*& normalRoughness, ID3D11Resource*& linearDepth);
 
 	static constexpr uint32_t SKY_CUBEMAP_SIZE = 256;
 	static constexpr uint32_t SKY_HEMI_SIZE = SKY_CUBEMAP_SIZE * 2;
