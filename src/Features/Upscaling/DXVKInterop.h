@@ -181,8 +181,9 @@ public:
 	/** @brief Begins an available command buffer from the ring. */
 	CommandTransaction BeginFrameCommandBuffer();
 
-	/** @brief Submits a ring command buffer on DXVK's queue. */
-	bool SubmitFrameCommandBuffer(CommandTransaction& a_transaction);
+	/** @brief Submits a ring command buffer on DXVK's queue, optionally signaling a semaphore on GPU completion. */
+	bool SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
+		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0);
 
 	/** @brief Defers image-view destruction until the current ring slot completes. */
 	void QueueViewsForDeferredDelete(const CommandTransaction& a_transaction,

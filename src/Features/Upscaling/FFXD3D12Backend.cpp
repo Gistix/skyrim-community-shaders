@@ -106,16 +106,18 @@ FfxApiResource FFXD3D12Backend::CreateResource(
 	uint32_t a_state,
 	uint32_t a_usage)
 {
-	FfxApiResource res{};
-	res.resource = a_resource;
-	res.description.type = FFX_API_RESOURCE_DIMENSION_TEXTURE_2D;
-	res.description.format = ffxApiGetSurfaceFormatDX12(a_format);
-	res.description.width = a_width;
-	res.description.height = a_height;
-	res.description.depth = 1;
-	res.description.mipCount = 1;
-	res.description.flags = 0;
-	res.description.usage = a_usage;
-	res.state = a_state;
+	if (!a_resource) {
+		return {};
+	}
+	FfxApiResource res = ffxApiGetResourceDX12(a_resource, a_state, a_usage);
+	if (a_width > 0) {
+		res.description.width = a_width;
+	}
+	if (a_height > 0) {
+		res.description.height = a_height;
+	}
+	if (a_format != DXGI_FORMAT_UNKNOWN) {
+		res.description.format = ffxApiGetSurfaceFormatDX12(a_format);
+	}
 	return res;
 }

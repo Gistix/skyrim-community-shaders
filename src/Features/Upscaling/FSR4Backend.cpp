@@ -272,8 +272,6 @@ bool FSR4Backend::Evaluate(
 			RecordImageBarrier(cb, sharedMotion.vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 		}
-
-		dxvk->SubmitFrameCommandBuffer(tx);
 	}
 
 	// 2. Advance GPU timeline fence:
@@ -283,7 +281,9 @@ bool FSR4Backend::Evaluate(
 	const uint64_t vkSignalVal = baseFence + 3;
 	const uint64_t d3dSignalVal = baseFence + 4;
 
-	interop->VulkanSignalFence(interop->GetMainSharedFence(), vkSignalVal);
+	if (tx) {
+		dxvk->SubmitFrameCommandBuffer(tx, interop->GetMainSharedFence().vkTimelineSemaphore, vkSignalVal);
+	}
 	interop->D3D12QueueWait(interop->GetMainSharedFence(), vkSignalVal);
 
 	// 3. Record & dispatch D3D12 FSR 4 upscaling work

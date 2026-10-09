@@ -308,8 +308,12 @@ bool D3D12Interop::CreateSharedTexture2D(
 	importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT;
 	importInfo.handle = sharedHandle;
 
+	VkMemoryDedicatedAllocateInfo dedicatedInfo{ VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
+	dedicatedInfo.pNext = &importInfo;
+	dedicatedInfo.image = vkImg;
+
 	VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-	allocInfo.pNext = &importInfo;
+	allocInfo.pNext = &dedicatedInfo;
 	allocInfo.allocationSize = memReqs.size;
 	allocInfo.memoryTypeIndex = memTypeIndex;
 
@@ -472,8 +476,12 @@ bool D3D12Interop::CreateSharedBuffer(
 	importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT;
 	importInfo.handle = sharedHandle;
 
+	VkMemoryDedicatedAllocateInfo dedicatedInfo{ VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO };
+	dedicatedInfo.pNext = &importInfo;
+	dedicatedInfo.buffer = vkBuf;
+
 	VkMemoryAllocateInfo allocInfo{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-	allocInfo.pNext = &importInfo;
+	allocInfo.pNext = &dedicatedInfo;
 	allocInfo.allocationSize = memReqs.size;
 	allocInfo.memoryTypeIndex = memTypeIndex;
 

@@ -154,8 +154,6 @@ bool FSRRRDenoiser::Evaluate(
 			vkCmdCopyImage(cb, srcNormals, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 				sharedNormals.vkImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 		}
-
-		dxvk->SubmitFrameCommandBuffer(tx);
 	}
 
 	// 2. Advance GPU timeline fence:
@@ -165,7 +163,9 @@ bool FSRRRDenoiser::Evaluate(
 	const uint64_t vkSignalVal = baseFence + 1;
 	const uint64_t d3dSignalVal = baseFence + 2;
 
-	interop->VulkanSignalFence(interop->GetMainSharedFence(), vkSignalVal);
+	if (tx) {
+		dxvk->SubmitFrameCommandBuffer(tx, interop->GetMainSharedFence().vkTimelineSemaphore, vkSignalVal);
+	}
 	interop->D3D12QueueWait(interop->GetMainSharedFence(), vkSignalVal);
 
 	// 3. Record & dispatch D3D12 Ray Regeneration work

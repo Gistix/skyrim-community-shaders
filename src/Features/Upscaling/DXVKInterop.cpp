@@ -100,7 +100,8 @@ namespace
 	/// with both FSR-FG and DLSS-G presenting at an exact 2x.
 	QueueSubmitAttempt DirectQueueSubmitSEH(IDXGIVkInteropDevice* a_interopDevice,
 		VkDevice a_device, VkQueue a_queue,
-		VkCommandBuffer a_commandBuffer, VkFence a_fence) noexcept
+		VkCommandBuffer a_commandBuffer, VkFence a_fence,
+		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0) noexcept
 	{
 		QueueSubmitAttempt attempt{};
 		__try {
@@ -115,6 +116,18 @@ namespace
 						VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
 						submitInfo.commandBufferCount = 1;
 						submitInfo.pCommandBuffers = &a_commandBuffer;
+
+						VkTimelineSemaphoreSubmitInfo timelineInfo{ VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+						if (a_signalSemaphore != VK_NULL_HANDLE) {
+							submitInfo.signalSemaphoreCount = 1;
+							submitInfo.pSignalSemaphores = &a_signalSemaphore;
+							if (a_signalValue > 0) {
+								timelineInfo.signalSemaphoreValueCount = 1;
+								timelineInfo.pSignalSemaphoreValues = &a_signalValue;
+								submitInfo.pNext = &timelineInfo;
+							}
+						}
+
 						attempt.submitResult = vkQueueSubmit(a_queue, 1, &submitInfo, a_fence);
 					} __finally {
 						if (attempt.queueLockAcquired)
@@ -361,7 +374,14 @@ bool DXVKInterop::Initialize()
 
 	interopDevice = dev;
 	interopDevice->GetVulkanHandles(&instance, &physicalDevice, &device);
-	interopDevice->GetSubmissionQueue(&queue, &queueFamilyIndex);
+
+	winrt::com_ptr<IDXGIVkInteropDevice1> interopDevice1;
+	uint32_t queueIndex = 0;
+	if (SUCCEEDED(dev->QueryInterface(__uuidof(IDXGIVkInteropDevice1), interopDevice1.put_void()))) {
+		interopDevice1->GetSubmissionQueue1(&queue, &queueIndex, &queueFamilyIndex);
+	} else {
+		interopDevice->GetSubmissionQueue(&queue, &queueFamilyIndex);
+	}
 
 	if (!instance || !physicalDevice || !device || !queue) {
 		logger::error("[DXVKInterop] DXVK returned null Vulkan handles");
@@ -846,7 +866,8 @@ DXVKInterop::CommandTransaction DXVKInterop::BeginFrameCommandBuffer()
 	return CommandTransaction(this, commandFrameIndex, cb, std::move(ringLock));
 }
 
-bool DXVKInterop::SubmitFrameCommandBuffer(CommandTransaction& a_transaction)
+bool DXVKInterop::SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
+	VkSemaphore a_signalSemaphore, uint64_t a_signalValue)
 {
 	if (a_transaction.owner != this || !a_transaction.ringLock.owns_lock() ||
 		a_transaction.submitted || a_transaction.slot >= commandBuffers.size() ||
@@ -860,7 +881,7 @@ bool DXVKInterop::SubmitFrameCommandBuffer(CommandTransaction& a_transaction)
 	VkFence& fence = commandFences[slot];
 
 	const QueueSubmitAttempt attempt = DirectQueueSubmitSEH(
-		interopDevice.get(), device, queue, commandBuffer, fence);
+		interopDevice.get(), device, queue, commandBuffer, fence, a_signalSemaphore, a_signalValue);
 	if (attempt.faulted || attempt.endResult != VK_SUCCESS ||
 		attempt.resetResult != VK_SUCCESS || attempt.submitResult != VK_SUCCESS) {
 		commandRingFaulted = true;
