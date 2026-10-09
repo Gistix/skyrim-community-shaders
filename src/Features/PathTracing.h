@@ -69,6 +69,7 @@ public:
 	void DrawWaterSettings();
 	void DrawSHaRCSettings();
 	void DrawExperimentalSettings();
+	void DrawDebugSettings();
 
 	void UpdateSettings();
 	bool Available() const;

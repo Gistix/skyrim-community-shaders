@@ -9,6 +9,8 @@
 #include "Upscaling/Streamline.h"
 #include "Util.h"
 
+#include <magic_enum/magic_enum.hpp>
+
 #define I18N_KEY_PREFIX "feature.path_tracing."
 #define RT_I18N_KEY_PREFIX "feature.raytracing."
 #define RT_TKEY(suffix) RT_I18N_KEY_PREFIX suffix
@@ -103,6 +105,7 @@ void PathTracing::DrawSettings()
 		DrawNRDSettings();
 		DrawAdvancedSettings();
 		DrawExperimentalSettings();
+		DrawDebugSettings();
 
 		ImGui::EndTabBar();
 	}
@@ -462,6 +465,241 @@ void PathTracing::DrawExperimentalSettings()
 		int currentCull = static_cast<int>(settings.ExperimentalSettings.PathTracingCull);
 		if (ImGui::Combo(T(TKEY("pathtracing_cull"), "Path Tracing Cull"), &currentCull, cullNames, IM_ARRAYSIZE(cullNames))) {
 			settings.ExperimentalSettings.PathTracingCull = static_cast<CreationEngineRaytracing::PTCullMode>(currentCull);
+		}
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}
+
+void PathTracing::DrawDebugSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_debug"), "Debug"))) {
+		ImGui::PushID("DebugSettings");
+
+		if (ImGui::TreeNode(T(TKEY("buffer_viewer"), "Buffer Viewer"))) {
+			static float debugRescale = 0.3f;
+			ImGui::SliderFloat(T(TKEY("view_resize"), "View Resize"), &debugRescale, 0.05f, 1.0f);
+
+			auto* renderer = globals::game::renderer;
+			auto* device = globals::d3d::device;
+			auto& rt = globals::features::raytracing;
+
+			// Forces BlendEnable=FALSE for buffer viewer preview so textures with alpha=0 are fully visible
+			auto OpaqueBlendCallback = [](const ImDrawList*, const ImDrawCmd*) {
+				static winrt::com_ptr<ID3D11BlendState> s_opaqueBlend;
+				if (!s_opaqueBlend) {
+					D3D11_BLEND_DESC desc{};
+					desc.RenderTarget[0].BlendEnable = FALSE;
+					desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+					globals::d3d::device->CreateBlendState(&desc, s_opaqueBlend.put());
+				}
+				if (s_opaqueBlend) {
+					globals::d3d::context->OMSetBlendState(s_opaqueBlend.get(), nullptr, 0xFFFFFFFF);
+				}
+			};
+
+			auto drawImageOpaque = [&](ID3D11ShaderResourceView* a_srv, ImVec2 a_size) {
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				drawList->AddCallback(OpaqueBlendCallback, nullptr);
+				ImGui::Image(a_srv, a_size);
+				drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+			};
+
+			struct CachedPreview
+			{
+				winrt::com_ptr<ID3D11Texture2D> copyTex;
+				winrt::com_ptr<ID3D11ShaderResourceView> srv;
+				uint32_t width = 0;
+				uint32_t height = 0;
+				DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+			};
+			static std::unordered_map<ID3D11Resource*, CachedPreview> s_previewCache;
+
+			// Helper to create or fetch an SRV for an ID3D11Resource and render it with resolution info
+			auto drawResourceNode = [&](ID3D11Resource* a_res, const char* a_label, float a_scale, ID3D11ShaderResourceView* a_knownSrv = nullptr) {
+				if (!a_res || !device)
+					return;
+
+				winrt::com_ptr<ID3D11Texture2D> tex;
+				if (FAILED(a_res->QueryInterface(IID_PPV_ARGS(tex.put()))))
+					return;
+
+				D3D11_TEXTURE2D_DESC desc{};
+				tex->GetDesc(&desc);
+
+				auto fmtName = magic_enum::enum_name(desc.Format);
+				std::string title = !fmtName.empty() ?
+				                        std::format("{} ({}x{} {})", a_label, desc.Width, desc.Height, fmtName) :
+				                        std::format("{} ({}x{} fmt={})", a_label, desc.Width, desc.Height, static_cast<int>(desc.Format));
+
+				if (ImGui::TreeNode(title.c_str())) {
+					ID3D11ShaderResourceView* srvToDraw = a_knownSrv;
+
+					if (!srvToDraw) {
+						auto& cached = s_previewCache[a_res];
+						if (!cached.srv || cached.width != desc.Width || cached.height != desc.Height || cached.format != desc.Format) {
+							cached = {};
+							cached.width = desc.Width;
+							cached.height = desc.Height;
+							cached.format = desc.Format;
+
+							// 1. Try direct SRV creation
+							DXGI_FORMAT viewFormat = desc.Format;
+							if (viewFormat == DXGI_FORMAT_R32_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R32_FLOAT;
+							} else if (viewFormat == DXGI_FORMAT_R24G8_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+							} else if (viewFormat == DXGI_FORMAT_R16_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R16_UNORM;
+							}
+
+							if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+								D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+								srvDesc.Format = viewFormat;
+								srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+								srvDesc.Texture2D.MostDetailedMip = 0;
+								srvDesc.Texture2D.MipLevels = 1;
+								HRESULT hr = device->CreateShaderResourceView(tex.get(), &srvDesc, cached.srv.put());
+								if (FAILED(hr)) {
+									logger::warn("[PathTracing Debug] Direct CreateShaderResourceView failed for {} (fmt={}, hr={:08x})",
+										a_label, static_cast<int>(desc.Format), static_cast<uint32_t>(hr));
+								}
+							}
+
+							// 2. If direct SRV not possible or failed (e.g. lacks BIND_SHADER_RESOURCE), create a readable copy texture
+							if (!cached.srv) {
+								D3D11_TEXTURE2D_DESC copyDesc = desc;
+								copyDesc.MipLevels = 1;
+								copyDesc.ArraySize = 1;
+								copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+								copyDesc.CPUAccessFlags = 0;
+								copyDesc.MiscFlags = 0;
+								copyDesc.Usage = D3D11_USAGE_DEFAULT;
+								copyDesc.Format = viewFormat;
+
+								HRESULT hr = device->CreateTexture2D(&copyDesc, nullptr, cached.copyTex.put());
+								if (SUCCEEDED(hr)) {
+									D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+									srvDesc.Format = copyDesc.Format;
+									srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+									srvDesc.Texture2D.MostDetailedMip = 0;
+									srvDesc.Texture2D.MipLevels = 1;
+									hr = device->CreateShaderResourceView(cached.copyTex.get(), &srvDesc, cached.srv.put());
+									if (FAILED(hr)) {
+										logger::warn("[PathTracing Debug] CreateShaderResourceView on copy texture failed for {} (fmt={}, hr={:08x})",
+											a_label, static_cast<int>(copyDesc.Format), static_cast<uint32_t>(hr));
+									}
+								} else {
+									logger::warn("[PathTracing Debug] CreateTexture2D for readable copy failed for {} (fmt={}, hr={:08x})",
+										a_label, static_cast<int>(copyDesc.Format), static_cast<uint32_t>(hr));
+								}
+							}
+						}
+
+						// If we have a copy texture, copy latest contents each time node is opened
+						if (cached.copyTex && globals::d3d::context) {
+							globals::d3d::context->CopyResource(cached.copyTex.get(), a_res);
+						}
+
+						srvToDraw = cached.srv.get();
+					}
+
+					if (srvToDraw) {
+						drawImageOpaque(srvToDraw, { desc.Width * a_scale, desc.Height * a_scale });
+					} else {
+						ImGui::TextDisabled("No SRV available for format %d", desc.Format);
+					}
+					ImGui::TreePop();
+				}
+			};
+
+			// 1. Path Tracing Main / Radiance Output
+			if (renderer) {
+				auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+				if (main.SRV) {
+					D3D11_TEXTURE2D_DESC desc{};
+					main.texture->GetDesc(&desc);
+					std::string title = std::format("Main RT ({}x{})", desc.Width, desc.Height);
+					if (ImGui::TreeNode(title.c_str())) {
+						drawImageOpaque(main.SRV, { desc.Width * debugRescale, desc.Height * debugRescale });
+						ImGui::TreePop();
+					}
+				}
+			}
+
+			if (rt.sharedMainTextures.srv) {
+				D3D11_TEXTURE2D_DESC desc{};
+				rt.sharedMainTextures.texture.shared->GetDesc(&desc);
+				std::string title = std::format("Path Traced Shared Main ({}x{})", desc.Width, desc.Height);
+				if (ImGui::TreeNode(title.c_str())) {
+					drawImageOpaque(rt.sharedMainTextures.srv.get(), { desc.Width * debugRescale, desc.Height * debugRescale });
+					ImGui::TreePop();
+				}
+			}
+
+			// 2. DLSS RR Buffers
+			if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
+				ImGui::SeparatorText("DLSS Ray Reconstruction");
+
+				ID3D11Resource* diffAlbedo = nullptr;
+				ID3D11Resource* specAlbedo = nullptr;
+				ID3D11Resource* normalRoughness = nullptr;
+				ID3D11Resource* specHitDist = nullptr;
+				rt.GetRayReconstructionInputs(diffAlbedo, specAlbedo, normalRoughness, specHitDist);
+
+				drawResourceNode(diffAlbedo, "DLSS RR Diffuse Albedo", debugRescale);
+				drawResourceNode(specAlbedo, "DLSS RR Specular Albedo", debugRescale);
+				drawResourceNode(normalRoughness, "DLSS RR Normal & Roughness", debugRescale, rt.normalRoughnessSRV.get());
+				drawResourceNode(specHitDist, "DLSS RR Specular Hit Distance", debugRescale);
+
+				auto* upscaling = globals::features::upscaling.upscaledTexture;
+				if (upscaling && upscaling->srv.get()) {
+					std::string title = std::format("DLSS RR Upscaled Output ({}x{})", upscaling->desc.Width, upscaling->desc.Height);
+					if (ImGui::TreeNode(title.c_str())) {
+						drawImageOpaque(upscaling->srv.get(), { upscaling->desc.Width * debugRescale, upscaling->desc.Height * debugRescale });
+						ImGui::TreePop();
+					}
+				}
+			}
+
+			// 3. FSR 4 RR Buffers
+			if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSR_RR) {
+				ImGui::SeparatorText("FidelityFX Ray Regeneration");
+
+				ID3D11Resource* directDiffuse = nullptr;
+				ID3D11Resource* directSpecular = nullptr;
+				ID3D11Resource* indirectDiffuse = nullptr;
+				ID3D11Resource* indirectSpecular = nullptr;
+				ID3D11Resource* diffuseAlbedo = nullptr;
+				ID3D11Resource* specularAlbedo = nullptr;
+				ID3D11Resource* normalRoughness = nullptr;
+				ID3D11Resource* linearDepth = nullptr;
+
+				rt.GetFSR4RayReconstructionInputs(
+					directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
+					diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth);
+
+				drawResourceNode(directDiffuse, "FSR 4 RR Direct Diffuse", debugRescale);
+				drawResourceNode(directSpecular, "FSR 4 RR Direct Specular", debugRescale);
+				drawResourceNode(indirectDiffuse, "FSR 4 RR Indirect Diffuse", debugRescale);
+				drawResourceNode(indirectSpecular, "FSR 4 RR Indirect Specular", debugRescale);
+				drawResourceNode(diffuseAlbedo, "FSR 4 RR Diffuse Albedo", debugRescale);
+				drawResourceNode(specularAlbedo, "FSR 4 RR Specular Albedo", debugRescale);
+				drawResourceNode(normalRoughness, "FSR 4 RR Normal & Roughness", debugRescale, rt.normalRoughnessSRV.get());
+				drawResourceNode(linearDepth, "FSR 4 RR Linear Depth", debugRescale);
+
+				auto* upscaling = globals::features::upscaling.upscaledTexture;
+				if (upscaling && upscaling->srv.get()) {
+					std::string title = std::format("FSR 4 RR Output ({}x{})", upscaling->desc.Width, upscaling->desc.Height);
+					if (ImGui::TreeNode(title.c_str())) {
+						drawImageOpaque(upscaling->srv.get(), { upscaling->desc.Width * debugRescale, upscaling->desc.Height * debugRescale });
+						ImGui::TreePop();
+					}
+				}
+			}
+
+			ImGui::TreePop();
 		}
 
 		ImGui::PopID();
