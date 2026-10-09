@@ -191,6 +191,8 @@ target_include_directories(
         ${CLIB_UTIL_INCLUDE_DIRS}
         "${CMAKE_SOURCE_DIR}/package/Shaders"
         "${CMAKE_SOURCE_DIR}/extern/sk_hdr_png/include"
+        "${CMAKE_SOURCE_DIR}/extern/Streamline/external/fidelityfx-sdk/ffx-api/include"
+        "${CMAKE_SOURCE_DIR}/extern/Streamline/external/fidelityfx-sdk/sdk/include"
         ${DETOURS_INCLUDE_DIRS}
 )
 
@@ -221,7 +223,14 @@ target_link_libraries(
         dbghelp
         Vulkan::Vulkan
         Streamline
+        d3d12
+        dxgi
 )
+
+if(MSVC)
+    target_link_libraries(${PROJECT_NAME} PRIVATE delayimp)
+    target_link_options(${PROJECT_NAME} PRIVATE "/DELAYLOAD:d3d12.dll")
+endif()
 
 # devbench bridge: opt-out via -DDEVBENCH_BRIDGE=OFF. When off, the port isn't required
 # and DevBenchBridge.cpp compiles to an empty Install().
@@ -593,6 +602,16 @@ install(
     COMPONENT Streamline
 )
 
+set(_FFX_DX12_DLL_DIR "${CMAKE_SOURCE_DIR}/extern/Streamline/external/fidelityfx-sdk/PrebuiltSignedDLL")
+file(GLOB _FFX_DX12_DLLS "${_FFX_DX12_DLL_DIR}/*.dll")
+if(_FFX_DX12_DLLS)
+    install(
+        FILES ${_FFX_DX12_DLLS}
+        DESTINATION SKSE/Plugins/CommunityShaders/bin
+        COMPONENT FidelityFX
+    )
+endif()
+
 if(AFTERMATH)
     install(
         FILES "${AFTERMATH_RUNTIME_DLL}"
@@ -725,6 +744,7 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
     foreach(
         _runtime_name
         IN ITEMS
+            amd_fidelityfx_dx12.dll
             dxvk.license.txt
             fidelityfx.license.txt
             xess.license.txt
@@ -814,6 +834,13 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_XESS_LICENSE}" "${_aio_runtime_dir}/xess.license.txt"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_XESS_THIRD_PARTY_NOTICES}" "${_aio_runtime_dir}/xess.third-party-programs.txt"
     )
+
+    foreach(_ffx_dll IN LISTS _FFX_DX12_DLLS)
+        list(
+            APPEND _prepare_aio_cmds
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ffx_dll}" "${_aio_runtime_dir}/"
+        )
+    endforeach()
 
     # Remove CORE from AIO if it exists (keep rest intact)
     list(

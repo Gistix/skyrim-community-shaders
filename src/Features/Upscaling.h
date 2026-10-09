@@ -41,6 +41,8 @@ public:
 		kDLSS,
 		kXeSS,
 		kDLSS_RR,
+		kFSR4,
+		kFSR4_RR,
 	};
 
 	enum class FrameGenMethod
@@ -146,6 +148,18 @@ public:
 	void ConfigureTAA();
 	void ConfigureUpscaling(RE::BSGraphics::State* a_state);
 	void Upscale();
+
+	bool EvaluateRayRegeneration(
+		ID3D11Resource* a_colorIn,
+		ID3D11Resource* a_diffuseAlbedo,
+		ID3D11Resource* a_specularAlbedo,
+		ID3D11Resource* a_normalRoughness,
+		ID3D11Resource* a_depth,
+		ID3D11Resource* a_motionVectors,
+		ID3D11Resource* a_specHitDist,
+		ID3D11Resource* a_outputMain,
+		uint32_t a_renderWidth, uint32_t a_renderHeight,
+		float a_jitterX, float a_jitterY);
 
 	bool IsFrameGenerationActive() const;
 

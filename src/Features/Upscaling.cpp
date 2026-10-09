@@ -9,7 +9,11 @@
 #include "Hooks.h"
 #include "Raytracing.h"
 #include "State.h"
+#include "Upscaling/D3D12Interop.h"
 #include "Upscaling/DXVKInterop.h"
+#include "Upscaling/FFXD3D12Backend.h"
+#include "Upscaling/FSR4Backend.h"
+#include "Upscaling/FSRRRDenoiser.h"
 #include "Upscaling/FrameGenController.h"
 #include "Upscaling/Streamline.h"
 #include "Utils/Game.h"
@@ -196,6 +200,10 @@ void Upscaling::DrawSettings()
 			techLabels.push_back("DLSS");
 			techMethods.push_back(UpscaleMethod::kDLSS);
 		}
+		if (D3D12Interop::GetSingleton()->IsAvailable() && FFXD3D12Backend::GetSingleton()->IsAvailable()) {
+			techLabels.push_back("FSR 4");
+			techMethods.push_back(UpscaleMethod::kFSR4);
+		}
 
 		int techIdx = 0;
 		for (int i = 0; i < static_cast<int>(techMethods.size()); ++i)
@@ -208,7 +216,7 @@ void Upscaling::DrawSettings()
 			ImGui::TextDisabled("%s", T(TKEY("sl_unavailable_note"), "Streamline could not be loaded - upscalers and frame generation are unavailable"));
 
 		const UpscaleMethod cur = (UpscaleMethod)settings.upscaleMethod;
-		const bool hasPreset = (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kXeSS || cur == UpscaleMethod::kDLSS);
+		const bool hasPreset = (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kXeSS || cur == UpscaleMethod::kDLSS || cur == UpscaleMethod::kFSR4 || cur == UpscaleMethod::kFSR4_RR);
 		if (hasPreset) {
 			const std::vector<const char*> presets = {
 				T(TKEY("preset_native"), "Native"),
@@ -221,7 +229,7 @@ void Upscaling::DrawSettings()
 			if (DrawStepper(T(TKEY("upscale_preset"), "Upscale Preset"), &pIdx, presets))
 				settings.qualityMode = (uint)std::clamp(pIdx, 0, 4);
 
-			if (cur == UpscaleMethod::kFSR)
+			if (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kFSR4 || cur == UpscaleMethod::kFSR4_RR)
 				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f");
 
 			// XeSS reaches its advertised quality only on Intel Arc, where it runs on XMX units.
@@ -342,8 +350,11 @@ void Upscaling::LoadSettings(json& o_json)
 		logger::info("[Upscaling] Migrating saved DLSS_RR setting to DLSS (auto-managed by Raytracing Denoiser)");
 		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kDLSS);
 	}
+	if (settings.upscaleMethod == static_cast<uint>(UpscaleMethod::kFSR4_RR)) {
+		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kFSR4);
+	}
 
-	constexpr auto enumCount = 6;
+	constexpr auto enumCount = 8;
 	if (settings.upscaleMethod >= static_cast<uint>(enumCount)) {
 		logger::warn("[Upscaling] Loaded upscaleMethod {} out of range, clamping to {}", settings.upscaleMethod, enumCount - 1);
 		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kXeSS);
@@ -513,6 +524,12 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 			rtSettings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR &&
 			streamline->IsDLSSRRSupported()) {
 			return UpscaleMethod::kDLSS_RR;
+		}
+	}
+
+	if (method == UpscaleMethod::kFSR4 || method == UpscaleMethod::kFSR4_RR) {
+		if (!D3D12Interop::GetSingleton()->IsAvailable() || !FFXD3D12Backend::GetSingleton()->IsAvailable()) {
+			method = UpscaleMethod::kFSR;
 		}
 	}
 
@@ -1216,7 +1233,9 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 		bool hadUpscale = (previousUpscaleMode == UpscaleMethod::kFSR ||
 						   previousUpscaleMode == UpscaleMethod::kDLSS ||
 						   previousUpscaleMode == UpscaleMethod::kDLSS_RR ||
-						   previousUpscaleMode == UpscaleMethod::kXeSS);
+						   previousUpscaleMode == UpscaleMethod::kXeSS ||
+						   previousUpscaleMode == UpscaleMethod::kFSR4 ||
+						   previousUpscaleMode == UpscaleMethod::kFSR4_RR);
 		if (hadUpscale) {
 			// DXVK does not track resources referenced by foreign Vulkan submissions.
 			if (!DXVKInterop::GetSingleton()->DrainCommandRing()) {
@@ -1226,13 +1245,18 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 			if ((previousUpscaleMode == UpscaleMethod::kDLSS || previousUpscaleMode == UpscaleMethod::kDLSS_RR) &&
 				!Streamline::GetSingleton()->FreeDLSSResources(previousUpscaleMode == UpscaleMethod::kDLSS_RR))
 				return;
+			if (previousUpscaleMode == UpscaleMethod::kFSR4 || previousUpscaleMode == UpscaleMethod::kFSR4_RR) {
+				FSR4Backend::GetSingleton()->Shutdown();
+			}
 			DestroyUpscaledTexture();
 			DestroyHudlessTexture(true);
 		}
 		if (a_upscalemethod == UpscaleMethod::kFSR ||
 			a_upscalemethod == UpscaleMethod::kDLSS ||
 			a_upscalemethod == UpscaleMethod::kDLSS_RR ||
-			a_upscalemethod == UpscaleMethod::kXeSS) {
+			a_upscalemethod == UpscaleMethod::kXeSS ||
+			a_upscalemethod == UpscaleMethod::kFSR4 ||
+			a_upscalemethod == UpscaleMethod::kFSR4_RR) {
 			CreateUpscaledTexture();
 			CreateHudlessTexture();
 		}
@@ -1336,7 +1360,7 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 
 	const bool pathTracing = globals::features::raytracing.IsPathTracing();
 
-	const bool useUpscaleResolution = (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR);
+	const bool useUpscaleResolution = (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4 || upscaleMethod == UpscaleMethod::kFSR4_RR);
 	const bool useUpscaleJitter = useUpscaleResolution || pathTracing;
 
 	if (useUpscaleJitter) {
@@ -1370,10 +1394,12 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 			{
 				static int s_lastW = 0, s_lastH = 0;
 				static uint s_lastQuality = UINT_MAX;
-				if (s_lastW != renderWidth || s_lastH != renderHeight || s_lastQuality != settings.qualityMode) {
+				static uint s_lastMethod = UINT_MAX;
+				if (s_lastW != renderWidth || s_lastH != renderHeight || s_lastQuality != settings.qualityMode || s_lastMethod != static_cast<uint>(upscaleMethod)) {
 					s_lastW = renderWidth;
 					s_lastH = renderHeight;
 					s_lastQuality = settings.qualityMode;
+					s_lastMethod = static_cast<uint>(upscaleMethod);
 					logger::info("[Upscaling] internal resolution {}x{} from {}x{} (quality {}, ratio {:.2f}x, method {})",
 						renderWidth, renderHeight, screenWidth, screenHeight, settings.qualityMode,
 						getUpscaleRatio(settings.qualityMode), static_cast<uint>(upscaleMethod));
@@ -1498,6 +1524,12 @@ void Upscaling::SetupResources()
 			Streamline::RegisterDxvkSwapchainCallbacks();
 		}
 
+		auto* d3d12Interop = D3D12Interop::GetSingleton();
+		if (d3d12Interop->Initialize(dxvk->GetInstance(), dxvk->GetPhysicalDevice(), dxvk->GetDevice())) {
+			logger::info("[Upscaling] D3D12 Interop initialized successfully");
+			FFXD3D12Backend::GetSingleton()->Initialize(d3d12Interop->GetDevice());
+		}
+
 		ApplyHardwareDefaults();
 	}
 }
@@ -1594,7 +1626,7 @@ bool Upscaling::IsUpscalingActive() const
 {
 	auto method = GetUpscaleMethod();
 
-	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS && method != UpscaleMethod::kDLSS_RR) {
+	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS && method != UpscaleMethod::kDLSS_RR && method != UpscaleMethod::kFSR4 && method != UpscaleMethod::kFSR4_RR) {
 		return false;
 	}
 
@@ -1711,6 +1743,29 @@ void Upscaling::Upscale()
 					(uint32_t)displaySize.x, (uint32_t)displaySize.y,
 					settings.qualityMode, settings.sharpnessFSR, jitter.x, jitter.y);
 				break;
+			case UpscaleMethod::kFSR4:
+			case UpscaleMethod::kFSR4_RR:
+				{
+					bool ok = FSR4Backend::GetSingleton()->Evaluate(
+						main.texture, upscaledTexture->resource.get(), depthTex.texture, motionVector.texture,
+						(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+						(uint32_t)displaySize.x, (uint32_t)displaySize.y,
+						jitter.x, jitter.y, settings.sharpnessFSR);
+					result = ok ? Streamline::EvaluationResult::kReady : Streamline::EvaluationResult::kFailed;
+
+					static bool lastFsr4Ok = false;
+					if (ok != lastFsr4Ok) {
+						if (ok) {
+							logger::info("[Upscaling] FSR 4 evaluation active ({}x{} -> {}x{})",
+								(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+								(uint32_t)displaySize.x, (uint32_t)displaySize.y);
+						} else {
+							logger::warn("[Upscaling] FSR 4 evaluation failed; retaining input color");
+						}
+						lastFsr4Ok = ok;
+					}
+					break;
+				}
 			default:
 				result = Streamline::EvaluationResult::kSkipped;
 				break;
@@ -2003,7 +2058,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		}
 	}
 
-	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR)) {
+	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4 || upscaleMethod == UpscaleMethod::kFSR4_RR)) {
 		if (upscaling.IsFrameGenerationActive() && postProcessing.loaded)
 			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.PerformUpscaling();
@@ -2048,4 +2103,26 @@ void Upscaling::BSFaceGenManager_UpdatePendingCustomizationTextures::thunk()
 	runtimeData.dynamicResolutionLock = 1;
 	func();
 	runtimeData.dynamicResolutionLock = 0;
+}
+
+bool Upscaling::EvaluateRayRegeneration(
+	ID3D11Resource* a_colorIn,
+	ID3D11Resource* a_diffuseAlbedo,
+	ID3D11Resource* a_specularAlbedo,
+	ID3D11Resource* a_normalRoughness,
+	ID3D11Resource* a_depth,
+	ID3D11Resource* a_motionVectors,
+	ID3D11Resource* a_specHitDist,
+	ID3D11Resource* a_outputMain,
+	uint32_t a_renderWidth, uint32_t a_renderHeight,
+	float a_jitterX, float a_jitterY)
+{
+	if (!D3D12Interop::GetSingleton()->IsAvailable() || !FFXD3D12Backend::GetSingleton()->IsAvailable()) {
+		return false;
+	}
+
+	return FSRRRDenoiser::GetSingleton()->Evaluate(
+		a_colorIn, a_diffuseAlbedo, a_specularAlbedo, a_normalRoughness,
+		a_depth, a_motionVectors, a_specHitDist, a_outputMain,
+		a_renderWidth, a_renderHeight, a_jitterX, a_jitterY);
 }

@@ -12,6 +12,7 @@
 #include "Features/LinearLighting.h"
 #include "Features/PathTracing.h"
 #include "Features/Skin.h"
+#include "Features/Upscaling.h"
 #include "Features/Upscaling/DXVKInterop.h"
 #include "Features/WetnessEffects.h"
 #include "Globals.h"
@@ -340,6 +341,26 @@ void Raytracing::Execute()
 		}
 	} else if (sharedMainTextures.texture.shared && main.texture) {
 		context->CopyResource(main.texture, sharedMainTextures.texture.shared);
+	}
+
+	if (GetSettings().GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR && main.texture) {
+		ID3D11Resource* diffuseAlbedo = nullptr;
+		ID3D11Resource* specularAlbedo = nullptr;
+		ID3D11Resource* normalRoughness = nullptr;
+		ID3D11Resource* specHitDist = nullptr;
+		GetRayReconstructionInputs(diffuseAlbedo, specularAlbedo, normalRoughness, specHitDist);
+
+		auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& motionVector = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
+		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
+
+		auto& upscaling = globals::features::upscaling;
+		upscaling.EvaluateRayRegeneration(
+			main.texture, diffuseAlbedo, specularAlbedo, normalRoughness,
+			depthTex.texture, motionVector.texture, specHitDist, main.texture,
+			static_cast<uint32_t>(dynamicScreenSize.x), static_cast<uint32_t>(dynamicScreenSize.y),
+			upscaling.jitter.x, upscaling.jitter.y);
 	}
 }
 

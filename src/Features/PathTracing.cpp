@@ -4,6 +4,8 @@
 #include "Menu.h"
 #include "Raytracing.h"
 #include "Upscaling.h"
+#include "Upscaling/D3D12Interop.h"
+#include "Upscaling/FFXD3D12Backend.h"
 #include "Upscaling/Streamline.h"
 #include "Util.h"
 
@@ -125,7 +127,7 @@ void PathTracing::DrawGeneralSettings()
 			settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
 		}
 
-		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
+		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation", "FidelityFX Ray Regeneration" };
 		int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
 		if (ImGui::Combo(T(TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
 			settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
@@ -139,6 +141,11 @@ void PathTracing::DrawGeneralSettings()
 			} else if (globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kDLSS_RR) {
 				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Warning, "%s",
 					T(RT_TKEY("set_upscaling_to_dlss"), "Set Upscaling method to DLSS to enable Ray Reconstruction."));
+			}
+		} else if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::FSRRR) {
+			if (!D3D12Interop::GetSingleton()->IsAvailable() || !FFXD3D12Backend::GetSingleton()->IsAvailable()) {
+				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+					T(RT_TKEY("fsrrr_not_available"), "FidelityFX Ray Regeneration is not available on this system."));
 			}
 		}
 
