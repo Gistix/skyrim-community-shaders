@@ -1795,9 +1795,19 @@ void Upscaling::Upscale()
 						ok = FSRRRDenoiser::GetSingleton()->Evaluate(
 							directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
 							diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth,
-							motionVector.texture, upscaledTexture->resource.get(),
+							motionVector.texture, main.texture,
 							(uint32_t)renderSize.x, (uint32_t)renderSize.y,
 							jitter.x, jitter.y);
+
+						if (ok) {
+							ok = FSR4Backend::GetSingleton()->Evaluate(
+								main.texture, upscaledTexture->resource.get(),
+								depthTex.texture, motionVector.texture,
+								(uint32_t)renderSize.x, (uint32_t)renderSize.y,
+								(uint32_t)displaySize.x, (uint32_t)displaySize.y,
+								jitter.x, jitter.y,
+								settings.sharpnessFSR);
+						}
 					}
 
 					result = ok ? Streamline::EvaluationResult::kReady : Streamline::EvaluationResult::kFailed;

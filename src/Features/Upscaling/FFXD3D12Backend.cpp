@@ -35,6 +35,7 @@ bool FFXD3D12Backend::Initialize(ID3D12Device* a_device)
 		if (!runtimeDir.empty()) {
 			dllCandidates.push_back(runtimeDir / L"amd_fidelityfx_loader_dx12.dll");
 			dllCandidates.push_back(runtimeDir / L"amd_fidelityfx_upscaler_dx12.dll");
+			dllCandidates.push_back(runtimeDir / L"amd_fidelityfx_denoiser_dx12.dll");
 			dllCandidates.push_back(runtimeDir / L"amd_fidelityfx_dx12.dll");
 		}
 		dllCandidates.push_back(L"Data\\SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_loader_dx12.dll");
@@ -43,6 +44,9 @@ bool FFXD3D12Backend::Initialize(ID3D12Device* a_device)
 		dllCandidates.push_back(L"Data\\SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_upscaler_dx12.dll");
 		dllCandidates.push_back(L"SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_upscaler_dx12.dll");
 		dllCandidates.push_back(L"amd_fidelityfx_upscaler_dx12.dll");
+		dllCandidates.push_back(L"Data\\SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_denoiser_dx12.dll");
+		dllCandidates.push_back(L"SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_denoiser_dx12.dll");
+		dllCandidates.push_back(L"amd_fidelityfx_denoiser_dx12.dll");
 		dllCandidates.push_back(L"Data\\SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_dx12.dll");
 		dllCandidates.push_back(L"SKSE\\Plugins\\CommunityShaders\\bin\\amd_fidelityfx_dx12.dll");
 		dllCandidates.push_back(L"amd_fidelityfx_dx12.dll");
