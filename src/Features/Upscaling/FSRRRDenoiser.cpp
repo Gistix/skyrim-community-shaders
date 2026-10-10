@@ -290,16 +290,17 @@ bool FSRRRDenoiser::Initialize(uint32_t a_width, uint32_t a_height)
 		ffxCreateContextDescDenoiser denoiserDesc{};
 		denoiserDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER;
 		denoiserDesc.header.pNext = &backendDesc.header;
-		denoiserDesc.flags = 0;
+		denoiserDesc.version = FFX_DENOISER_VERSION;
+		denoiserDesc.maxRenderSize = { a_width, a_height };
 		denoiserDesc.signalFlags = FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE |
 		                           FFX_DENOISER_SIGNAL_DIRECT_SPECULAR |
 		                           FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE |
 		                           FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR;
 		denoiserDesc.checkerboardSignalFlags = 0;
-		denoiserDesc.maxRenderSize = { a_width, a_height };
+		denoiserDesc.flags = 0;
 
-		logger::info("[FSR-RR] Calling ffxCreateContext for Denoiser (render size: {}x{}, signals: {:#x})...",
-			a_width, a_height, denoiserDesc.signalFlags);
+		logger::info("[FSR-RR] Calling ffxCreateContext for Denoiser (version: {:#x}, render size: {}x{}, signals: {:#x})...",
+			denoiserDesc.version, a_width, a_height, denoiserDesc.signalFlags);
 
 		ffxReturnCode_t ret = ffx->GetApi().CreateContext(&denoiserContext, &denoiserDesc.header, nullptr);
 		if (ret == FFX_API_RETURN_OK && denoiserContext) {

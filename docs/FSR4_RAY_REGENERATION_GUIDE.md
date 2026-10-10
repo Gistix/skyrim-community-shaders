@@ -10,8 +10,8 @@ FSR Ray Regeneration is AMD's machine-learning spatio-temporal denoiser (provide
 Unlike monolithic upscalers, Ray Regeneration acts on decoupled lighting radiance signals and G-buffer surfaces:
 
 * **Effect ID**: `FFX_API_EFFECT_ID_DENOISER = 0x00050000`
-* **Create Context Desc**: `FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER = 0x00050082`
-* **Primary Dispatch Desc**: `FFX_API_DISPATCH_DESC_TYPE_DENOISER = 0x00050081`
+* **Create Context Desc**: `FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER = 0x00050001`
+* **Primary Dispatch Desc**: `FFX_API_DISPATCH_DESC_TYPE_DENOISER = 0x00050041`
 * **Signals**: Multi-signal architecture chained via `pNext`. You can enable specific signals via `signalFlags`.
 * **Execution**: Dispatched via D3D12 on textures imported through the Vulkan-D3D12 interop layer (`FSRRRDenoiser` / `FSR4Backend`).
 
@@ -22,20 +22,34 @@ Unlike monolithic upscalers, Ray Regeneration acts on decoupled lighting radianc
 ### 2.1 Descriptors
 
 ```cpp
+#define FFX_DENOISER_VERSION_MAJOR 1
+#define FFX_DENOISER_VERSION_MINOR 2
+#define FFX_DENOISER_VERSION_PATCH 0
+#define FFX_DENOISER_VERSION ((FFX_DENOISER_VERSION_MAJOR << 22) | (FFX_DENOISER_VERSION_MINOR << 12) | FFX_DENOISER_VERSION_PATCH) // 0x00402000
+
 #define FFX_API_EFFECT_ID_DENOISER 0x00050000u
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER 0x00050082u
-#define FFX_API_DISPATCH_DESC_TYPE_DENOISER 0x00050081u
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER 0x00050001u
+#define FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE 0x00050021u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER 0x00050041u
+
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION  0x00050043u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE     0x00050044u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR    0x00050045u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_DOMINANT_LIGHT     0x00050046u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE   0x00050047u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR  0x00050048u
+#define FFX_API_DISPATCH_DESC_TYPE_DENOISER_SPECULAR_OCCLUSION 0x00050049u
 
 // Signal flag bitfield
 enum FfxApiDenoiserSignalFlags : uint32_t
 {
     FFX_DENOISER_SIGNAL_NONE                         = 0,
-    FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE               = (1 << 0),
-    FFX_DENOISER_SIGNAL_DIRECT_SPECULAR              = (1 << 1),
-    FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE             = (1 << 2),
-    FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR            = (1 << 3),
-    FFX_DENOISER_SIGNAL_DOMINANT_LIGHT_VISIBILITY    = (1 << 4),
-    FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION            = (1 << 5),
+    FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION            = (1 << 0),
+    FFX_DENOISER_SIGNAL_DIRECT_DIFFUSE               = (1 << 1),
+    FFX_DENOISER_SIGNAL_DIRECT_SPECULAR              = (1 << 2),
+    FFX_DENOISER_SIGNAL_DOMINANT_LIGHT_VISIBILITY    = (1 << 3),
+    FFX_DENOISER_SIGNAL_INDIRECT_DIFFUSE             = (1 << 4),
+    FFX_DENOISER_SIGNAL_INDIRECT_SPECULAR            = (1 << 5),
     FFX_DENOISER_SIGNAL_SPECULAR_OCCLUSION           = (1 << 6),
 };
 
@@ -53,11 +67,12 @@ enum FfxApiDispatchDenoiserFlags : uint32_t
 
 struct ffxCreateContextDescDenoiser
 {
-    ffxCreateContextDescHeader header; // type = 0x00050082
-    uint32_t flags;                   // FfxApiCreateContextDenoiserFlags
-    uint32_t signalFlags;             // Combination of FfxApiDenoiserSignalFlags
-    uint32_t checkerboardSignalFlags;   // Subset of signalFlags (0 if full rate)
-    FfxApiDimensions2D maxRenderSize;
+    ffxCreateContextDescHeader header; // type = 0x00050001
+    uint32_t version;                  // FFX_DENOISER_VERSION (0x00402000)
+    FfxApiDimensions2D maxRenderSize;  // render size
+    uint32_t signalFlags;              // Combination of FfxApiDenoiserSignalFlags
+    uint32_t checkerboardSignalFlags;  // Subset of signalFlags (0 if full rate)
+    uint32_t flags;                    // FfxApiCreateContextDenoiserFlags
 };
 ```
 
@@ -68,7 +83,7 @@ struct ffxCreateContextDescDenoiser
 
 ## 3. Dispatch Descriptors & G-Buffer Requirements
 
-### 3.1 Primary G-Buffer Descriptor (`0x00050081`)
+### 3.1 Primary G-Buffer Descriptor (`0x00050041`)
 
 Every dispatch requires the primary G-buffer descriptor:
 
@@ -91,7 +106,7 @@ struct FfxApiMatrix4x4
 
 struct ffxDispatchDescDenoiser
 {
-    ffxDispatchDescHeader header;             // type = 0x00050081
+    ffxDispatchDescHeader header;             // type = 0x00050041
     ID3D12GraphicsCommandList* commandList;   // D3D12 command list
     FfxApiResource linearDepth;               // R32_FLOAT, view space Z (negative)
     FfxApiResource motionVectors;             // RGBA16_FLOAT / RG16_FLOAT
