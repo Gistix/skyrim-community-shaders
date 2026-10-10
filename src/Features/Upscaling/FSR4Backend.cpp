@@ -90,10 +90,16 @@ bool FSR4Backend::Initialize(
 	                                      VK_IMAGE_USAGE_SAMPLED_BIT |
 	                                      VK_IMAGE_USAGE_STORAGE_BIT;
 
+	constexpr D3D12_RESOURCE_FLAGS depthD3dFlags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	constexpr VkImageUsageFlags depthVkFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+	                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+	                                          VK_IMAGE_USAGE_SAMPLED_BIT |
+	                                          VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
 	bool ok = true;
 	ok &= interop->CreateSharedTexture2D(a_renderWidth, a_renderHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, d3dFlags, vkFlags, sharedColorIn);
 	ok &= interop->CreateSharedTexture2D(a_displayWidth, a_displayHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, d3dFlags, vkFlags, sharedColorOut);
-	ok &= interop->CreateSharedTexture2D(a_renderWidth, a_renderHeight, DXGI_FORMAT_R32_FLOAT, VK_FORMAT_D32_SFLOAT, d3dFlags, vkFlags | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, sharedDepth);
+	ok &= interop->CreateSharedTexture2D(a_renderWidth, a_renderHeight, DXGI_FORMAT_D32_FLOAT, VK_FORMAT_D32_SFLOAT, depthD3dFlags, depthVkFlags, sharedDepth);
 	ok &= interop->CreateSharedTexture2D(a_renderWidth, a_renderHeight, DXGI_FORMAT_R16G16_FLOAT, VK_FORMAT_R16G16_SFLOAT, d3dFlags, vkFlags, sharedMotion);
 
 	if (!ok) {

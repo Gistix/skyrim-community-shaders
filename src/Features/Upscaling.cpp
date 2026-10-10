@@ -216,7 +216,7 @@ void Upscaling::DrawSettings()
 			ImGui::TextDisabled("%s", T(TKEY("sl_unavailable_note"), "Streamline could not be loaded - upscalers and frame generation are unavailable"));
 
 		const UpscaleMethod cur = (UpscaleMethod)settings.upscaleMethod;
-		const bool hasPreset = (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kXeSS || cur == UpscaleMethod::kDLSS || cur == UpscaleMethod::kFSR4 || cur == UpscaleMethod::kFSR4_RR);
+		const bool hasPreset = (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kXeSS || cur == UpscaleMethod::kDLSS || cur == UpscaleMethod::kFSR4);
 		if (hasPreset) {
 			const std::vector<const char*> presets = {
 				T(TKEY("preset_native"), "Native"),
@@ -229,7 +229,7 @@ void Upscaling::DrawSettings()
 			if (DrawStepper(T(TKEY("upscale_preset"), "Upscale Preset"), &pIdx, presets))
 				settings.qualityMode = (uint)std::clamp(pIdx, 0, 4);
 
-			if (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kFSR4 || cur == UpscaleMethod::kFSR4_RR)
+			if (cur == UpscaleMethod::kFSR || cur == UpscaleMethod::kFSR4)
 				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f");
 
 			// XeSS reaches its advertised quality only on Intel Arc, where it runs on XMX units.
@@ -350,11 +350,11 @@ void Upscaling::LoadSettings(json& o_json)
 		logger::info("[Upscaling] Migrating saved DLSS_RR setting to DLSS (auto-managed by Raytracing Denoiser)");
 		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kDLSS);
 	}
-	if (settings.upscaleMethod == static_cast<uint>(UpscaleMethod::kFSR4_RR)) {
+	if (settings.upscaleMethod == 7 /* legacy kFSR4_RR */) {
 		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kFSR4);
 	}
 
-	constexpr auto enumCount = 8;
+	constexpr auto enumCount = magic_enum::enum_count<UpscaleMethod>();
 	if (settings.upscaleMethod >= static_cast<uint>(enumCount)) {
 		logger::warn("[Upscaling] Loaded upscaleMethod {} out of range, clamping to {}", settings.upscaleMethod, enumCount - 1);
 		settings.upscaleMethod = static_cast<uint>(UpscaleMethod::kXeSS);
@@ -527,7 +527,7 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 		}
 	}
 
-	if (method == UpscaleMethod::kFSR4 || method == UpscaleMethod::kFSR4_RR) {
+	if (method == UpscaleMethod::kFSR4) {
 		if (!D3D12Interop::GetSingleton()->IsAvailable() || !FFXD3D12Backend::GetSingleton()->IsAvailable()) {
 			method = UpscaleMethod::kFSR;
 		}
@@ -1234,8 +1234,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 						   previousUpscaleMode == UpscaleMethod::kDLSS ||
 						   previousUpscaleMode == UpscaleMethod::kDLSS_RR ||
 						   previousUpscaleMode == UpscaleMethod::kXeSS ||
-						   previousUpscaleMode == UpscaleMethod::kFSR4 ||
-						   previousUpscaleMode == UpscaleMethod::kFSR4_RR);
+						   previousUpscaleMode == UpscaleMethod::kFSR4);
 		if (hadUpscale) {
 			// DXVK does not track resources referenced by foreign Vulkan submissions.
 			if (!DXVKInterop::GetSingleton()->DrainCommandRing()) {
@@ -1245,7 +1244,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 			if ((previousUpscaleMode == UpscaleMethod::kDLSS || previousUpscaleMode == UpscaleMethod::kDLSS_RR) &&
 				!Streamline::GetSingleton()->FreeDLSSResources(previousUpscaleMode == UpscaleMethod::kDLSS_RR))
 				return;
-			if (previousUpscaleMode == UpscaleMethod::kFSR4 || previousUpscaleMode == UpscaleMethod::kFSR4_RR) {
+			if (previousUpscaleMode == UpscaleMethod::kFSR4) {
 				FSR4Backend::GetSingleton()->Shutdown();
 			}
 			DestroyUpscaledTexture();
@@ -1255,8 +1254,7 @@ void Upscaling::CheckResources(UpscaleMethod a_upscalemethod)
 			a_upscalemethod == UpscaleMethod::kDLSS ||
 			a_upscalemethod == UpscaleMethod::kDLSS_RR ||
 			a_upscalemethod == UpscaleMethod::kXeSS ||
-			a_upscalemethod == UpscaleMethod::kFSR4 ||
-			a_upscalemethod == UpscaleMethod::kFSR4_RR) {
+			a_upscalemethod == UpscaleMethod::kFSR4) {
 			CreateUpscaledTexture();
 			CreateHudlessTexture();
 		}
@@ -1360,7 +1358,7 @@ void Upscaling::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 
 	const bool pathTracing = globals::features::raytracing.IsPathTracing();
 
-	const bool useUpscaleResolution = (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4 || upscaleMethod == UpscaleMethod::kFSR4_RR);
+	const bool useUpscaleResolution = (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4);
 	const bool useUpscaleJitter = useUpscaleResolution || pathTracing;
 
 	if (useUpscaleJitter) {
@@ -1626,7 +1624,7 @@ bool Upscaling::IsUpscalingActive() const
 {
 	auto method = GetUpscaleMethod();
 
-	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS && method != UpscaleMethod::kDLSS_RR && method != UpscaleMethod::kFSR4 && method != UpscaleMethod::kFSR4_RR) {
+	if (method != UpscaleMethod::kFSR && method != UpscaleMethod::kXeSS && method != UpscaleMethod::kDLSS && method != UpscaleMethod::kDLSS_RR && method != UpscaleMethod::kFSR4) {
 		return false;
 	}
 
@@ -1762,66 +1760,6 @@ void Upscaling::Upscale()
 							logger::warn("[Upscaling] FSR 4 evaluation failed; retaining input color");
 						}
 						lastFsr4Ok = ok;
-					}
-					break;
-				}
-			case UpscaleMethod::kFSR4_RR:
-				{
-					ID3D11Resource* directDiffuse = nullptr;
-					ID3D11Resource* directSpecular = nullptr;
-					ID3D11Resource* indirectDiffuse = nullptr;
-					ID3D11Resource* indirectSpecular = nullptr;
-					ID3D11Resource* diffuseAlbedo = nullptr;
-					ID3D11Resource* specularAlbedo = nullptr;
-					ID3D11Resource* normalRoughness = nullptr;
-					ID3D11Resource* linearDepth = nullptr;
-
-					globals::features::raytracing.GetFSR4RayReconstructionInputs(
-						directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
-						diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth);
-
-					static bool fsrRrInputsMissing = false;
-					const bool missing = !directDiffuse || !directSpecular || !indirectDiffuse || !indirectSpecular ||
-					                     !diffuseAlbedo || !specularAlbedo || !normalRoughness || !linearDepth;
-					if (missing && !fsrRrInputsMissing) {
-						logger::warn("[Upscaling] FSR 4 RR inputs missing: dDiff={} dSpec={} iDiff={} iSpec={} diffAlb={} specAlb={} normals={} linDepth={}",
-							directDiffuse != nullptr, directSpecular != nullptr, indirectDiffuse != nullptr, indirectSpecular != nullptr,
-							diffuseAlbedo != nullptr, specularAlbedo != nullptr, normalRoughness != nullptr, linearDepth != nullptr);
-					}
-					fsrRrInputsMissing = missing;
-
-					bool ok = false;
-					if (!missing) {
-						ok = FSRRRDenoiser::GetSingleton()->Evaluate(
-							directDiffuse, directSpecular, indirectDiffuse, indirectSpecular,
-							diffuseAlbedo, specularAlbedo, normalRoughness, linearDepth,
-							motionVector.texture, main.texture,
-							(uint32_t)renderSize.x, (uint32_t)renderSize.y,
-							jitter.x, jitter.y);
-
-						if (ok) {
-							ok = FSR4Backend::GetSingleton()->Evaluate(
-								main.texture, upscaledTexture->resource.get(),
-								depthTex.texture, motionVector.texture,
-								(uint32_t)renderSize.x, (uint32_t)renderSize.y,
-								(uint32_t)displaySize.x, (uint32_t)displaySize.y,
-								jitter.x, jitter.y,
-								settings.sharpnessFSR);
-						}
-					}
-
-					result = ok ? Streamline::EvaluationResult::kReady : Streamline::EvaluationResult::kFailed;
-
-					static bool lastFsrRrOk = false;
-					if (ok != lastFsrRrOk) {
-						if (ok) {
-							logger::info("[Upscaling] FSR 4 RR evaluation active ({}x{} -> {}x{})",
-								(uint32_t)renderSize.x, (uint32_t)renderSize.y,
-								(uint32_t)displaySize.x, (uint32_t)displaySize.y);
-						} else {
-							logger::warn("[Upscaling] FSR 4 RR evaluation failed or skipped");
-						}
-						lastFsrRrOk = ok;
 					}
 					break;
 				}
@@ -2117,7 +2055,7 @@ void Upscaling::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32
 		}
 	}
 
-	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4 || upscaleMethod == UpscaleMethod::kFSR4_RR)) {
+	if (windowUsable && (upscaleMethod == UpscaleMethod::kFSR || upscaleMethod == UpscaleMethod::kXeSS || upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kDLSS_RR || upscaleMethod == UpscaleMethod::kFSR4)) {
 		if (upscaling.IsFrameGenerationActive() && postProcessing.loaded)
 			postProcessing.ClearBorderMotionVectorsForFrameGen();
 		upscaling.PerformUpscaling();
