@@ -44,6 +44,20 @@ static void RecordImageBarrier(
 		1, &barrier);
 }
 
+static const char* GetFfxReturnCodeName(ffxReturnCode_t code)
+{
+	switch (code) {
+	case FFX_API_RETURN_OK: return "FFX_API_RETURN_OK (0)";
+	case FFX_API_RETURN_ERROR: return "FFX_API_RETURN_ERROR (1)";
+	case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE: return "FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE (2)";
+	case FFX_API_RETURN_ERROR_RUNTIME_ERROR: return "FFX_API_RETURN_ERROR_RUNTIME_ERROR (3)";
+	case FFX_API_RETURN_NO_PROVIDER: return "FFX_API_RETURN_NO_PROVIDER (4)";
+	case FFX_API_RETURN_ERROR_MEMORY: return "FFX_API_RETURN_ERROR_MEMORY (5)";
+	case FFX_API_RETURN_ERROR_PARAMETER: return "FFX_API_RETURN_ERROR_PARAMETER (6)";
+	default: return "Unknown return code";
+	}
+}
+
 FSRRRDenoiser* FSRRRDenoiser::GetSingleton()
 {
 	static FSRRRDenoiser singleton;
@@ -284,9 +298,12 @@ bool FSRRRDenoiser::Initialize(uint32_t a_width, uint32_t a_height)
 		denoiserDesc.checkerboardSignalFlags = 0;
 		denoiserDesc.maxRenderSize = { a_width, a_height };
 
+		logger::info("[FSR-RR] Calling ffxCreateContext for Denoiser (render size: {}x{}, signals: {:#x})...",
+			a_width, a_height, denoiserDesc.signalFlags);
+
 		ffxReturnCode_t ret = ffx->GetApi().CreateContext(&denoiserContext, &denoiserDesc.header, nullptr);
 		if (ret == FFX_API_RETURN_OK && denoiserContext) {
-			logger::info("[FSR-RR] Created FidelityFX Denoiser context successfully");
+			logger::info("[FSR-RR] Created FidelityFX Denoiser context successfully (context={})", denoiserContext);
 
 			if (ffx->GetApi().Query) {
 				ffxQueryGetProviderVersion verQuery{};
@@ -298,7 +315,8 @@ bool FSRRRDenoiser::Initialize(uint32_t a_width, uint32_t a_height)
 				}
 			}
 		} else {
-			logger::warn("[FSR-RR] ffxCreateContext for Denoiser returned code {}; using composition fallback", ret);
+			logger::warn("[FSR-RR] ffxCreateContext for Denoiser returned code: {} (code={}); using composition fallback",
+				GetFfxReturnCodeName(ret), ret);
 			denoiserContext = nullptr;
 		}
 	}
@@ -441,7 +459,7 @@ bool FSRRRDenoiser::Evaluate(
 	auto* cmdList = interop->BeginCommandList(slot);
 	if (cmdList) {
 		// Transition input resources to NON_PIXEL_SHADER_RESOURCE
-		D3D12_RESOURCE_BARRIER preBarriers[15]{};
+		D3D12_RESOURCE_BARRIER preBarriers[16]{};
 		uint32_t numPreBarriers = 0;
 
 		const auto addTransition = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES stateBefore, D3D12_RESOURCE_STATES stateAfter) {
@@ -563,10 +581,38 @@ bool FSRRRDenoiser::Evaluate(
 			}
 
 			ffxReturnCode_t ret = ffx->GetApi().Dispatch(&denoiserContext, &dispatchDesc.header);
+
+			static bool s_firstDispatchLogged = false;
+			if (!s_firstDispatchLogged) {
+				s_firstDispatchLogged = true;
+				logger::info("[FSR-RR] === First Evaluation Diagnostics ===");
+				logger::info("[FSR-RR] Render Dimensions: {}x{}", currentWidth, currentHeight);
+				logger::info("[FSR-RR] Context: {}", static_cast<void*>(denoiserContext));
+				logger::info("[FSR-RR] Radiance Inputs: DirectDiff={}, DirectSpec={}, IndirDiff={}, IndirSpec={}",
+					static_cast<void*>(a_directDiffuse), static_cast<void*>(a_directSpecular),
+					static_cast<void*>(a_indirectDiffuse), static_cast<void*>(a_indirectSpecular));
+				logger::info("[FSR-RR] G-Buffer Inputs: DiffAlb={}, SpecAlb={}, NormRough={}, LinDepth={}, Motion={}",
+					static_cast<void*>(a_diffuseAlbedo), static_cast<void*>(a_specularAlbedo),
+					static_cast<void*>(a_normalRoughness), static_cast<void*>(a_linearDepth), static_cast<void*>(a_motionVectors));
+				logger::info("[FSR-RR] Main Output: {}", static_cast<void*>(a_outputMain));
+				logger::info("[FSR-RR] Camera: Pos=({:.2f}, {:.2f}, {:.2f}), Delta=({:.4f}, {:.4f}, {:.4f}), Near={:.2f}, Far={:.2f}",
+					camPos.x, camPos.y, camPos.z,
+					dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y, dispatchDesc.cameraPositionDelta.z,
+					camNear, camFar);
+				logger::info("[FSR-RR] Jitter: ({:.4f}, {:.4f}), MV Scale: ({:.1f}, {:.1f}, {:.1f}), Flags: {:#x}",
+					dispatchDesc.jitterOffsets.x, dispatchDesc.jitterOffsets.y,
+					dispatchDesc.motionVectorScale.x, dispatchDesc.motionVectorScale.y, dispatchDesc.motionVectorScale.z,
+					dispatchDesc.flags);
+				logger::info("[FSR-RR] View[0][0]={:.4f}, Proj[0][0]={:.4f}",
+					dispatchDesc.view.rows[0][0], dispatchDesc.projection.rows[0][0]);
+				logger::info("[FSR-RR] ffxDispatch returned: {} (code={})", GetFfxReturnCodeName(ret), ret);
+				logger::info("[FSR-RR] ========================================");
+			}
+
 			if (ret != FFX_API_RETURN_OK) {
 				static ffxReturnCode_t lastRet = FFX_API_RETURN_OK;
 				if (ret != lastRet) {
-					logger::error("[FSR-RR] ffxDispatch failed with code {}", ret);
+					logger::error("[FSR-RR] ffxDispatch failed with code: {} ({})", GetFfxReturnCodeName(ret), ret);
 					lastRet = ret;
 				}
 			}
@@ -585,24 +631,50 @@ bool FSRRRDenoiser::Evaluate(
 			midBarriers[3].Transition.pResource = sharedDenoisedIndirectSpecular.d3dResource.get();
 			cmdList->ResourceBarrier(4, midBarriers);
 		} else {
-			// Fallback: Copy raw inputs to denoised outputs
+			static bool s_firstFallbackLogged = false;
+			if (!s_firstFallbackLogged) {
+				s_firstFallbackLogged = true;
+				logger::warn("[FSR-RR] Denoiser context is null; running fallback radiance composition pass");
+			}
+
+			// Fallback: Transition resources for CopyResource (Src -> COPY_SOURCE, Dst -> COPY_DEST)
+			D3D12_RESOURCE_BARRIER copyBarriers[8]{};
+			for (int i = 0; i < 4; ++i) {
+				copyBarriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				copyBarriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+				copyBarriers[i].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+				copyBarriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+				copyBarriers[4 + i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				copyBarriers[4 + i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+				copyBarriers[4 + i].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+				copyBarriers[4 + i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			}
+			copyBarriers[0].Transition.pResource = sharedDirectDiffuseIn.d3dResource.get();
+			copyBarriers[1].Transition.pResource = sharedDirectSpecularIn.d3dResource.get();
+			copyBarriers[2].Transition.pResource = sharedIndirectDiffuseIn.d3dResource.get();
+			copyBarriers[3].Transition.pResource = sharedIndirectSpecularIn.d3dResource.get();
+
+			copyBarriers[4].Transition.pResource = sharedDenoisedDirectDiffuse.d3dResource.get();
+			copyBarriers[5].Transition.pResource = sharedDenoisedDirectSpecular.d3dResource.get();
+			copyBarriers[6].Transition.pResource = sharedDenoisedIndirectDiffuse.d3dResource.get();
+			copyBarriers[7].Transition.pResource = sharedDenoisedIndirectSpecular.d3dResource.get();
+			cmdList->ResourceBarrier(8, copyBarriers);
+
 			cmdList->CopyResource(sharedDenoisedDirectDiffuse.d3dResource.get(), sharedDirectDiffuseIn.d3dResource.get());
 			cmdList->CopyResource(sharedDenoisedDirectSpecular.d3dResource.get(), sharedDirectSpecularIn.d3dResource.get());
 			cmdList->CopyResource(sharedDenoisedIndirectDiffuse.d3dResource.get(), sharedIndirectDiffuseIn.d3dResource.get());
 			cmdList->CopyResource(sharedDenoisedIndirectSpecular.d3dResource.get(), sharedIndirectSpecularIn.d3dResource.get());
 
-			D3D12_RESOURCE_BARRIER midBarriers[4]{};
+			// Transition back to NON_PIXEL_SHADER_RESOURCE for composition compute shader
 			for (int i = 0; i < 4; ++i) {
-				midBarriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				midBarriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-				midBarriers[i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-				midBarriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				copyBarriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+				copyBarriers[i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+				copyBarriers[4 + i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+				copyBarriers[4 + i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 			}
-			midBarriers[0].Transition.pResource = sharedDenoisedDirectDiffuse.d3dResource.get();
-			midBarriers[1].Transition.pResource = sharedDenoisedDirectSpecular.d3dResource.get();
-			midBarriers[2].Transition.pResource = sharedDenoisedIndirectDiffuse.d3dResource.get();
-			midBarriers[3].Transition.pResource = sharedDenoisedIndirectSpecular.d3dResource.get();
-			cmdList->ResourceBarrier(4, midBarriers);
+			cmdList->ResourceBarrier(8, copyBarriers);
 		}
 
 		// Dispatch composition compute shader
@@ -616,7 +688,7 @@ bool FSRRRDenoiser::Evaluate(
 		}
 
 		// Transition resources back to COMMON
-		D3D12_RESOURCE_BARRIER postBarriers[15]{};
+		D3D12_RESOURCE_BARRIER postBarriers[16]{};
 		uint32_t numPostBarriers = 0;
 		const auto addPostTransition = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES stateBefore) {
 			if (!res)
