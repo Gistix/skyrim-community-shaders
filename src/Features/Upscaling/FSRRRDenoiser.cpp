@@ -379,10 +379,10 @@ bool FSRRRDenoiser::Evaluate(
 	uint32_t a_renderWidth, uint32_t a_renderHeight,
 	float a_jitterX, float a_jitterY)
 {
-	if (!initialized || !a_outputMain)
+	if (!a_outputMain)
 		return false;
 
-	if (a_renderWidth != currentWidth || a_renderHeight != currentHeight) {
+	if (!initialized || a_renderWidth != currentWidth || a_renderHeight != currentHeight) {
 		if (!Initialize(a_renderWidth, a_renderHeight))
 			return false;
 	}
