@@ -8,6 +8,7 @@
 
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
+#include "Features/GlobalIllumination.h"
 #include "Features/IBL.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/Skylighting.h"
@@ -126,7 +127,7 @@ void Deferred::SetupResources()
 		// TEMPORAL_AA_WATER_1
 		// TEMPORAL_AA_WATER_2
 
-		// Albedo
+		// Albedo (raw base color for CERT when Global Illumination is loaded)
 		SetupRenderTarget(ALBEDO, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Specular
 		SetupRenderTarget(SPECULAR, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -136,8 +137,8 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Masks2 (vertexAO; fp16 to allow blending)
-		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Masks2 (vertexAO in .x; metallic in .y and AO in .z for CERT when Global Illumination is loaded)
+		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, globals::features::globalIllumination.loaded ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 
 		// TAA water history buffers need RGBA16: alpha stores premultiplied coverage for ISWaterBlend
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -384,10 +385,9 @@ void Deferred::DeferredPasses()
 		ID3D11UnorderedAccessView* uavs[3]{ main.UAV, normals.UAV, motionVectors.UAV };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-		auto shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite();
-		context->CSSetShader(shader, nullptr, 0);
+		if (auto shader = interior ? GetComputeMainCompositeInterior(rt.IsGlobalIllumination()) : GetComputeMainComposite(rt.IsGlobalIllumination())) {
+			context->CSSetShader(shader, nullptr, 0);
 
-		{
 			TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite - Dispatch");
 			globals::profiler->BeginPass("DeferredComposite");
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
@@ -591,11 +591,20 @@ void Deferred::ClearShaderCache()
 		mainCompositeInteriorCS->Release();
 		mainCompositeInteriorCS = nullptr;
 	}
+	if (mainCompositeRTGICS) {
+		mainCompositeRTGICS->Release();
+		mainCompositeRTGICS = nullptr;
+	}
+	if (mainCompositeInteriorRTGICS) {
+		mainCompositeInteriorRTGICS->Release();
+		mainCompositeInteriorRTGICS = nullptr;
+	}
 }
 
-ID3D11ComputeShader* Deferred::GetComputeMainComposite()
+ID3D11ComputeShader* Deferred::GetComputeMainComposite(bool a_rtgi)
 {
-	if (!mainCompositeCS) {
+	auto*& composite = a_rtgi ? mainCompositeRTGICS : mainCompositeCS;
+	if (!composite) {
 		logger::debug("Compiling DeferredCompositeCS");
 
 		std::vector<std::pair<const char*, const char*>> defines;
@@ -616,15 +625,18 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
 		if (globals::features::terrainBlending.loaded)
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
+		if (a_rtgi)
+			defines.push_back({ "RTGI", nullptr });
 
-		mainCompositeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
+		composite = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}
-	return mainCompositeCS;
+	return composite;
 }
 
-ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
+ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior(bool a_rtgi)
 {
-	if (!mainCompositeInteriorCS) {
+	auto*& composite = a_rtgi ? mainCompositeInteriorRTGICS : mainCompositeInteriorCS;
+	if (!composite) {
 		logger::debug("Compiling DeferredCompositeCS INTERIOR");
 
 		std::vector<std::pair<const char*, const char*>> defines;
@@ -643,10 +655,12 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
 		if (globals::features::terrainBlending.loaded)
 			defines.push_back({ "TERRAIN_BLENDING", nullptr });
+		if (a_rtgi)
+			defines.push_back({ "RTGI", nullptr });
 
-		mainCompositeInteriorCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
+		composite = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}
-	return mainCompositeInteriorCS;
+	return composite;
 }
 
 void Deferred::Hooks::Main_RenderShadowMaps::thunk()

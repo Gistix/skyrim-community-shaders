@@ -119,7 +119,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 	float3 linDiffuseColor = ColorManagement::SceneToLinear(diffuseColor);
 	float3 normalWS = normalize(mul(FrameBuffer::CameraViewInverse, float4(normalVS, 0)).xyz);
 
-#if defined(SSGI)
+#if defined(SSGI) && !defined(RTGI)
 
 	float ssgiAo;
 	float3 ssgiIl;
@@ -187,7 +187,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 	float3 color = linDiffuseColor + specularColor;
 
-#if defined(DYNAMIC_CUBEMAPS)
+#if defined(DYNAMIC_CUBEMAPS) && !defined(RTGI)
 
 	float3 reflectance = ReflectanceTexture[dispatchID.xy];
 

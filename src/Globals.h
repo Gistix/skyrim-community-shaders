@@ -43,6 +43,7 @@ struct ScreenshotFeature;
 struct Skin;
 struct Raytracing;
 struct PathTracing;
+struct GlobalIllumination;
 
 class State;
 class Deferred;
@@ -138,6 +139,7 @@ namespace globals
 		extern Skin skin;
 		extern Raytracing raytracing;
 		extern PathTracing pathTracing;
+		extern GlobalIllumination globalIllumination;
 
 	}
 

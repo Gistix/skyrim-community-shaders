@@ -340,6 +340,14 @@ namespace SharedData
 		uint3 pad0;
 	};
 
+	struct GlobalIlluminationSettings
+	{
+		float Ambient;
+		float Reflection;
+		uint Albedo;
+		uint _padding;
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -362,6 +370,7 @@ namespace SharedData
 		TruePBRSettings truePBRSettings;
 		SkinData skinData;
 		PostProcessingSettings postProcessingSettings;
+		GlobalIlluminationSettings globalIlluminationSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

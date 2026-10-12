@@ -1787,6 +1787,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	Glints::PrecomputeGlints(glintNoise, uvOriginal, ddx(uvOriginal), ddy(uvOriginal), material.GlintScreenSpaceScale, material.GlintCache);
 #		endif
 
+#		if defined(RTGI)
+	float3 trueBaseColor = baseColor.xyz;
+#		endif
+
 	baseColor.xyz *= 1 - material.Metallic;
 
 	material.BaseColor = baseColor.xyz;
@@ -1913,6 +1917,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX) || defined(EYE)
 	float envMask = EnvmapData.x * MaterialData.x;
+#		if defined(RTGI)
+	envMask *= SharedData::globalIlluminationSettings.Reflection;
+#		endif
 
 	float viewNormalAngle = dot(worldNormal.xyz, viewDirection);
 	float3 envSamplingPoint = (viewNormalAngle * 2) * worldNormal.xyz - viewDirection;
@@ -2539,6 +2546,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+#	if defined(RTGI)
+	directionalAmbientColor *= SharedData::globalIlluminationSettings.Ambient;
+#	endif
+
 #	if defined(LANDSCAPE)
 	if (SharedData::lodBlendingSettings.DisableTerrainVertexColors)
 		input.Color.xyz = 1;
@@ -2707,6 +2718,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	color.xyz = ColorManagement::SceneToLinear(color.xyz);
 	color.xyz += specularColor;
 
+#	if !defined(RTGI)
 	if (any(indirectLobeWeights.specular > 0)
 #		if defined(WETNESS_EFFECTS)
 		|| any(wetnessReflectance > 0)
@@ -2729,6 +2741,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		else
 		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
 #		endif
+	#endif
 
 	color.xyz = ColorManagement::LinearToScene(color.xyz);
 	float3 fogColor = input.FogParam.xyz;
@@ -2924,7 +2937,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	psout.MotionVectors.zw = float2(0.0, psout.Diffuse.w);
 	psout.Specular = float4(specularColor, psout.Diffuse.w);
+#		if defined(RTGI) && defined(TRUE_PBR)
+	psout.Albedo = float4(SharedData::globalIlluminationSettings.Albedo ? trueBaseColor * vertexColor : outputAlbedo, psout.Diffuse.w);
+#		else
 	psout.Albedo = float4(outputAlbedo, psout.Diffuse.w);
+#		endif
 
 #		if defined(WETNESS_EFFECTS)
 	indirectLobeWeights.specular += wetnessReflectance;
@@ -2935,7 +2952,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #		endif
 
+#	if defined(RTGI)
+	psout.Reflectance = float4(0, 0, 0, psout.Diffuse.w);
+#	else
 	psout.Reflectance = float4(indirectLobeWeights.specular, psout.Diffuse.w);
+#	endif
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(screenSpaceNormal), saturate(1.0 - material.Roughness), psout.Diffuse.w);
 
 #		if defined(SNOW)
@@ -2958,7 +2979,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion
 	// for pixels that do not write to this RT (sky, water, grass, effects).
+#		if defined(RTGI)
+#			if defined(TRUE_PBR)
+	const float metallic = material.Metallic;
+	const float ao = material.AO;
+#			else
+#				if (defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX)) && !defined(EYE)
+	const float metallic = envMask;
+#				else
+	const float metallic = 0.0f;
+#				endif
+	const float ao = 1.0f;
+#			endif
+	psout.Masks2 = float4(1.0 - vertexAO, metallic, 1.0f - ao, psout.Diffuse.w);
+#		else
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+#		endif
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
 	psout.NormalGlossiness.w = stochasticBlend;

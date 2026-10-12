@@ -632,6 +632,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
 #			endif
 
+#			if defined(RTGI)
+	directionalAmbientColor *= SharedData::globalIlluminationSettings.Ambient;
+#			endif
+
 	diffuseColor += directionalAmbientColor;
 	diffuseColor += subsurfaceColor * albedo;
 	diffuseColor *= albedo;
@@ -639,7 +643,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	directionalAmbientColor *= albedo;
 
 #			if defined(SKYLIGHTING)
-	Skylighting::ApplySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
+			Skylighting::ApplySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
 #			endif
 
 	specularColor += lightsSpecularColor;
@@ -818,6 +822,10 @@ PS_OUTPUT main(PS_INPUT input)
 #			if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
+#			endif
+
+#			if defined(RTGI)
+	directionalAmbientColor *= SharedData::globalIlluminationSettings.Ambient;
 #			endif
 
 	float3 albedo = baseColor.xyz * vertexColor;

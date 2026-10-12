@@ -66,13 +66,13 @@ public:
 	 * @brief Gets or compiles the exterior deferred composite compute shader.
 	 * @return Cached or freshly compiled compute shader with feature-dependent defines.
 	 */
-	ID3D11ComputeShader* GetComputeMainComposite();
+	ID3D11ComputeShader* GetComputeMainComposite(bool a_rtgi = false);
 
 	/**
 	 * @brief Gets or compiles the interior deferred composite compute shader.
 	 * @return Cached or freshly compiled compute shader with INTERIOR and feature-dependent defines.
 	 */
-	ID3D11ComputeShader* GetComputeMainCompositeInterior();
+	ID3D11ComputeShader* GetComputeMainCompositeInterior(bool a_rtgi = false);
 
 	/**
 	 * @brief Uploads directional shadow parameters from BSShadowDirectionalLight to the t98 structured buffer.
@@ -89,6 +89,8 @@ public:
 
 	ID3D11ComputeShader* mainCompositeCS = nullptr;
 	ID3D11ComputeShader* mainCompositeInteriorCS = nullptr;
+	ID3D11ComputeShader* mainCompositeRTGICS = nullptr;
+	ID3D11ComputeShader* mainCompositeInteriorRTGICS = nullptr;
 
 	// Directional shadow structured buffer (t98): cascade splits and projections.
 	Buffer* directionalShadowLights = nullptr;

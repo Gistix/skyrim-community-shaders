@@ -504,8 +504,9 @@ Upscaling::UpscaleMethod Upscaling::GetUpscaleMethod() const
 
 	// DLSS Ray Reconstruction is not user-selectable. It activates when the user chooses DLSS
 	// and the Raytracing feature's denoiser is set to DLSS RR (and Streamline supports it).
-	// The denoiser lives in PathTracing and is merged into the effective settings by
-	// Raytracing::GetSettings(), so read that rather than Raytracing's own stored field.
+	// The denoiser lives in PathTracing or GlobalIllumination (whichever mode is active) and is
+	// merged into the effective settings by Raytracing::GetSettings(), so read that rather than
+	// Raytracing's own stored field.
 	if (method == UpscaleMethod::kDLSS) {
 		auto& rt = globals::features::raytracing;
 		const auto rtSettings = rt.GetSettings();

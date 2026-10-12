@@ -10,9 +10,11 @@
 #include "Features/InverseSquareLighting.h"
 #include "Features/LODBlending.h"
 #include "Features/LinearLighting.h"
+#include "Features/GlobalIllumination.h"
 #include "Features/PathTracing.h"
 #include "Features/Skin.h"
 #include "Features/Upscaling/DXVKInterop.h"
+#include "Features/Upscaling.h"
 #include "Features/WetnessEffects.h"
 #include "Globals.h"
 #include "Menu.h"
@@ -97,6 +99,20 @@ CreationEngineRaytracing::Settings Raytracing::GetSettings() const
 		certSettings.WaterSettings = pt.WaterSettings;
 		certSettings.ExperimentalSettings.PathTracingCull = pt.ExperimentalSettings.PathTracingCull;
 		certSettings.SHaRCSettings = pt.SHaRCSettings;
+	} else if (IsGlobalIllumination()) {
+		const auto& gi = globals::features::globalIllumination.settings;
+		certSettings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::GlobalIllumination;
+		certSettings.GeneralSettings.Denoiser = gi.GeneralSettings.Denoiser;
+		certSettings.RaytracingSettings = gi.RaytracingSettings;
+		certSettings.SHaRCSettings = gi.SHaRCSettings;
+		certSettings.NRDSettings = gi.NRDSettings;
+		certSettings.NRDReblurSettings = gi.NRDReblurSettings;
+		certSettings.NRDRelaxSettings = gi.NRDRelaxSettings;
+		certSettings.AdvancedSettings.HairBSDF = gi.HairBSDF;
+		certSettings.AdvancedSettings.SSSSettings = gi.SSSSettings;
+		certSettings.MaterialSettings = gi.MaterialSettings;
+		certSettings.LightingSettings = gi.LightingSettings;
+		certSettings.WaterSettings = gi.WaterSettings;
 	} else {
 		certSettings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::None;
 	}
@@ -112,12 +128,20 @@ CreationEngineRaytracing::Mode Raytracing::Mode() const
 	if (globals::features::pathTracing.loaded && globals::features::pathTracing.settings.Enabled)
 		return CreationEngineRaytracing::Mode::PathTracing;
 
+	if (globals::features::globalIllumination.loaded && globals::features::globalIllumination.settings.Enabled)
+		return CreationEngineRaytracing::Mode::GlobalIllumination;
+
 	return CreationEngineRaytracing::Mode::None;
 }
 
 bool Raytracing::IsPathTracing() const
 {
 	return Mode() == CreationEngineRaytracing::Mode::PathTracing;
+}
+
+bool Raytracing::IsGlobalIllumination() const
+{
+	return Mode() == CreationEngineRaytracing::Mode::GlobalIllumination;
 }
 
 bool Raytracing::IsPathTracingCull() const
@@ -157,7 +181,14 @@ void Raytracing::GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D
 	diffuseAlbedo = static_cast<ID3D11Resource*>(diffuse);
 	specularAlbedo = static_cast<ID3D11Resource*>(specular);
 	specHitDist = static_cast<ID3D11Resource*>(hitDist);
-	normalRoughness = normalRoughnessTexture.get();
+	normalRoughness = globals::features::globalIllumination.normalRoughnessTexture.get();
+
+	// CERT's diffuse albedo is only available during Path Tracing; in Global Illumination
+	// feed the deferred albedo target directly
+	if (mode == CreationEngineRaytracing::Mode::GlobalIllumination) {
+		if (auto* renderer = globals::game::renderer)
+			diffuseAlbedo = renderer->GetRuntimeData().renderTargets[ALBEDO].texture;
+	}
 }
 
 void Raytracing::UpdateSettings()
@@ -192,7 +223,22 @@ void Raytracing::Execute()
 		}
 	}
 
+	{
+		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
+		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
+
+		if (screenCB && screenData) {
+			screenData->Resolution = { static_cast<uint32_t>(screenSize.x), static_cast<uint32_t>(screenSize.y) };
+			screenData->DynamicResolution = { static_cast<uint32_t>(dynamicScreenSize.x), static_cast<uint32_t>(dynamicScreenSize.y) };
+			screenCB->Update(screenData.get(), sizeof(ScreenData));
+		}
+	}
+
 	try {
+		// Convert gbuffer inputs for CERT (world-space normal/roughness, raw albedo)
+		if (IsGlobalIllumination())
+			globals::features::globalIllumination.ConvertTextures();
+
 		creationEngineRaytracing->Execute();
 		creationEngineRaytracing->PostExecution();
 
@@ -206,26 +252,23 @@ void Raytracing::Execute()
 	}
 
 	auto* renderer = globals::game::renderer;
-	if (!renderer)
+	if (!renderer) {
+		if (IsGlobalIllumination())
+			logger::error("[Raytracing GI TEMP] Composite skipped: renderer missing after CERT execution");
 		return;
+	}
 
 	auto* context = globals::d3d::context;
-	if (!context)
+	if (!context) {
+		if (IsGlobalIllumination())
+			logger::error("[Raytracing GI TEMP] Composite skipped: D3D context missing after CERT execution");
 		return;
+	}
 
 	const auto& renderTargets = renderer->GetRuntimeData().renderTargets;
 	auto& main = renderTargets[RE::RENDER_TARGETS::kMAIN];
 
 	if (IsPathTracing()) {
-		float2 screenSize{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) };
-		auto dynamicScreenSize = Util::ConvertToDynamic(screenSize);
-
-		if (screenCB && screenData) {
-			screenData->Resolution = { static_cast<uint32_t>(screenSize.x), static_cast<uint32_t>(screenSize.y) };
-			screenData->DynamicResolution = { static_cast<uint32_t>(dynamicScreenSize.x), static_cast<uint32_t>(dynamicScreenSize.y) };
-			screenCB->Update(screenData.get(), sizeof(ScreenData));
-		}
-
 		// Blend pathtracing and sky (colors and motion vectors)
 		if (ptCompositeCS && screenCB && sharedMainTextures.srv && sharedMotionVectorTextures.srv) {
 			auto& mv = renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
@@ -284,8 +327,8 @@ void Raytracing::Execute()
 			D3D11_VIEWPORT viewport = {};
 			viewport.TopLeftX = 0.0f;
 			viewport.TopLeftY = 0.0f;
-			viewport.Width = screenSize.x;
-			viewport.Height = screenSize.y;
+			viewport.Width = static_cast<float>(globals::game::graphicsState->screenWidth);
+			viewport.Height = static_cast<float>(globals::game::graphicsState->screenHeight);
 			viewport.MinDepth = 0.0f;
 			viewport.MaxDepth = 1.0f;
 			context->RSSetViewports(1, &viewport);
@@ -338,8 +381,29 @@ void Raytracing::Execute()
 			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kINDIRECT_DOWNSCALED].RTV, clearColor);
 		}
-	} else if (sharedMainTextures.texture.shared && main.texture) {
-		context->CopyResource(main.texture, sharedMainTextures.texture.shared);
+	} else if (IsGlobalIllumination()) {
+		// Add the GI result on top of main so the existing direct lighting is preserved
+		context->CSSetShader(giCompositeCS.get(), nullptr, 0);
+
+		ID3D11Buffer* cb = screenCB->CB();
+		context->CSSetConstantBuffers(0, 1, &cb);
+
+		ID3D11ShaderResourceView* srv = sharedMainTextures.srv.get();
+		context->CSSetShaderResources(0, 1, &srv);
+
+		ID3D11UnorderedAccessView* uav = main.UAV;
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+		auto dispatchCount = Util::GetScreenDispatchCount(true);
+		context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+
+		uav = nullptr;
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+		srv = nullptr;
+		context->CSSetShaderResources(0, 1, &srv);
+
+		context->CSSetShader(nullptr, nullptr, 0);
 	}
 }
 
@@ -601,71 +665,41 @@ void Raytracing::SetupWaterFlowMap()
 void Raytracing::SetupSharedTextures()
 {
 	auto* renderer = globals::game::renderer;
-	if (!renderer)
+	if (!renderer) {
+		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: renderer missing");
 		return;
-
-	auto* device = globals::d3d::device;
-	if (!device)
-		return;
-
-	auto mainTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	if (!mainTex.texture)
-		return;
-
-	D3D11_TEXTURE2D_DESC mainDesc{};
-	mainTex.texture->GetDesc(&mainDesc);
-
-	if (normalRoughnessTexture) {
-		D3D11_TEXTURE2D_DESC currentDesc{};
-		normalRoughnessTexture->GetDesc(&currentDesc);
-		if (currentDesc.Width != mainDesc.Width || currentDesc.Height != mainDesc.Height) {
-			normalRoughnessTexture = nullptr;
-			normalRoughnessSRV = nullptr;
-			normalRoughnessUAV = nullptr;
-		}
 	}
 
-	if (!normalRoughnessTexture) {
-		D3D11_TEXTURE2D_DESC texDesc{};
-		texDesc.Width = mainDesc.Width;
-		texDesc.Height = mainDesc.Height;
-		texDesc.MipLevels = 1;
-		texDesc.ArraySize = 1;
-		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-		texDesc.SampleDesc.Count = 1;
-		texDesc.SampleDesc.Quality = 0;
-		texDesc.Usage = D3D11_USAGE_DEFAULT;
-		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+	auto* device = globals::d3d::device;
+	if (!device) {
+		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: D3D device missing");
+		return;
+	}
 
-		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, normalRoughnessTexture.put()));
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-		srvDesc.Format = texDesc.Format;
-		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Texture2D.MipLevels = 1;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(normalRoughnessTexture.get(), &srvDesc, normalRoughnessSRV.put()));
-
-		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
-		uavDesc.Format = texDesc.Format;
-		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
-		uavDesc.Texture2D.MipSlice = 0;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(normalRoughnessTexture.get(), &uavDesc, normalRoughnessUAV.put()));
+	// Converted GI input textures are owned by the GlobalIllumination feature
+	auto& gi = globals::features::globalIllumination;
+	auto* normalRoughnessTex = gi.normalRoughnessTexture.get();
+	if (!normalRoughnessTex) {
+		logger::warn("[Raytracing TEMP] SetupSharedTextures early return: GI normalRoughnessTexture missing");
+		return;
 	}
 
 	auto* albedoTex = renderer->GetRuntimeData().renderTargets[ALBEDO].texture;
 	auto* gnmaoTex = renderer->GetRuntimeData().renderTargets[MASKS2].texture;
 
 	if (!albedoTex || !gnmaoTex) {
+		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: albedo={} masks2={}", albedoTex != nullptr, gnmaoTex != nullptr);
 		return;
 	}
 
-	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTexture.get(), gnmaoTex);
+	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTex, gnmaoTex);
 
 	CreationEngineRaytracing::SharedTexture depth{};
 	CreationEngineRaytracing::SharedTexture motionVector{};
 	CreationEngineRaytracing::SharedTexture main{};
 	creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
+	if (!main.shared)
+		logger::error("[Raytracing GI TEMP] CERT returned no shared main output texture");
 
 	auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
 		wrapper.texture = st;
@@ -687,6 +721,8 @@ void Raytracing::SetupSharedTextures()
 	setupSharedWrapper(sharedDepthTextures, depth);
 	setupSharedWrapper(sharedMotionVectorTextures, motionVector);
 	setupSharedWrapper(sharedMainTextures, main);
+	logger::info("[Raytracing GI TEMP] Shared textures ready: depth={} motion={} main={} mainSRV={}",
+		depth.shared != nullptr, motionVector.shared != nullptr, main.shared != nullptr, sharedMainTextures.srv != nullptr);
 }
 
 void Raytracing::SetSkinDetailNormal(ID3D11Resource* a_resource)
@@ -712,6 +748,16 @@ void Raytracing::CompileShaders()
 			{},
 			"cs_5_0"))) {
 		ptCompositeCS.attach(rawPtr);
+	}
+
+	if (auto* rawPtr = static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+			L"Data\\Shaders\\Raytracing\\GICompositeCS.hlsl",
+			{},
+			"cs_5_0"))) {
+		giCompositeCS.attach(rawPtr);
+		logger::info("[Raytracing GI TEMP] GICompositeCS compiled");
+	} else {
+		logger::error("[Raytracing GI TEMP] GICompositeCS compile failed");
 	}
 
 	if (auto* rawPtr = static_cast<ID3D11VertexShader*>(Util::CompileShader(

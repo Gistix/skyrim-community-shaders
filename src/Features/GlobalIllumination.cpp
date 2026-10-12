@@ -1,0 +1,789 @@
+#include "Features/GlobalIllumination.h"
+
+#include "Deferred.h"
+#include "Features/PathTracing.h"
+#include "Globals.h"
+#include "Menu.h"
+#include "Raytracing.h"
+#include "Upscaling.h"
+#include "Upscaling/Streamline.h"
+#include "Util.h"
+#include <magic_enum/magic_enum.hpp>
+
+#define I18N_KEY_PREFIX "feature.global_illumination."
+#define RT_I18N_KEY_PREFIX "feature.raytracing."
+#define RT_TKEY(suffix) RT_I18N_KEY_PREFIX suffix
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	GlobalIllumination::Settings,
+	Enabled,
+	RaytracingSettings,
+	GeneralSettings,
+	NRDSettings,
+	NRDReblurSettings,
+	NRDRelaxSettings,
+	HairBSDF,
+	SSSSettings,
+	MaterialSettings,
+	LightingSettings,
+	WaterSettings,
+	SHaRCSettings)
+
+static std::string StableLabel(const char* label, std::string_view id)
+{
+	return std::format("{}###{}", label, id);
+}
+
+static void DrawFloat2(const char* label, float2& v, float min = 0.0f, float max = 1.0f)
+{
+	float floats[2] = { v.x, v.y };
+	if (ImGui::SliderFloat2(label, floats, min, max)) {
+		v = { floats[0], floats[1] };
+		v.Clamp({ min, min }, { max, max });
+	}
+}
+
+template <class T>
+static void ClampSetting(T& value, T min, T max)
+{
+	value = std::clamp(value, min, max);
+}
+
+void GlobalIllumination::RestoreDefaultSettings()
+{
+	settings = {};
+}
+
+void GlobalIllumination::LoadSettings(json& o_json)
+{
+	settings = o_json;
+	settings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::GlobalIllumination;
+	if (!o_json.contains("SHaRCSettings"))
+		settings.SHaRCSettings = globals::features::raytracing.settings.CreationEngineRaytracingSettings.SHaRCSettings;
+	UpdateSettings();
+}
+
+void GlobalIllumination::SaveSettings(json& o_json)
+{
+	o_json = settings;
+}
+
+bool GlobalIllumination::Available() const
+{
+	return loaded && settings.Enabled && globals::features::raytracing.Available();
+}
+
+GlobalIllumination::SharedData GlobalIllumination::GetCommonBufferData() const
+{
+	const bool active = Available();
+	return {
+		.Ambient = active ? 0.0f : 1.0f,
+		.Reflection = active ? 0.0f : 1.0f,
+		.Albedo = active ? 1u : 0u,
+	};
+}
+
+void GlobalIllumination::SetupResources()
+{
+	if (!loaded) {
+		logger::warn("[GlobalIllumination TEMP] SetupResources early return: feature not loaded");
+		return;
+	}
+
+	auto* renderer = globals::game::renderer;
+	if (!renderer) {
+		logger::warn("[GlobalIllumination TEMP] SetupResources early return: no renderer");
+		return;
+	}
+
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	if (!main.texture) {
+		logger::warn("[GlobalIllumination TEMP] SetupResources early return: kMAIN texture missing");
+		return;
+	}
+
+	D3D11_TEXTURE2D_DESC mainDesc{};
+	main.texture->GetDesc(&mainDesc);
+
+	if (!normalRoughnessTexture) {
+		auto* device = globals::d3d::device;
+
+		D3D11_TEXTURE2D_DESC texDesc{};
+		texDesc.Width = mainDesc.Width;
+		texDesc.Height = mainDesc.Height;
+		texDesc.MipLevels = 1;
+		texDesc.ArraySize = 1;
+		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		texDesc.SampleDesc.Count = 1;
+		texDesc.SampleDesc.Quality = 0;
+		texDesc.Usage = D3D11_USAGE_DEFAULT;
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = texDesc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+		uavDesc.Format = texDesc.Format;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
+
+		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, normalRoughnessTexture.put()));
+		DX::ThrowIfFailed(device->CreateShaderResourceView(normalRoughnessTexture.get(), &srvDesc, normalRoughnessSRV.put()));
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(normalRoughnessTexture.get(), &uavDesc, normalRoughnessUAV.put()));
+	}
+
+	if (!convertTexturesCS) {
+		if (auto* rawPtr = static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+				L"Data\\Shaders\\GlobalIllumination\\ConvertTexturesCS.hlsl",
+				{},
+				"cs_5_0"))) {
+			convertTexturesCS.attach(rawPtr);
+			logger::info("[GlobalIllumination TEMP] SetupResources: ConvertTexturesCS compiled");
+		} else {
+			logger::warn("[GlobalIllumination TEMP] SetupResources: ConvertTexturesCS compile FAILED");
+		}
+	}
+	logger::info("[GlobalIllumination TEMP] SetupResources done: normalRoughnessTexture={} convertTexturesCS={}",
+		normalRoughnessTexture != nullptr, convertTexturesCS != nullptr);
+}
+
+void GlobalIllumination::ConvertTextures()
+{
+	auto* renderer = globals::game::renderer;
+	auto* context = globals::d3d::context;
+	auto* inputSRV = renderer ? renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS].SRV : nullptr;
+	auto* screenCB = globals::features::raytracing.screenCB.get();
+	auto* perFrameCB = globals::game::perFrame.get();
+	if (!normalRoughnessUAV || !convertTexturesCS || !inputSRV || !screenCB || !perFrameCB || !context) {
+		static uint32_t conversionSkipCount = 0;
+		if (conversionSkipCount++ < 30 || conversionSkipCount % 120 == 0)
+			logger::error("[GlobalIllumination TEMP] ConvertTextures skipped #{}: UAV={} shader={} inputSRV={} screenCB={} perFrameCB={} context={}",
+				conversionSkipCount, normalRoughnessUAV != nullptr, convertTexturesCS != nullptr, inputSRV != nullptr,
+				screenCB != nullptr, perFrameCB != nullptr, context != nullptr);
+		return;
+	}
+
+	static uint32_t conversionDispatchCount = 0;
+	const bool logDispatch = conversionDispatchCount++ < 30 || conversionDispatchCount % 120 == 0;
+	if (logDispatch) {
+		logger::info("[GlobalIllumination TEMP] ConvertTextures dispatch #{}: inputSRV={} outputUAV={} screenCB={} perFrameCB={}",
+			conversionDispatchCount, static_cast<void*>(inputSRV), static_cast<void*>(normalRoughnessUAV.get()),
+			static_cast<void*>(screenCB), static_cast<void*>(perFrameCB));
+	}
+
+	// ScreenData (b0) clamps the dispatch; PerFrame (b12) provides the view matrix
+	ID3D11Buffer* screenDataCB = screenCB->CB();
+	context->CSSetConstantBuffers(0, 1, &screenDataCB);
+	ID3D11Buffer* frameBufferCB = *perFrameCB;
+	context->CSSetConstantBuffers(12, 1, &frameBufferCB);
+
+	context->CSSetShader(convertTexturesCS.get(), nullptr, 0);
+
+	ID3D11ShaderResourceView* srv = inputSRV;
+	context->CSSetShaderResources(0, 1, &srv);
+
+	ID3D11UnorderedAccessView* uav = normalRoughnessUAV.get();
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	auto dispatchCount = Util::GetScreenDispatchCount(true);
+	context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+	if (logDispatch)
+		logger::info("[GlobalIllumination TEMP] ConvertTextures dispatch submitted #{} groups=({}, {})", conversionDispatchCount, dispatchCount.x, dispatchCount.y);
+
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->CSSetShaderResources(0, 1, &nullSRV);
+
+	context->CSSetShader(nullptr, nullptr, 0);
+}
+
+void GlobalIllumination::UpdateSettings()
+{
+	globals::features::raytracing.UpdateSettings();
+}
+
+void GlobalIllumination::DrawSettings()
+{
+	auto& rt = globals::features::raytracing;
+
+	if (!rt.loaded) {
+		ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+			T(TKEY("requires_raytracing_feature"), "Raytracing feature is not loaded."));
+		return;
+	}
+
+	if (!rt.Available(false)) {
+		ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+			T(TKEY("requires_raytracing"), "Creation Engine Raytracing runtime is not available, check the Raytracing feature."));
+		return;
+	}
+
+	if (globals::features::pathTracing.loaded && globals::features::pathTracing.settings.Enabled) {
+		ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Warning, "%s",
+			T(TKEY("path_tracing_active"), "Path Tracing is currently active and takes precedence over Global Illumination."));
+	}
+
+	auto settingsBefore = settings;
+
+	ImGui::Checkbox(T(TKEY("enabled"), "Enabled"), &settings.Enabled);
+
+	if (ImGui::BeginTabBar("##GlobalIlluminationTabs", ImGuiTabBarFlags_None)) {
+		DrawGeneralSettings();
+		DrawNRDSettings();
+		DrawAdvancedSettings();
+		DrawDebugSettings();
+
+		ImGui::EndTabBar();
+	}
+
+	if (settingsBefore != settings) {
+		settings.GeneralSettings.Mode = CreationEngineRaytracing::Mode::GlobalIllumination;
+		UpdateSettings();
+	}
+}
+
+void GlobalIllumination::DrawGeneralSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_general"), "General"))) {
+		ImGui::PushID("GeneralSettings");
+
+		ImGui::SliderInt(T(RT_TKEY("bounces"), "Bounces"), &settings.RaytracingSettings.Bounces, 1, 8);
+
+		ImGui::SliderInt(T(RT_TKEY("samples_per_pixel"), "Samples Per Pixel"), &settings.RaytracingSettings.SamplesPerPixel, 1, 16);
+
+		const char* rrNames[] = { "Disabled", "Standard", "Enhanced" };
+		int currentRR = static_cast<int>(settings.RaytracingSettings.RussianRoulette);
+		if (ImGui::Combo(T(RT_TKEY("russian_roulette"), "Russian Roulette"), &currentRR, rrNames, IM_ARRAYSIZE(rrNames))) {
+			settings.RaytracingSettings.RussianRoulette = static_cast<CreationEngineRaytracing::RussianRoulette>(currentRR);
+		}
+
+		const char* denoiserNames[] = { "None", "NRD Reblur", "NRD Relax", "DLSS RR", "Accumulation" };
+		int currentDenoiser = static_cast<int>(settings.GeneralSettings.Denoiser);
+		if (ImGui::Combo(T(RT_TKEY("denoiser"), "Denoiser"), &currentDenoiser, denoiserNames, IM_ARRAYSIZE(denoiserNames))) {
+			settings.GeneralSettings.Denoiser = static_cast<CreationEngineRaytracing::Denoiser>(currentDenoiser);
+		}
+
+		if (settings.GeneralSettings.Denoiser == CreationEngineRaytracing::Denoiser::DLSS_RR) {
+			auto* streamline = Streamline::GetSingleton();
+			if (!streamline->IsDLSSRRSupported()) {
+				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Error, "%s",
+					T(RT_TKEY("dlss_rr_not_available"), "DLSS Ray Reconstruction is not available on this system."));
+			} else if (globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kDLSS_RR) {
+				ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Warning, "%s",
+					T(RT_TKEY("set_upscaling_to_dlss"), "Set Upscaling method to DLSS to enable Ray Reconstruction."));
+			}
+		}
+
+		{
+			auto& rtSettings = settings.RaytracingSettings;
+			const auto& denoiser = settings.GeneralSettings.Denoiser;
+			const bool resScale = (denoiser == CreationEngineRaytracing::Denoiser::NRD_Reblur ||
+								   denoiser == CreationEngineRaytracing::Denoiser::NRD_Relax);
+
+			if (!resScale)
+				ImGui::BeginDisabled();
+
+			ImGui::SliderFloat(T(RT_TKEY("resolution_scale"), "Resolution Scale"), &rtSettings.ResolutionScale, 0.25f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("%s", T(RT_TKEY("resolution_scale_tooltip"),
+									  "Internal raytracing resolution."));
+			}
+
+			if (!resScale) {
+				ImGui::EndDisabled();
+
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("%s", T(RT_TKEY("resolution_scale_disabled_tooltip"),
+										  "Only available when using NRD denoiser."));
+				}
+			}
+		}
+
+		DrawMaterialSettings();
+
+		DrawLightingSettings();
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}
+
+void GlobalIllumination::DrawAdvancedSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_advanced"), "Advanced"))) {
+		ImGui::PushID("AdvancedSettings");
+
+		DrawHairBSDFSettings();
+
+		DrawSSSSettings();
+
+		DrawWaterSettings();
+
+		DrawSHaRCSettings();
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}
+
+void GlobalIllumination::DrawNRDSettings()
+{
+	const auto& denoiser = settings.GeneralSettings.Denoiser;
+	const bool reblur = (denoiser == CreationEngineRaytracing::Denoiser::NRD_Reblur);
+	const bool relax = (denoiser == CreationEngineRaytracing::Denoiser::NRD_Relax);
+
+	if (!reblur && !relax)
+		return;
+
+	if (ImGui::BeginTabItem(T(RT_TKEY("tab_nrd"), "NRD"))) {
+		ImGui::PushID("NRDSettings");
+
+		auto& nrdSettings = settings.NRDSettings;
+
+		if (ImGui::InputScalar(T(RT_TKEY("history_fix_frames"), "History Fix Frames"), ImGuiDataType_U32, &nrdSettings.historyFixFrameNum))
+			ClampSetting(nrdSettings.historyFixFrameNum, 0u, 3u);
+
+		if (ImGui::InputScalar(T(RT_TKEY("history_fix_base_pixel_stride"), "History Fix Base Pixel Stride"), ImGuiDataType_U32, &nrdSettings.historyFixBasePixelStride))
+			ClampSetting(nrdSettings.historyFixBasePixelStride, 1u, 64u);
+
+		if (ImGui::InputScalar(T(RT_TKEY("history_fix_alternate_pixel_stride"), "History Fix Alternate Pixel Stride"), ImGuiDataType_U32, &nrdSettings.historyFixAlternatePixelStride))
+			ClampSetting(nrdSettings.historyFixAlternatePixelStride, 1u, 64u);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("fast_history_clamping_sigma_scale"), "Fast History Clamping Sigma Scale"), &nrdSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f, "%.2f"))
+			ClampSetting(nrdSettings.fastHistoryClampingSigmaScale, 1.0f, 3.0f);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("diffuse_prepass_blur_radius"), "Diffuse Prepass Blur Radius"), &nrdSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, "%.1f"))
+			ClampSetting(nrdSettings.diffusePrepassBlurRadius, 0.0f, 100.0f);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("specular_prepass_blur_radius"), "Specular Prepass Blur Radius"), &nrdSettings.specularPrepassBlurRadius, 0.0f, 100.0f, "%.1f"))
+			ClampSetting(nrdSettings.specularPrepassBlurRadius, 0.0f, 100.0f);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("min_hit_distance_weight"), "Min Hit Distance Weight"), &nrdSettings.minHitDistanceWeight, 0.001f, 0.2f, "%.3f"))
+			ClampSetting(nrdSettings.minHitDistanceWeight, 0.001f, 0.2f);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("lobe_angle_fraction"), "Lobe Angle Fraction"), &nrdSettings.lobeAngleFraction, 0.0f, 1.0f, "%.3f"))
+			ClampSetting(nrdSettings.lobeAngleFraction, 0.0f, 1.0f);
+
+		if (ImGui::SliderFloat(T(RT_TKEY("roughness_fraction"), "Roughness Fraction"), &nrdSettings.roughnessFraction, 0.0f, 1.0f, "%.3f"))
+			ClampSetting(nrdSettings.roughnessFraction, 0.0f, 1.0f);
+
+		ImGui::Checkbox(T(RT_TKEY("enable_anti_firefly"), "Enable Anti Firefly"), &nrdSettings.enableAntiFirefly);
+
+		if (reblur)
+			DrawReblurSettings();
+		else if (relax)
+			DrawRelaxSettings();
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}
+
+void GlobalIllumination::DrawReblurSettings()
+{
+	if (!ImGui::TreeNodeEx(T(RT_TKEY("reblur"), "Reblur"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+
+	auto& reblurSettings = settings.NRDReblurSettings;
+
+	if (ImGui::InputScalar(T(RT_TKEY("max_accumulated_frames"), "Max Accumulated Frames"), ImGuiDataType_U32, &reblurSettings.maxAccumulatedFrameNum))
+		ClampSetting(reblurSettings.maxAccumulatedFrameNum, 0u, 63u);
+
+	if (ImGui::InputScalar(T(RT_TKEY("max_fast_accumulated_frames"), "Max Fast Accumulated Frames"), ImGuiDataType_U32, &reblurSettings.maxFastAccumulatedFrameNum))
+		ClampSetting(reblurSettings.maxFastAccumulatedFrameNum, 0u, reblurSettings.maxAccumulatedFrameNum);
+
+	if (ImGui::InputScalar(T(RT_TKEY("max_stabilized_frames"), "Max Stabilized Frames"), ImGuiDataType_U32, &reblurSettings.maxStabilizedFrameNum))
+		ClampSetting(reblurSettings.maxStabilizedFrameNum, 0u, reblurSettings.maxAccumulatedFrameNum);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("min_blur_radius"), "Min Blur Radius"), &reblurSettings.minBlurRadius, 0.0f, 10.0f, "%.2f"))
+		ClampSetting(reblurSettings.minBlurRadius, 0.0f, 10.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("max_blur_radius"), "Max Blur Radius"), &reblurSettings.maxBlurRadius, 0.0f, 100.0f, "%.1f"))
+		ClampSetting(reblurSettings.maxBlurRadius, 0.0f, 100.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("plane_distance_sensitivity"), "Plane Distance Sensitivity"), &reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f, "%.3f"))
+		ClampSetting(reblurSettings.planeDistanceSensitivity, 0.0f, 1.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("firefly_suppressor_min_relative_scale"), "Firefly Suppressor Min Relative Scale"), &reblurSettings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f, "%.2f"))
+		ClampSetting(reblurSettings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f);
+
+	ImGui::Checkbox(T(RT_TKEY("use_prepass_only_for_specular_motion_estimation"), "Use Prepass Only For Specular Motion Estimation"), &reblurSettings.usePrepassOnlyForSpecularMotionEstimation);
+	ImGui::Checkbox(T(RT_TKEY("return_history_length_instead_of_occlusion"), "Return History Length Instead Of Occlusion"), &reblurSettings.returnHistoryLengthInsteadOfOcclusion);
+
+	ImGui::TreePop();
+}
+
+void GlobalIllumination::DrawRelaxSettings()
+{
+	if (!ImGui::TreeNodeEx(T(RT_TKEY("relax"), "Relax"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		return;
+	}
+
+	auto& relaxSettings = settings.NRDRelaxSettings;
+
+	if (ImGui::SliderFloat(T(RT_TKEY("diffuse_accumulation_seconds"), "Diffuse Accumulation Seconds"), &relaxSettings.diffuseAccumulationSeconds, 0.05f, 1.0f, "%.2f s"))
+		ClampSetting(relaxSettings.diffuseAccumulationSeconds, 0.05f, 1.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("specular_accumulation_seconds"), "Specular Accumulation Seconds"), &relaxSettings.specularAccumulationSeconds, 0.05f, 1.0f, "%.2f s"))
+		ClampSetting(relaxSettings.specularAccumulationSeconds, 0.05f, 1.0f);
+
+	if (ImGui::InputScalar(T(RT_TKEY("diffuse_max_accumulated_frames"), "Diffuse Max Accumulated Frames (Fallback)"), ImGuiDataType_U32, &relaxSettings.diffuseMaxAccumulatedFrameNum))
+		ClampSetting(relaxSettings.diffuseMaxAccumulatedFrameNum, 0u, 63u);
+
+	if (ImGui::InputScalar(T(RT_TKEY("specular_max_accumulated_frames"), "Specular Max Accumulated Frames (Fallback)"), ImGuiDataType_U32, &relaxSettings.specularMaxAccumulatedFrameNum))
+		ClampSetting(relaxSettings.specularMaxAccumulatedFrameNum, 0u, 63u);
+
+	if (ImGui::InputScalar(T(RT_TKEY("diffuse_max_fast_accumulated_frames"), "Diffuse Max Fast Accumulated Frames"), ImGuiDataType_U32, &relaxSettings.diffuseMaxFastAccumulatedFrameNum))
+		ClampSetting(relaxSettings.diffuseMaxFastAccumulatedFrameNum, 0u, relaxSettings.diffuseMaxAccumulatedFrameNum);
+
+	if (ImGui::InputScalar(T(RT_TKEY("specular_max_fast_accumulated_frames"), "Specular Max Fast Accumulated Frames"), ImGuiDataType_U32, &relaxSettings.specularMaxFastAccumulatedFrameNum))
+		ClampSetting(relaxSettings.specularMaxFastAccumulatedFrameNum, 0u, relaxSettings.specularMaxFastAccumulatedFrameNum);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("diffuse_phi_luminance"), "Diffuse Phi Luminance"), &relaxSettings.diffusePhiLuminance, 0.0f, 10.0f, "%.2f"))
+		ClampSetting(relaxSettings.diffusePhiLuminance, 0.0f, 10.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("specular_phi_luminance"), "Specular Phi Luminance"), &relaxSettings.specularPhiLuminance, 0.0f, 10.0f, "%.2f"))
+		ClampSetting(relaxSettings.specularPhiLuminance, 0.0f, 10.0f);
+
+	if (ImGui::InputScalar(T(RT_TKEY("atrous_iteration_num"), "A-Trous Iteration Num"), ImGuiDataType_U32, &relaxSettings.atrousIterationNum))
+		ClampSetting(relaxSettings.atrousIterationNum, 2u, 8u);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("specular_variance_boost"), "Specular Variance Boost"), &relaxSettings.specularVarianceBoost, 0.0f, 10.0f, "%.2f"))
+		ClampSetting(relaxSettings.specularVarianceBoost, 0.0f, 10.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("specular_lobe_angle_slack"), "Specular Lobe Angle Slack"), &relaxSettings.specularLobeAngleSlack, 0.0f, 1.0f, "%.3f"))
+		ClampSetting(relaxSettings.specularLobeAngleSlack, 0.0f, 1.0f);
+
+	if (ImGui::SliderFloat(T(RT_TKEY("depth_threshold"), "Depth Threshold"), &relaxSettings.depthThreshold, 0.0f, 0.1f, "%.4f"))
+		ClampSetting(relaxSettings.depthThreshold, 0.0f, 0.1f);
+
+	ImGui::Checkbox(T(RT_TKEY("enable_roughness_edge_stopping"), "Enable Roughness Edge Stopping"), &relaxSettings.enableRoughnessEdgeStopping);
+
+	if (ImGui::TreeNodeEx(T(RT_TKEY("relax_antilag"), "Antilag"), 0)) {
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_acceleration_amount"), "Acceleration Amount"), &relaxSettings.antilagAccelerationAmount, 0.0f, 1.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagAccelerationAmount, 0.0f, 1.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_spatial_sigma_scale"), "Spatial Sigma Scale"), &relaxSettings.antilagSpatialSigmaScale, 0.0f, 10.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagSpatialSigmaScale, 0.0f, 10.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_temporal_sigma_scale"), "Temporal Sigma Scale"), &relaxSettings.antilagTemporalSigmaScale, 0.0f, 10.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagTemporalSigmaScale, 0.0f, 10.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("antilag_reset_amount"), "Reset Amount"), &relaxSettings.antilagResetAmount, 0.0f, 1.0f, "%.2f"))
+			ClampSetting(relaxSettings.antilagResetAmount, 0.0f, 1.0f);
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(RT_TKEY("relax_spatial_relaxation"), "Spatial Relaxation"), 0)) {
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_relaxation_multiplier"), "Confidence Driven Relaxation Multiplier"), &relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_luminance_edge_stopping_relaxation"), "Confidence Driven Luminance Relaxation"), &relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("confidence_driven_normal_edge_stopping_relaxation"), "Confidence Driven Normal Relaxation"), &relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("luminance_edge_stopping_relaxation"), "Luminance Edge Stopping Relaxation"), &relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("normal_edge_stopping_relaxation"), "Normal Edge Stopping Relaxation"), &relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.normalEdgeStoppingRelaxation, 0.0f, 2.0f);
+		if (ImGui::SliderFloat(T(RT_TKEY("roughness_edge_stopping_relaxation"), "Roughness Edge Stopping Relaxation"), &relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 2.0f, "%.2f"))
+			ClampSetting(relaxSettings.roughnessEdgeStoppingRelaxation, 0.0f, 2.0f);
+		ImGui::TreePop();
+	}
+
+	ImGui::TreePop();
+}
+
+void GlobalIllumination::DrawHairBSDFSettings()
+{
+	const char* hairBSDFNames[] = {
+		T(RT_TKEY("hair_bsdf_none"), "None"),
+		T(RT_TKEY("hair_bsdf_chiang"), "Chiang BSDF"),
+		T(RT_TKEY("hair_bsdf_far_field"), "Far Field BCSDF")
+	};
+	int currentHairBSDF = static_cast<int>(settings.HairBSDF);
+	if (ImGui::Combo(T(RT_TKEY("hair_bsdf"), "Hair BSDF"), &currentHairBSDF, hairBSDFNames, IM_ARRAYSIZE(hairBSDFNames))) {
+		settings.HairBSDF = static_cast<CreationEngineRaytracing::HairBSDF>(currentHairBSDF);
+	}
+}
+
+void GlobalIllumination::DrawSSSSettings()
+{
+	auto& sssSettings = settings.SSSSettings;
+
+	if (ImGui::CollapsingHeader(T(RT_TKEY("subsurface_scattering"), "Subsurface Scattering"))) {
+		ImGui::Checkbox(T(RT_TKEY("sss_enabled"), "Enable Subsurface Scattering"), &sssSettings.Enabled);
+
+		if (sssSettings.Enabled) {
+			ImGui::SliderInt(T(RT_TKEY("sss_sample_count"), "Sample Count"), &sssSettings.SampleCount, 1, 16);
+			ImGui::SliderFloat(T(RT_TKEY("sss_max_sample_radius"), "Max Sample Radius"), &sssSettings.MaxSampleRadius, 0.01f, 64.0f, "%.2f");
+			ImGui::Checkbox(T(RT_TKEY("sss_enable_transmission"), "Enable Transmission"), &sssSettings.EnableTransmission);
+			ImGui::Checkbox(T(RT_TKEY("sss_material_override"), "Material Override"), &sssSettings.MaterialOverride);
+
+			if (sssSettings.MaterialOverride) {
+				if (ImGui::TreeNodeEx(T(RT_TKEY("sss_overrides"), "Overrides"), ImGuiTreeNodeFlags_DefaultOpen)) {
+					const auto overrideTransmissionLabel = StableLabel(T(RT_TKEY("sss_override_transmission_color"), "Override Transmission Color"), "OverrideTransmissionColor");
+					const auto overrideScatteringLabel = StableLabel(T(RT_TKEY("sss_override_scattering_color"), "Override Scattering Color"), "OverrideScatteringColor");
+					ImGui::ColorEdit3(overrideTransmissionLabel.c_str(), reinterpret_cast<float*>(&sssSettings.OverrideTransmissionColor), ImGuiColorEditFlags_Float);
+					ImGui::ColorEdit3(overrideScatteringLabel.c_str(), reinterpret_cast<float*>(&sssSettings.OverrideScatteringColor), ImGuiColorEditFlags_Float);
+					ImGui::SliderFloat(T(RT_TKEY("sss_override_scale"), "Override Scale"), &sssSettings.OverrideScale, 0.01f, 1000.0f, "%.2f");
+					ImGui::SliderFloat(T(RT_TKEY("sss_override_anisotropy"), "Override Anisotropy"), &sssSettings.OverrideAnisotropy, -0.99f, 0.99f);
+
+					ImGui::TreePop();
+				}
+			}
+		}
+	}
+}
+
+void GlobalIllumination::DrawMaterialSettings()
+{
+	if (ImGui::CollapsingHeader(T(RT_TKEY("material"), "Material"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		DrawFloat2(T(RT_TKEY("roughness"), "Roughness"), settings.MaterialSettings.Roughness);
+		DrawFloat2(T(RT_TKEY("metalness"), "Metalness"), settings.MaterialSettings.Metalness);
+	}
+}
+
+void GlobalIllumination::DrawLightingSettings()
+{
+	if (ImGui::CollapsingHeader(T(RT_TKEY("lighting"), "Lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		auto& lightingSettings = settings.LightingSettings;
+
+		if (ImGui::DragFloat(T(RT_TKEY("directional_strength"), "Directional Strength"), &lightingSettings.Directional, 0.001f))
+			lightingSettings.Directional = std::max(0.0f, lightingSettings.Directional);
+
+		if (ImGui::DragFloat(T(RT_TKEY("point_strength"), "Point Strength"), &lightingSettings.Point, 0.001f))
+			lightingSettings.Point = std::max(0.0f, lightingSettings.Point);
+
+		ImGui::Checkbox(T(RT_TKEY("lod_dimmer"), "Lod Dimmer"), &lightingSettings.LodDimmer);
+
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::Text("%s", T(RT_TKEY("lod_dimmer_desc"), "Vanilla behaviour of dimming lights that are far enough.\n"));
+
+		if (ImGui::DragFloat(T(RT_TKEY("emissive_strength"), "Emissive Strength"), &lightingSettings.Emissive, 0.001f))
+			lightingSettings.Emissive = std::max(0.0f, lightingSettings.Emissive);
+
+		if (ImGui::DragFloat(T(RT_TKEY("effect_strength"), "Effect Strength"), &lightingSettings.Effect, 0.001f))
+			lightingSettings.Effect = std::max(0.0f, lightingSettings.Effect);
+
+		if (ImGui::DragFloat(T(RT_TKEY("sky_strength"), "Sky Strength"), &lightingSettings.Sky, 0.001f))
+			lightingSettings.Sky = std::max(0.0f, lightingSettings.Sky);
+	}
+}
+
+void GlobalIllumination::DrawWaterSettings()
+{
+	if (ImGui::CollapsingHeader(T(RT_TKEY("water"), "Water"))) {
+		auto& waterSettings = settings.WaterSettings;
+
+		if (ImGui::DragFloat(T(RT_TKEY("absorption_scale"), "Absorption Scale"), &waterSettings.AbsorptionScale, 0.01f, 0.01f, 10.0f, "%.2f"))
+			waterSettings.AbsorptionScale = std::clamp(waterSettings.AbsorptionScale, 0.01f, 10.0f);
+	}
+}
+
+void GlobalIllumination::DrawSHaRCSettings()
+{
+	if (ImGui::CollapsingHeader(T(RT_TKEY("sharc"), "SHaRC"))) {
+		auto& sharcSettings = settings.SHaRCSettings;
+
+		ImGui::Checkbox(T(RT_TKEY("sharc_enabled"), "Enable SHaRC"), &sharcSettings.Enabled);
+
+		if (sharcSettings.Enabled) {
+			if (ImGui::DragFloat(T(RT_TKEY("sharc_scene_scale"), "Scene Scale"), &sharcSettings.SceneScale, 0.001f, 0.01f, 100.0f, "%.3f"))
+				ClampSetting(sharcSettings.SceneScale, 0.01f, 100.0f);
+
+			if (ImGui::InputInt(T(RT_TKEY("sharc_accumulation_frames"), "Accumulation Frames"), &sharcSettings.AccumFrameNum))
+				ClampSetting(sharcSettings.AccumFrameNum, 1, 100);
+
+			if (ImGui::InputInt(T(RT_TKEY("sharc_stale_frames"), "Stale Frames"), &sharcSettings.StaleFrameNum))
+				ClampSetting(sharcSettings.StaleFrameNum, 1, 256);
+
+			if (ImGui::DragFloat(T(RT_TKEY("sharc_radiance_scale"), "Radiance Scale"), &sharcSettings.RadianceScale, 1.0f, 0.0f, 100000.0f, "%.1f"))
+				sharcSettings.RadianceScale = std::max(0.0f, sharcSettings.RadianceScale);
+		}
+	}
+}
+
+void GlobalIllumination::DrawDebugSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_debug"), "Debug"))) {
+		ImGui::PushID("DebugSettings");
+
+		if (ImGui::TreeNode(T(TKEY("buffer_viewer"), "Buffer Viewer"))) {
+			static float debugRescale = 0.3f;
+			ImGui::SliderFloat(T(TKEY("view_resize"), "View Resize"), &debugRescale, 0.05f, 1.0f);
+
+			auto* renderer = globals::game::renderer;
+			auto* device = globals::d3d::device;
+			auto& rt = globals::features::raytracing;
+
+			// Forces BlendEnable=FALSE for buffer viewer preview so textures with alpha=0 are fully visible
+			auto OpaqueBlendCallback = [](const ImDrawList*, const ImDrawCmd*) {
+				static winrt::com_ptr<ID3D11BlendState> s_opaqueBlend;
+				if (!s_opaqueBlend) {
+					D3D11_BLEND_DESC desc{};
+					desc.RenderTarget[0].BlendEnable = FALSE;
+					desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+					globals::d3d::device->CreateBlendState(&desc, s_opaqueBlend.put());
+				}
+				if (s_opaqueBlend) {
+					globals::d3d::context->OMSetBlendState(s_opaqueBlend.get(), nullptr, 0xFFFFFFFF);
+				}
+			};
+
+			auto drawImageOpaque = [&](ID3D11ShaderResourceView* a_srv, ImVec2 a_size) {
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				drawList->AddCallback(OpaqueBlendCallback, nullptr);
+				ImGui::Image(a_srv, a_size);
+				drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+			};
+
+			struct CachedPreview
+			{
+				winrt::com_ptr<ID3D11Texture2D> copyTex;
+				winrt::com_ptr<ID3D11ShaderResourceView> srv;
+				uint32_t width = 0;
+				uint32_t height = 0;
+				DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+			};
+			static std::unordered_map<ID3D11Resource*, CachedPreview> s_previewCache;
+
+			// Helper to create or fetch an SRV for an ID3D11Resource and render it with resolution info
+			auto drawResourceNode = [&](ID3D11Resource* a_res, const char* a_label, float a_scale, ID3D11ShaderResourceView* a_knownSrv = nullptr) {
+				if (!a_res || !device)
+					return;
+
+				winrt::com_ptr<ID3D11Texture2D> tex;
+				if (FAILED(a_res->QueryInterface(IID_PPV_ARGS(tex.put()))))
+					return;
+
+				D3D11_TEXTURE2D_DESC desc{};
+				tex->GetDesc(&desc);
+
+				auto fmtName = magic_enum::enum_name(desc.Format);
+				std::string title = !fmtName.empty() ?
+				                        std::format("{} ({}x{} {})", a_label, desc.Width, desc.Height, fmtName) :
+				                        std::format("{} ({}x{} fmt={})", a_label, desc.Width, desc.Height, static_cast<int>(desc.Format));
+
+				if (ImGui::TreeNode(title.c_str())) {
+					ID3D11ShaderResourceView* srvToDraw = a_knownSrv;
+
+					if (!srvToDraw) {
+						auto& cached = s_previewCache[a_res];
+						if (!cached.srv || cached.width != desc.Width || cached.height != desc.Height || cached.format != desc.Format) {
+							cached = {};
+							cached.width = desc.Width;
+							cached.height = desc.Height;
+							cached.format = desc.Format;
+
+							// 1. Try direct SRV creation
+							DXGI_FORMAT viewFormat = desc.Format;
+							if (viewFormat == DXGI_FORMAT_R32_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R32_FLOAT;
+							} else if (viewFormat == DXGI_FORMAT_R24G8_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+							} else if (viewFormat == DXGI_FORMAT_R16_TYPELESS) {
+								viewFormat = DXGI_FORMAT_R16_UNORM;
+							}
+
+							if (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+								D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+								srvDesc.Format = viewFormat;
+								srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+								srvDesc.Texture2D.MostDetailedMip = 0;
+								srvDesc.Texture2D.MipLevels = 1;
+								HRESULT hr = device->CreateShaderResourceView(tex.get(), &srvDesc, cached.srv.put());
+								if (FAILED(hr)) {
+									logger::warn("[GlobalIllumination Debug] Direct CreateShaderResourceView failed for {} (fmt={}, hr={:08x})",
+										a_label, static_cast<int>(desc.Format), static_cast<uint32_t>(hr));
+								}
+							}
+
+							// 2. If direct SRV not possible or failed (e.g. lacks BIND_SHADER_RESOURCE), create a readable copy texture
+							if (!cached.srv) {
+								D3D11_TEXTURE2D_DESC copyDesc = desc;
+								copyDesc.MipLevels = 1;
+								copyDesc.ArraySize = 1;
+								copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+								copyDesc.CPUAccessFlags = 0;
+								copyDesc.MiscFlags = 0;
+								copyDesc.Usage = D3D11_USAGE_DEFAULT;
+								copyDesc.Format = viewFormat;
+
+								HRESULT hr = device->CreateTexture2D(&copyDesc, nullptr, cached.copyTex.put());
+								if (SUCCEEDED(hr)) {
+									D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+									srvDesc.Format = copyDesc.Format;
+									srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+									srvDesc.Texture2D.MostDetailedMip = 0;
+									srvDesc.Texture2D.MipLevels = 1;
+									hr = device->CreateShaderResourceView(cached.copyTex.get(), &srvDesc, cached.srv.put());
+									if (FAILED(hr)) {
+										logger::warn("[GlobalIllumination Debug] CreateShaderResourceView on copy texture failed for {} (fmt={}, hr={:08x})",
+											a_label, static_cast<int>(copyDesc.Format), static_cast<uint32_t>(hr));
+									}
+								} else {
+									logger::warn("[GlobalIllumination Debug] CreateTexture2D for readable copy failed for {} (fmt={}, hr={:08x})",
+										a_label, static_cast<int>(copyDesc.Format), static_cast<uint32_t>(hr));
+								}
+							}
+						}
+
+						// If we have a copy texture, copy latest contents each time node is opened
+						if (cached.copyTex && globals::d3d::context) {
+							globals::d3d::context->CopyResource(cached.copyTex.get(), a_res);
+						}
+
+						srvToDraw = cached.srv.get();
+					}
+
+					if (srvToDraw) {
+						drawImageOpaque(srvToDraw, { desc.Width * a_scale, desc.Height * a_scale });
+					} else {
+						ImGui::TextDisabled("No SRV available for format %d", desc.Format);
+					}
+					ImGui::TreePop();
+				}
+			};
+
+			// 1. Main RT Output
+			if (renderer) {
+				auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+				if (main.SRV) {
+					D3D11_TEXTURE2D_DESC desc{};
+					main.texture->GetDesc(&desc);
+					std::string title = std::format("Main RT ({}x{})", desc.Width, desc.Height);
+					if (ImGui::TreeNode(title.c_str())) {
+						drawImageOpaque(main.SRV, { desc.Width * debugRescale, desc.Height * debugRescale });
+						ImGui::TreePop();
+					}
+				}
+			}
+
+			// 2. Global Illumination Shared Main
+			if (rt.sharedMainTextures.srv) {
+				D3D11_TEXTURE2D_DESC desc{};
+				rt.sharedMainTextures.texture.shared->GetDesc(&desc);
+				std::string title = std::format("Global Illumination Shared Main ({}x{})", desc.Width, desc.Height);
+				if (ImGui::TreeNode(title.c_str())) {
+					drawImageOpaque(rt.sharedMainTextures.srv.get(), { desc.Width * debugRescale, desc.Height * debugRescale });
+					ImGui::TreePop();
+				}
+			}
+
+			// 3. Converted gbuffer inputs (see GlobalIllumination::ConvertTextures)
+			drawResourceNode(normalRoughnessTexture.get(), "Normal & Roughness", debugRescale);
+			if (renderer)
+				drawResourceNode(renderer->GetRuntimeData().renderTargets[ALBEDO].texture, "Albedo", debugRescale);
+
+			ImGui::TreePop();
+		}
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}

@@ -71,6 +71,7 @@ public:
 	CreationEngineRaytracing::Mode Mode() const;
 	bool IsPathTracing() const;
 	bool IsPathTracingCull() const;
+	bool IsGlobalIllumination() const;
 	void UpdateJitter(float2 a_jitter);
 
 	void GetRayReconstructionInputs(ID3D11Resource*& diffuseAlbedo, ID3D11Resource*& specularAlbedo,
@@ -140,10 +141,6 @@ public:
 	winrt::com_ptr<ID3D11ShaderResourceView> waterFlowMapSRV = nullptr;
 	winrt::com_ptr<ID3D11RenderTargetView> waterFlowMapRTV = nullptr;
 
-	// Shared Textures (Normal + Roughness)
-	winrt::com_ptr<ID3D11Texture2D> normalRoughnessTexture = nullptr;
-	winrt::com_ptr<ID3D11ShaderResourceView> normalRoughnessSRV = nullptr;
-	winrt::com_ptr<ID3D11UnorderedAccessView> normalRoughnessUAV = nullptr;
 
 	struct SharedTextureWrapper
 	{
@@ -166,6 +163,7 @@ public:
 	std::unique_ptr<ScreenData> screenData = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> ptCompositeCS = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> giCompositeCS = nullptr;
 	winrt::com_ptr<ID3D11VertexShader> copyDepthVS = nullptr;
 	winrt::com_ptr<ID3D11PixelShader> copyDepthPS = nullptr;
 	winrt::com_ptr<ID3D11BlendState> copyBlendState = nullptr;
