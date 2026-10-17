@@ -187,9 +187,12 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 	float3 color = linDiffuseColor + specularColor;
 
-#if defined(DYNAMIC_CUBEMAPS) && !defined(RTGI)
+#if defined(DYNAMIC_CUBEMAPS)
 
 	float3 reflectance = ReflectanceTexture[dispatchID.xy];
+#	if defined(RTGI)
+	reflectance *= SharedData::globalIlluminationSettings.Reflection;
+#	endif
 
 	if (any(reflectance > 0.0)) {
 		float3 V = -normalize(positionWS.xyz);

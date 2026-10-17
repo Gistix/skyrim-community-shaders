@@ -2718,12 +2718,20 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	color.xyz = ColorManagement::SceneToLinear(color.xyz);
 	color.xyz += specularColor;
 
-#	if !defined(RTGI)
+#	if defined(RTGI)
+	if (SharedData::globalIlluminationSettings.Reflection > 0.0 && (any(indirectLobeWeights.specular > 0)
+#		if defined(WETNESS_EFFECTS)
+		|| any(wetnessReflectance > 0)
+#		endif
+	))
+#	else
 	if (any(indirectLobeWeights.specular > 0)
 #		if defined(WETNESS_EFFECTS)
 		|| any(wetnessReflectance > 0)
 #		endif
 	)
+#	endif
+	{
 #		if defined(DYNAMIC_CUBEMAPS)
 #			if defined(SKYLIGHTING)
 		color.xyz += indirectLobeWeights.specular * DynamicCubemaps::GetDynamicCubemapSpecularIrradiance(worldNormal, viewDirection, material.Roughness, skylightingSH);
@@ -2741,7 +2749,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		else
 		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
 #		endif
-	#endif
+	}
 
 	color.xyz = ColorManagement::LinearToScene(color.xyz);
 	float3 fogColor = input.FogParam.xyz;
@@ -2953,7 +2961,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 
 #	if defined(RTGI)
-	psout.Reflectance = float4(0, 0, 0, psout.Diffuse.w);
+	psout.Reflectance = float4(indirectLobeWeights.specular * SharedData::globalIlluminationSettings.Reflection, psout.Diffuse.w);
 #	else
 	psout.Reflectance = float4(indirectLobeWeights.specular, psout.Diffuse.w);
 #	endif

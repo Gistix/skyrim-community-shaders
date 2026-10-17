@@ -68,6 +68,9 @@ public:
 
 	void Execute();
 
+	/** @brief Composites the CERT GI result additively onto kMAIN. Runs after water. */
+	void CompositeGI();
+
 	CreationEngineRaytracing::Mode Mode() const;
 	bool IsPathTracing() const;
 	bool IsPathTracingCull() const;
@@ -215,6 +218,11 @@ public:
 				}
 
 				func(a1);
+
+				// Composite GI after the world (opaque + water) has rendered into kMAIN, so the
+				// additive CERT result (reflections-only on water) lands on the final image.
+				if (rt.loaded && !rt.forcedDisabled)
+					rt.CompositeGI();
 			}
 
 			static inline REL::Relocation<decltype(thunk)> func;
@@ -260,10 +268,8 @@ public:
 		{
 			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 
-			if (!REL::Module::IsVR()) {
-				stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
-				stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));
-			}
+			stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
+			stl::write_thunk_call<CopyToWaterFlowmap>(REL::RelocationID(35561, 36560).address() + REL::Relocate(0x202, 0x242));
 		}
 	};
 

@@ -801,44 +801,50 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 		return ReflectionColor.xyz * VarAmounts.y;
 
 	float3 R = reflect(viewDirection, WaterParams.y * normal + float3(0, 0, 1 - WaterParams.y));
-	float3 reflectionColor = CubeMapTex.SampleLevel(CubeMapSampler, R, 0).xyz;
+	float3 reflectionColor = 0;
+#if defined(RTGI)
+	if (SharedData::globalIlluminationSettings.WaterReflection)
+#endif
+	{
+		reflectionColor = CubeMapTex.SampleLevel(CubeMapSampler, R, 0).xyz;
 
-#			if defined(DYNAMIC_CUBEMAPS)
-	float3 dynamicCubemap;
-	if (SharedData::InInterior) {
-		dynamicCubemap = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
-	} else {
-		float3 workingSpecularIrradiance = 1.0;
-		if (skylightingSpecular < 1.0)
-			workingSpecularIrradiance = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
+#		if defined(DYNAMIC_CUBEMAPS)
+		float3 dynamicCubemap;
+		if (SharedData::InInterior) {
+			dynamicCubemap = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
+		} else {
+			float3 workingSpecularIrradiance = 1.0;
+			if (skylightingSpecular < 1.0)
+				workingSpecularIrradiance = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
 
-		float3 workingSpecularIrradianceReflections = 1.0;
-		if (skylightingSpecular > 0.0)
-			workingSpecularIrradianceReflections = DynamicCubemaps::EnvReflectionsTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
+			float3 workingSpecularIrradianceReflections = 1.0;
+			if (skylightingSpecular > 0.0)
+				workingSpecularIrradianceReflections = DynamicCubemaps::EnvReflectionsTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
 
-		dynamicCubemap = ColorManagement::SceneColor::LerpInLinear(workingSpecularIrradiance, workingSpecularIrradianceReflections, skylightingSpecular);
+			dynamicCubemap = ColorManagement::SceneColor::LerpInLinear(workingSpecularIrradiance, workingSpecularIrradianceReflections, skylightingSpecular);
+		}
+
+		float reflectionAmount = saturate(length(input.WPosition.xyz) / 1024.0);
+
+		if (SharedData::HideSky)
+			reflectionAmount = 0.0;
+		reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
+#		endif
+
+#		if !defined(LOD) && NUM_SPECULAR_LIGHTS == 0
+		float pointingDirection = dot(viewDirection, R) * 0.5 + 0.5;
+		float pointingAlignment = dot(reflect(viewDirection, float3(0, 0, 1)), R) * 0.5 + 0.5;
+		float ssrAmount = sqrt(min(pointingAlignment, pointingDirection));
+		float2 ssrReflectionUv = ((FrameBuffer::DynamicResolutionParams2.xy * input.HPosition.xy) * SSRParams.zw) + 0.05 * normal.xy;
+		float2 ssrReflectionUvDR = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(ssrReflectionUv);
+		float4 ssrReflectionColorBlurred = SSRReflectionTex.Sample(SSRReflectionSampler, ssrReflectionUvDR);
+		float4 ssrReflectionColorRaw = RawSSRReflectionTex.Sample(RawSSRReflectionSampler, ssrReflectionUvDR);
+		float4 ssrReflectionColor = lerp(ssrReflectionColorBlurred, ssrReflectionColorRaw, ssrAmount * 0.7);
+		float3 finalSsrReflectionColor = max(0, ssrReflectionColor.xyz);
+		float ssrFraction = saturate(ssrReflectionColor.w * distanceFactor * ssrAmount);
+		reflectionColor = lerp(reflectionColor, finalSsrReflectionColor, ssrFraction);
+#		endif
 	}
-
-	float reflectionAmount = saturate(length(input.WPosition.xyz) / 1024.0);
-
-	if (SharedData::HideSky)
-		reflectionAmount = 0.0;
-	reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
-#			endif
-
-#			if !defined(LOD) && NUM_SPECULAR_LIGHTS == 0
-	float pointingDirection = dot(viewDirection, R) * 0.5 + 0.5;
-	float pointingAlignment = dot(reflect(viewDirection, float3(0, 0, 1)), R) * 0.5 + 0.5;
-	float ssrAmount = sqrt(min(pointingAlignment, pointingDirection));
-	float2 ssrReflectionUv = ((FrameBuffer::DynamicResolutionParams2.xy * input.HPosition.xy) * SSRParams.zw) + 0.05 * normal.xy;
-	float2 ssrReflectionUvDR = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(ssrReflectionUv);
-	float4 ssrReflectionColorBlurred = SSRReflectionTex.Sample(SSRReflectionSampler, ssrReflectionUvDR);
-	float4 ssrReflectionColorRaw = RawSSRReflectionTex.Sample(RawSSRReflectionSampler, ssrReflectionUvDR);
-	float4 ssrReflectionColor = lerp(ssrReflectionColorBlurred, ssrReflectionColorRaw, ssrAmount * 0.7);
-	float3 finalSsrReflectionColor = max(0, ssrReflectionColor.xyz);
-	float ssrFraction = saturate(ssrReflectionColor.w * distanceFactor * ssrAmount);
-	reflectionColor = lerp(reflectionColor, finalSsrReflectionColor, ssrFraction);
-#			endif
 
 	return reflectionColor;
 }

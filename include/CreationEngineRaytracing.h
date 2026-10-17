@@ -60,10 +60,11 @@ struct CreationEngineRaytracing
 		int SamplesPerPixel = 1;
 		RussianRoulette RussianRoulette = RussianRoulette::Standard;
 		float ResolutionScale = 1.0f;
+		bool WaterIndirectLighting = true;
 
 		bool operator==(const struct RaytracingSettings&) const = default;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(RaytracingSettings, Bounces, SamplesPerPixel, RussianRoulette, ResolutionScale)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(RaytracingSettings, Bounces, SamplesPerPixel, RussianRoulette, ResolutionScale, WaterIndirectLighting)
 	};
 
 	struct NRDSettings
@@ -450,10 +451,11 @@ struct CreationEngineRaytracing
 		uint32_t TextureCutOff = 0;
 		bool GlobalLights = false;
 		bool RenderTreeLOD = false;
+		bool RenderGrass = false;
 
 		bool operator==(const ExperimentalSettings&) const = default;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights, RenderTreeLOD)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(ExperimentalSettings, PathTracingCull, TextureMode, TextureCutOff, GlobalLights, RenderTreeLOD, RenderGrass)
 	};
 
 	enum struct TimingMode

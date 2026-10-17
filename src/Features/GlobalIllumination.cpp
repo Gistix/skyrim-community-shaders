@@ -80,27 +80,16 @@ GlobalIllumination::SharedData GlobalIllumination::GetCommonBufferData() const
 		.Ambient = active ? 0.0f : 1.0f,
 		.Reflection = active ? 0.0f : 1.0f,
 		.Albedo = active ? 1u : 0u,
+		.WaterReflection = active && settings.RaytracingSettings.WaterIndirectLighting ? 0u : 1u,
 	};
 }
 
 void GlobalIllumination::SetupResources()
 {
-	if (!loaded) {
-		logger::warn("[GlobalIllumination TEMP] SetupResources early return: feature not loaded");
+	if (!loaded)
 		return;
-	}
 
-	auto* renderer = globals::game::renderer;
-	if (!renderer) {
-		logger::warn("[GlobalIllumination TEMP] SetupResources early return: no renderer");
-		return;
-	}
-
-	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	if (!main.texture) {
-		logger::warn("[GlobalIllumination TEMP] SetupResources early return: kMAIN texture missing");
-		return;
-	}
+	auto& main = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
 	D3D11_TEXTURE2D_DESC mainDesc{};
 	main.texture->GetDesc(&mainDesc);
@@ -142,13 +131,8 @@ void GlobalIllumination::SetupResources()
 				{},
 				"cs_5_0"))) {
 			convertTexturesCS.attach(rawPtr);
-			logger::info("[GlobalIllumination TEMP] SetupResources: ConvertTexturesCS compiled");
-		} else {
-			logger::warn("[GlobalIllumination TEMP] SetupResources: ConvertTexturesCS compile FAILED");
 		}
 	}
-	logger::info("[GlobalIllumination TEMP] SetupResources done: normalRoughnessTexture={} convertTexturesCS={}",
-		normalRoughnessTexture != nullptr, convertTexturesCS != nullptr);
 }
 
 void GlobalIllumination::ConvertTextures()
@@ -158,22 +142,6 @@ void GlobalIllumination::ConvertTextures()
 	auto* inputSRV = renderer ? renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS].SRV : nullptr;
 	auto* screenCB = globals::features::raytracing.screenCB.get();
 	auto* perFrameCB = globals::game::perFrame.get();
-	if (!normalRoughnessUAV || !convertTexturesCS || !inputSRV || !screenCB || !perFrameCB || !context) {
-		static uint32_t conversionSkipCount = 0;
-		if (conversionSkipCount++ < 30 || conversionSkipCount % 120 == 0)
-			logger::error("[GlobalIllumination TEMP] ConvertTextures skipped #{}: UAV={} shader={} inputSRV={} screenCB={} perFrameCB={} context={}",
-				conversionSkipCount, normalRoughnessUAV != nullptr, convertTexturesCS != nullptr, inputSRV != nullptr,
-				screenCB != nullptr, perFrameCB != nullptr, context != nullptr);
-		return;
-	}
-
-	static uint32_t conversionDispatchCount = 0;
-	const bool logDispatch = conversionDispatchCount++ < 30 || conversionDispatchCount % 120 == 0;
-	if (logDispatch) {
-		logger::info("[GlobalIllumination TEMP] ConvertTextures dispatch #{}: inputSRV={} outputUAV={} screenCB={} perFrameCB={}",
-			conversionDispatchCount, static_cast<void*>(inputSRV), static_cast<void*>(normalRoughnessUAV.get()),
-			static_cast<void*>(screenCB), static_cast<void*>(perFrameCB));
-	}
 
 	// ScreenData (b0) clamps the dispatch; PerFrame (b12) provides the view matrix
 	ID3D11Buffer* screenDataCB = screenCB->CB();
@@ -191,8 +159,6 @@ void GlobalIllumination::ConvertTextures()
 
 	auto dispatchCount = Util::GetScreenDispatchCount(true);
 	context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-	if (logDispatch)
-		logger::info("[GlobalIllumination TEMP] ConvertTextures dispatch submitted #{} groups=({}, {})", conversionDispatchCount, dispatchCount.x, dispatchCount.y);
 
 	ID3D11UnorderedAccessView* nullUAV = nullptr;
 	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
@@ -280,8 +246,9 @@ void GlobalIllumination::DrawGeneralSettings()
 			}
 		}
 
+		auto& rtSettings = settings.RaytracingSettings;
+
 		{
-			auto& rtSettings = settings.RaytracingSettings;
 			const auto& denoiser = settings.GeneralSettings.Denoiser;
 			const bool resScale = (denoiser == CreationEngineRaytracing::Denoiser::NRD_Reblur ||
 								   denoiser == CreationEngineRaytracing::Denoiser::NRD_Relax);
@@ -305,7 +272,7 @@ void GlobalIllumination::DrawGeneralSettings()
 				}
 			}
 		}
-
+		
 		DrawMaterialSettings();
 
 		DrawLightingSettings();
@@ -578,6 +545,8 @@ void GlobalIllumination::DrawLightingSettings()
 void GlobalIllumination::DrawWaterSettings()
 {
 	if (ImGui::CollapsingHeader(T(RT_TKEY("water"), "Water"))) {
+		ImGui::Checkbox(T(RT_TKEY("water_il_enabled"), "Water Indirect Lighting"), &settings.RaytracingSettings.WaterIndirectLighting);
+
 		auto& waterSettings = settings.WaterSettings;
 
 		if (ImGui::DragFloat(T(RT_TKEY("absorption_scale"), "Absorption Scale"), &waterSettings.AbsorptionScale, 0.01f, 0.01f, 10.0f, "%.2f"))

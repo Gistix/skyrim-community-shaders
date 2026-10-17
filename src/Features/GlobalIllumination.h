@@ -20,7 +20,7 @@ public:
 	virtual bool IsCore() const override { return false; }
 	virtual bool IsInMenu() const override { return true; }
 	virtual std::string_view GetShaderDefineName() override { return "RTGI"; }
-	virtual bool HasShaderDefine(RE::BSShader::Type t) override { return Available() && (t == RE::BSShader::Type::Lighting || t == RE::BSShader::Type::Grass); }
+	virtual bool HasShaderDefine(RE::BSShader::Type t) override { return Available() && (t == RE::BSShader::Type::Lighting || t == RE::BSShader::Type::Grass || t == RE::BSShader::Type::Water); }
 	virtual ReleaseStage GetReleaseStage() const override { return ReleaseStage::Release; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
@@ -96,7 +96,7 @@ public:
 		float Ambient = 1.0f;
 		float Reflection = 1.0f;
 		uint Albedo = 0;
-		uint _padding0 = 0;
+		uint WaterReflection = 0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SharedData);
 

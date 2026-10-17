@@ -252,18 +252,7 @@ void Raytracing::Execute()
 	}
 
 	auto* renderer = globals::game::renderer;
-	if (!renderer) {
-		if (IsGlobalIllumination())
-			logger::error("[Raytracing GI TEMP] Composite skipped: renderer missing after CERT execution");
-		return;
-	}
-
 	auto* context = globals::d3d::context;
-	if (!context) {
-		if (IsGlobalIllumination())
-			logger::error("[Raytracing GI TEMP] Composite skipped: D3D context missing after CERT execution");
-		return;
-	}
 
 	const auto& renderTargets = renderer->GetRuntimeData().renderTargets;
 	auto& main = renderTargets[RE::RENDER_TARGETS::kMAIN];
@@ -381,30 +370,43 @@ void Raytracing::Execute()
 			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			context->ClearRenderTargetView(renderTargets[RE::RENDER_TARGETS::kINDIRECT_DOWNSCALED].RTV, clearColor);
 		}
-	} else if (IsGlobalIllumination()) {
-		// Add the GI result on top of main so the existing direct lighting is preserved
-		context->CSSetShader(giCompositeCS.get(), nullptr, 0);
-
-		ID3D11Buffer* cb = screenCB->CB();
-		context->CSSetConstantBuffers(0, 1, &cb);
-
-		ID3D11ShaderResourceView* srv = sharedMainTextures.srv.get();
-		context->CSSetShaderResources(0, 1, &srv);
-
-		ID3D11UnorderedAccessView* uav = main.UAV;
-		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-
-		auto dispatchCount = Util::GetScreenDispatchCount(true);
-		context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-
-		uav = nullptr;
-		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-
-		srv = nullptr;
-		context->CSSetShaderResources(0, 1, &srv);
-
-		context->CSSetShader(nullptr, nullptr, 0);
 	}
+}
+
+void Raytracing::CompositeGI()
+{
+	if (!Available() || !IsGlobalIllumination())
+		return;
+
+	auto* renderer = globals::game::renderer;
+	auto* context = globals::d3d::context;
+
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	// Add the GI result on top of main so the existing direct lighting is preserved.
+	// Runs after water so raster water is already in main; CERT water texels carry
+	// reflections only and composite additively.
+	context->CSSetShader(giCompositeCS.get(), nullptr, 0);
+
+	ID3D11Buffer* cb = screenCB->CB();
+	context->CSSetConstantBuffers(0, 1, &cb);
+
+	ID3D11ShaderResourceView* srv = sharedMainTextures.srv.get();
+	context->CSSetShaderResources(0, 1, &srv);
+
+	ID3D11UnorderedAccessView* uav = main.UAV;
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	auto dispatchCount = Util::GetScreenDispatchCount(true);
+	context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
+
+	uav = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+
+	srv = nullptr;
+	context->CSSetShaderResources(0, 1, &srv);
+
+	context->CSSetShader(nullptr, nullptr, 0);
 }
 
 void Raytracing::Load()
@@ -665,32 +667,14 @@ void Raytracing::SetupWaterFlowMap()
 void Raytracing::SetupSharedTextures()
 {
 	auto* renderer = globals::game::renderer;
-	if (!renderer) {
-		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: renderer missing");
-		return;
-	}
-
 	auto* device = globals::d3d::device;
-	if (!device) {
-		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: D3D device missing");
-		return;
-	}
 
 	// Converted GI input textures are owned by the GlobalIllumination feature
 	auto& gi = globals::features::globalIllumination;
 	auto* normalRoughnessTex = gi.normalRoughnessTexture.get();
-	if (!normalRoughnessTex) {
-		logger::warn("[Raytracing TEMP] SetupSharedTextures early return: GI normalRoughnessTexture missing");
-		return;
-	}
 
 	auto* albedoTex = renderer->GetRuntimeData().renderTargets[ALBEDO].texture;
 	auto* gnmaoTex = renderer->GetRuntimeData().renderTargets[MASKS2].texture;
-
-	if (!albedoTex || !gnmaoTex) {
-		logger::warn("[Raytracing GI TEMP] SetupSharedTextures skipped: albedo={} masks2={}", albedoTex != nullptr, gnmaoTex != nullptr);
-		return;
-	}
 
 	creationEngineRaytracing->SetSharedTextures(albedoTex, normalRoughnessTex, gnmaoTex);
 
@@ -698,8 +682,6 @@ void Raytracing::SetupSharedTextures()
 	CreationEngineRaytracing::SharedTexture motionVector{};
 	CreationEngineRaytracing::SharedTexture main{};
 	creationEngineRaytracing->GetSharedTextures(depth, motionVector, main);
-	if (!main.shared)
-		logger::error("[Raytracing GI TEMP] CERT returned no shared main output texture");
 
 	auto setupSharedWrapper = [device](SharedTextureWrapper& wrapper, const CreationEngineRaytracing::SharedTexture& st) {
 		wrapper.texture = st;
@@ -721,8 +703,6 @@ void Raytracing::SetupSharedTextures()
 	setupSharedWrapper(sharedDepthTextures, depth);
 	setupSharedWrapper(sharedMotionVectorTextures, motionVector);
 	setupSharedWrapper(sharedMainTextures, main);
-	logger::info("[Raytracing GI TEMP] Shared textures ready: depth={} motion={} main={} mainSRV={}",
-		depth.shared != nullptr, motionVector.shared != nullptr, main.shared != nullptr, sharedMainTextures.srv != nullptr);
 }
 
 void Raytracing::SetSkinDetailNormal(ID3D11Resource* a_resource)
@@ -755,9 +735,6 @@ void Raytracing::CompileShaders()
 			{},
 			"cs_5_0"))) {
 		giCompositeCS.attach(rawPtr);
-		logger::info("[Raytracing GI TEMP] GICompositeCS compiled");
-	} else {
-		logger::error("[Raytracing GI TEMP] GICompositeCS compile failed");
 	}
 
 	if (auto* rawPtr = static_cast<ID3D11VertexShader*>(Util::CompileShader(
@@ -822,11 +799,6 @@ void Raytracing::CopyWaterFlowMap() const
 		context->ClearRenderTargetView(waterFlowMapRTV.get(), clearColor);
 	};
 
-	if (REL::Module::IsVR()) {
-		clearFlowMap();
-		return;
-	}
-
 	REL::Relocation<RE::NiPointer<RE::NiSourceTexture>*> gFlowMapSourceTex{ REL::RelocationID(527694, 414616) };
 	auto* flowMapSourceTex = gFlowMapSourceTex.get();
 	if (!flowMapSourceTex) {
@@ -872,6 +844,8 @@ void Raytracing::DrawSettings()
 	ImGui::Checkbox(T(TKEY("use_ray_query"), "Use Ray Query"), &settings.RendererSettings.UseRayQuery);
 
 	ImGui::Checkbox(T(TKEY("render_tree_lod"), "Render Tree LOD"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderTreeLOD);
+
+	ImGui::Checkbox(T(TKEY("render_grass"), "Render Grass"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderGrass);
 
 	const char* overlayNames[] = {
 		T(TKEY("performance_overlay_none"), "None"),
