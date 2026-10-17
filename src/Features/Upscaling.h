@@ -41,6 +41,7 @@ public:
 		kDLSS,
 		kXeSS,
 		kDLSS_RR,
+		kFSR4,
 	};
 
 	enum class FrameGenMethod
@@ -201,8 +202,6 @@ public:
 	static double GetRefreshRate(HWND a_window);
 
 private:
-	static constexpr size_t kUpscaleMethodCount = static_cast<size_t>(UpscaleMethod::kXeSS) + 1;
-
 	void BeginRenderFrame();
 	void CreateUpscaledTexture();
 	void DestroyUpscaledTexture();
