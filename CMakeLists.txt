@@ -603,7 +603,10 @@ install(
 )
 
 set(_FFX_DX12_DLL_DIR "${CMAKE_SOURCE_DIR}/extern/Streamline/external/fidelityfx-sdk/PrebuiltSignedDLL")
-file(GLOB _FFX_DX12_DLLS "${_FFX_DX12_DLL_DIR}/*.dll")
+set(_FFX_DX12_DLLS
+    "${_FFX_DX12_DLL_DIR}/amd_fidelityfx_loader_dx12.dll"
+    "${_FFX_DX12_DLL_DIR}/amd_fidelityfx_upscaler_dx12.dll"
+)
 if(_FFX_DX12_DLLS)
     install(
         FILES ${_FFX_DX12_DLLS}
@@ -744,7 +747,8 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
     foreach(
         _runtime_name
         IN ITEMS
-            amd_fidelityfx_dx12.dll
+            amd_fidelityfx_loader_dx12.dll
+            amd_fidelityfx_upscaler_dx12.dll
             dxvk.license.txt
             fidelityfx.license.txt
             xess.license.txt
