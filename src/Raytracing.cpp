@@ -134,6 +134,11 @@ CreationEngineRaytracing::Mode Raytracing::Mode() const
 	return CreationEngineRaytracing::Mode::None;
 }
 
+bool Raytracing::IsRaytracingActive() const
+{
+	return IsPathTracing() || IsGlobalIllumination();
+}
+
 bool Raytracing::IsPathTracing() const
 {
 	return Mode() == CreationEngineRaytracing::Mode::PathTracing;

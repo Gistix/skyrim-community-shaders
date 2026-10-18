@@ -153,7 +153,7 @@ public:
 
 	bool IsFrameGenerationActive() const;
 
-	/** @brief Returns the Reflex state required by the active frame generator. */
+	/** @brief Returns the Reflex state required by the active frame generator, or false if forced off by raytracing. */
 	[[nodiscard]] bool GetEffectiveReflex() const;
 
 	/** @brief Returns the monitor refresh rate in hertz. */

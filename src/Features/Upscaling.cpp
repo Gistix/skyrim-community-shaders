@@ -308,9 +308,19 @@ void Upscaling::DrawSettings()
 	if (reflexAvailable) {
 		ImGui::SeparatorText(T(TKEY("ll_header"), "Low Latency"));
 		const std::vector<const char*> reflexStates = { "Off", "On", T(TKEY("reflex_on_boost"), "On + Boost") };
+		auto& rt = globals::features::raytracing;
+		const bool rtForcesReflex = rt.IsRaytracingActive();
 		const bool fgForcesReflex = IsFrameGenerationActive() &&
 		                            (GetFrameGenMethod() == FrameGenMethod::kDLSSG || GetFrameGenMethod() == FrameGenMethod::kFSR);
-		if (fgForcesReflex) {
+		if (rtForcesReflex) {
+			int idx = 0;
+			DrawStepper(T(TKEY("nv_reflex"), "NVIDIA Reflex Low Latency"), &idx, reflexStates, /*disabled=*/true);
+			ImGui::SameLine();
+			const char* reason = rt.IsPathTracing() ?
+			                         T(TKEY("reflex_forced_pathtracing"), "(forced off by Path Tracing)") :
+			                         T(TKEY("reflex_forced_gi"), "(forced off by Global Illumination)");
+			ImGui::TextDisabled("%s", reason);
+		} else if (fgForcesReflex) {
 			int idx = GetEffectiveReflex() ? (settings.reflexBoost ? 2 : 1) : 0;
 			DrawStepper(T(TKEY("nv_reflex"), "NVIDIA Reflex Low Latency"), &idx, reflexStates, /*disabled=*/true);
 			ImGui::SameLine();
@@ -634,6 +644,10 @@ void Upscaling::BeginRenderFrame()
 
 bool Upscaling::GetEffectiveReflex() const
 {
+	if (globals::features::raytracing.IsRaytracingActive()) {
+		return false;
+	}
+
 	if (IsFrameGenerationActive()) {
 		switch (GetFrameGenMethod()) {
 		case FrameGenMethod::kDLSSG:

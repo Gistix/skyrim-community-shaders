@@ -72,6 +72,7 @@ public:
 	void CompositeGI();
 
 	CreationEngineRaytracing::Mode Mode() const;
+	[[nodiscard]] bool IsRaytracingActive() const;
 	bool IsPathTracing() const;
 	bool IsPathTracingCull() const;
 	bool IsGlobalIllumination() const;
