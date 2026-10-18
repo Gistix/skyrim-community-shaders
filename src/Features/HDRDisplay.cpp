@@ -1209,7 +1209,25 @@ ID3D11Texture2D* HDRDisplay::ComposeCleanCapture(ID3D11ShaderResourceView* scene
 	data.previewSDR = sdrPreview ? 1.f : 0.f;
 	hdrDataCB->Update(data);
 
+	// Unbind OM render targets while sampling sceneSRV (hdrTexture->srv) in compute: after
+	// Main_PostProcessing, hdrTexture->rtv is still bound at OM slot 0 (RestoreFramebuffer only
+	// restores the kFRAMEBUFFER struct fields, not the D3D11 context's OM bindings), which causes
+	// DXVK's TestSrvHazards to replace sceneSRV with nullptr.
+	auto* context = globals::d3d::context;
+	ID3D11RenderTargetView* prevRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+	ID3D11DepthStencilView* prevDSV = nullptr;
+	context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, &prevDSV);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
 	DispatchHDROutput(sceneSRV, nullptr, outputTexture->uav.get());
+
+	context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, prevRTVs, prevDSV);
+	for (auto* rtv : prevRTVs) {
+		if (rtv)
+			rtv->Release();
+	}
+	if (prevDSV)
+		prevDSV->Release();
 
 	// Restore the canonical CB for the display composite this frame.
 	UpdateHDRData();

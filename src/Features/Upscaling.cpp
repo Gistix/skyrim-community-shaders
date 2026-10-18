@@ -1168,21 +1168,28 @@ bool Upscaling::CopyHudlessColor(ID3D11ShaderResourceView* a_source)
 	D3D11_VIEWPORT viewport{};
 	viewport.Width = static_cast<float>(hudlessTexture->desc.Width);
 	viewport.Height = static_cast<float>(hudlessTexture->desc.Height);
+	viewport.MinDepth = 0.0f;
 	viewport.MaxDepth = 1.0f;
 	context->RSSetViewports(1, &viewport);
-	context->RSSetState(nullptr);
+	context->RSSetState(upscaleRasterizerState.get());
 	context->OMSetBlendState(nullptr, nullptr, 0xffffffff);
 	context->OMSetDepthStencilState(nullptr, 0);
+
+	// Bind hudlessTexture->rtv BEFORE binding a_source as PS SRV: at the end of Main_PostProcessing,
+	// kFRAMEBUFFER (a_source) is still bound as OM render target 0, and DXVK's TestSrvHazards
+	// silently replaces any SRV that aliases a currently bound RTV with nullptr (producing a black
+	// HUD-less texture).
+	ID3D11RenderTargetView* output = hudlessTexture->rtv.get();
+	context->OMSetRenderTargets(1, &output, nullptr);
 
 	ID3D11ShaderResourceView* sources[] = { a_source };
 	context->PSSetShaderResources(0, ARRAYSIZE(sources), sources);
 	context->PSSetShader(pixelShader, nullptr, 0);
-	ID3D11RenderTargetView* output = hudlessTexture->rtv.get();
-	context->OMSetRenderTargets(1, &output, nullptr);
 	context->Draw(3, 0);
 
 	sources[0] = nullptr;
 	context->PSSetShaderResources(0, ARRAYSIZE(sources), sources);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 	backup.Restore(context);
 	backup.Release();
 	return true;
