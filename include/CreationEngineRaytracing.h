@@ -761,6 +761,7 @@ struct CreationEngineRaytracing
 	using GetAccumulatedFrameCountFn = uint32_t (*)();
 	using GetFakeDoubledVRAMUsageFn = uint64_t (*)();
 	using GetSceneGraphCountersFn = void (*)(uint32_t& textures, uint32_t& models, uint32_t& instances);
+	using GetVRAMUsageFn = void (*)(eastl::vector<eastl::pair<eastl::string, eastl::vector<eastl::pair<eastl::string, uint64_t>>>>&);
 	using ReloadShadersFn = void (*)();
 
 	InitializeRendererFn InitializeRenderer = nullptr;
@@ -783,6 +784,7 @@ struct CreationEngineRaytracing
 	SetSkinDetailNormalFn SetSkinDetailNormal = nullptr;
 	GetAccumulatedFrameCountFn GetAccumulatedFrameCount = nullptr;
 	GetFakeDoubledVRAMUsageFn GetFakeDoubledVRAMUsage = nullptr;
+	GetVRAMUsageFn GetVRAMUsage = nullptr;
 	ReloadShadersFn ReloadShaders = nullptr;
 
 	CreationEngineRaytracing()
@@ -817,6 +819,7 @@ struct CreationEngineRaytracing
 		LOAD_FN(SetSkinDetailNormal);
 		LOAD_FN(GetAccumulatedFrameCount);
 		LOAD_FN(GetFakeDoubledVRAMUsage);
+		LOAD_FN(GetVRAMUsage);
 		LOAD_FN(ReloadShaders);
 	}
 };

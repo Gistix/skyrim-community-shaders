@@ -21,6 +21,8 @@
 #include "Menu/ThemeManager.h"
 #include "State.h"
 #include "Utils/D3D.h"
+#include "Utils/Format.h"
+#include "Utils/UI.h"
 #include <thread>
 #include <vulkan/vulkan.hpp>
 
@@ -839,34 +841,146 @@ void Raytracing::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("enabled"), "Enabled"), &settings.CreationEngineRaytracingSettings.Enabled);
 
-	const auto maxThreads = std::max(1u, std::thread::hardware_concurrency() - 1u);
-	ImGui::SliderInt(T(TKEY("num_worker_threads"), "Number of Worker Threads"), reinterpret_cast<int*>(&settings.CreationEngineRaytracingSettings.AdvancedSettings.NumWorkerThreads), 1, maxThreads);
+	if (ImGui::BeginTabBar("##RaytracingTabs", ImGuiTabBarFlags_None)) {
+		DrawGeneralSettings();
+		DrawDebugSettings();
 
-	ImGui::Checkbox(T(TKEY("validation_layer"), "Validation Layer"), &settings.RendererSettings.ValidationLayer);
-
-	ImGui::Checkbox(T(TKEY("enable_ser"), "Enable Shader Execution Reordering"), &settings.CreationEngineRaytracingSettings.AdvancedSettings.ShaderExecutionReordering);
-
-	ImGui::Checkbox(T(TKEY("use_ray_query"), "Use Ray Query"), &settings.RendererSettings.UseRayQuery);
-
-	ImGui::Checkbox(T(TKEY("render_tree_lod"), "Render Tree LOD"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderTreeLOD);
-
-	ImGui::Checkbox(T(TKEY("render_grass"), "Render Grass"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderGrass);
-
-	const char* overlayNames[] = {
-		T(TKEY("performance_overlay_none"), "None"),
-		T(TKEY("performance_overlay_simple"), "Simple"),
-		T(TKEY("performance_overlay_complete"), "Complete"),
-		T(TKEY("performance_overlay_extended"), "Extended")
-	};
-	int currentOverlay = static_cast<int>(settings.PerfOverlay);
-	if (ImGui::Combo(T(TKEY("performance_overlay"), "Performance Overlay"), &currentOverlay, overlayNames, IM_ARRAYSIZE(overlayNames))) {
-		settings.PerfOverlay = static_cast<OverlayMode>(currentOverlay);
+		ImGui::EndTabBar();
 	}
-
-	ImGui::Checkbox(T(TKEY("display_scenegraph_counters"), "Display SceneGraph Counters"), &settings.DisplaySceneGraphCounters);
 
 	if (ceRTSettingsBefore != GetSettings()) {
 		UpdateSettings();
+	}
+}
+
+void Raytracing::DrawGeneralSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_general"), "General"))) {
+		ImGui::PushID("GeneralSettings");
+
+		const auto maxThreads = std::max(1u, std::thread::hardware_concurrency() - 1u);
+		ImGui::SliderInt(T(TKEY("num_worker_threads"), "Number of Worker Threads"), reinterpret_cast<int*>(&settings.CreationEngineRaytracingSettings.AdvancedSettings.NumWorkerThreads), 1, maxThreads);
+
+		ImGui::Checkbox(T(TKEY("validation_layer"), "Validation Layer"), &settings.RendererSettings.ValidationLayer);
+
+		ImGui::Checkbox(T(TKEY("enable_ser"), "Enable Shader Execution Reordering"), &settings.CreationEngineRaytracingSettings.AdvancedSettings.ShaderExecutionReordering);
+
+		ImGui::Checkbox(T(TKEY("use_ray_query"), "Use Ray Query"), &settings.RendererSettings.UseRayQuery);
+
+		ImGui::Checkbox(T(TKEY("render_tree_lod"), "Render Tree LOD"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderTreeLOD);
+
+		ImGui::Checkbox(T(TKEY("render_grass"), "Render Grass"), &settings.CreationEngineRaytracingSettings.ExperimentalSettings.RenderGrass);
+
+		const char* overlayNames[] = {
+			T(TKEY("performance_overlay_none"), "None"),
+			T(TKEY("performance_overlay_simple"), "Simple"),
+			T(TKEY("performance_overlay_complete"), "Complete"),
+			T(TKEY("performance_overlay_extended"), "Extended")
+		};
+		int currentOverlay = static_cast<int>(settings.PerfOverlay);
+		if (ImGui::Combo(T(TKEY("performance_overlay"), "Performance Overlay"), &currentOverlay, overlayNames, IM_ARRAYSIZE(overlayNames))) {
+			settings.PerfOverlay = static_cast<OverlayMode>(currentOverlay);
+		}
+
+		ImGui::Checkbox(T(TKEY("display_scenegraph_counters"), "Display SceneGraph Counters"), &settings.DisplaySceneGraphCounters);
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
+	}
+}
+
+void Raytracing::UpdateVRAMUsage()
+{
+	vramUsageQueried = true;
+	if (creationEngineRaytracing && creationEngineRaytracing->GetVRAMUsage) {
+		vramUsageData.clear();
+		creationEngineRaytracing->GetVRAMUsage(vramUsageData);
+	}
+}
+
+void Raytracing::DrawDebugSettings()
+{
+	if (ImGui::BeginTabItem(T(TKEY("tab_debug"), "Debug"))) {
+		ImGui::PushID("DebugSettings");
+
+		ImGui::SeparatorText(T(TKEY("debug_vram_metrics"), "VRAM Metrics"));
+
+		if (ImGui::Button(T(TKEY("debug_update_vram"), "Update")) || !vramUsageQueried) {
+			UpdateVRAMUsage();
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("(?)");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("debug_update_vram_tooltip"), "Query real-time VRAM allocation and usage from Creation Engine Raytracing."));
+		}
+
+		if (!creationEngineRaytracing || !creationEngineRaytracing->GetVRAMUsage) {
+			ImGui::TextColored(globals::menu->GetTheme().StatusPalette.Warning, "%s",
+				T(TKEY("debug_vram_unavailable"), "VRAM metrics API is not available in the current CreationEngineRaytracing library."));
+		} else if (vramUsageData.empty()) {
+			ImGui::TextDisabled("%s", T(TKEY("debug_vram_no_data"), "No VRAM data available. Click 'Update' to fetch metrics."));
+		} else {
+			// Display prominent summary at the top if present
+			for (const auto& [categoryName, items] : vramUsageData) {
+				if (categoryName == "Summary" && !items.empty()) {
+					ImGui::Spacing();
+					ImGui::TextColored(globals::menu->GetTheme().StatusPalette.SuccessColor, "%s: %s",
+						items.front().first.c_str(), Util::FormatFileSize(items.front().second).c_str());
+					ImGui::Spacing();
+					break;
+				}
+			}
+
+			for (const auto& [categoryName, items] : vramUsageData) {
+				ImGui::PushID(categoryName.c_str());
+
+				std::string headerLabel = categoryName.c_str();
+				if (!items.empty() && items.back().first == "Category Total") {
+					headerLabel = std::format("{} - {}", categoryName.c_str(), Util::FormatFileSize(items.back().second));
+				} else if (categoryName == "Textures" && !items.empty()) {
+					headerLabel = std::format("{} - {}", categoryName.c_str(), Util::FormatFileSize(items.front().second));
+				}
+
+				if (ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+					if (ImGui::BeginTable("VRAMTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+						ImGui::TableSetupColumn(T(TKEY("debug_vram_col_resource"), "Resource / Metric"), ImGuiTableColumnFlags_WidthStretch);
+						ImGui::TableSetupColumn(T(TKEY("debug_vram_col_size"), "Size"), ImGuiTableColumnFlags_WidthFixed, 130.0f);
+						ImGui::TableHeadersRow();
+
+						for (const auto& [itemName, itemBytes] : items) {
+							ImGui::TableNextRow();
+
+							ImGui::TableNextColumn();
+							const bool isTotal = (itemName == "Category Total" || itemName == "Total Tracked Raytracing VRAM");
+							if (isTotal) {
+								ImGui::TextColored(globals::menu->GetTheme().StatusPalette.SuccessColor, "%s", itemName.c_str());
+							} else {
+								ImGui::TextUnformatted(itemName.c_str());
+							}
+
+							ImGui::TableNextColumn();
+							const std::string sizeStr = Util::FormatFileSize(itemBytes);
+							if (isTotal) {
+								ImGui::TextColored(globals::menu->GetTheme().StatusPalette.SuccessColor, "%s", sizeStr.c_str());
+							} else {
+								ImGui::TextUnformatted(sizeStr.c_str());
+							}
+
+							if (auto _tt = Util::HoverTooltipWrapper()) {
+								ImGui::Text(T(TKEY("debug_vram_raw_bytes"), "%llu bytes"), itemBytes);
+							}
+						}
+
+						ImGui::EndTable();
+					}
+				}
+
+				ImGui::PopID();
+			}
+		}
+
+		ImGui::PopID();
+		ImGui::EndTabItem();
 	}
 }
 

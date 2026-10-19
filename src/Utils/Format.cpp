@@ -109,15 +109,17 @@ namespace Util
 
 	std::string FormatFileSize(uint64_t bytes)
 	{
-		if (bytes >= 1024 * 1024) {
-			char buffer[32];
-			sprintf_s(buffer, "%.1f MB", static_cast<float>(bytes) / (1024 * 1024));
-			return buffer;
+		char buffer[32];
+		if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
+			sprintf_s(buffer, "%.2f GB", static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0));
+		} else if (bytes >= 1024ULL * 1024ULL) {
+			sprintf_s(buffer, "%.2f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+		} else if (bytes >= 1024ULL) {
+			sprintf_s(buffer, "%.1f KB", static_cast<double>(bytes) / 1024.0);
 		} else {
-			char buffer[32];
-			sprintf_s(buffer, "%.1f KB", static_cast<float>(bytes) / 1024);
-			return buffer;
+			sprintf_s(buffer, "%llu B", bytes);
 		}
+		return buffer;
 	}
 
 	std::string FormatTimeAgo(std::filesystem::file_time_type fileTime)

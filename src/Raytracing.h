@@ -50,6 +50,10 @@ public:
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 	virtual void DrawSettings() override;
+	void DrawGeneralSettings();
+	void DrawDebugSettings();
+	void DrawDebug() { DrawDebugSettings(); }
+	void UpdateVRAMUsage();
 	virtual bool IsOverlayVisible() const override { return Available() && settings.PerfOverlay != OverlayMode::None; }
 	virtual void DrawOverlay() override;
 
@@ -123,6 +127,8 @@ public:
 	ImVec2 Position = ImVec2(10.f, 10.f);
 	bool PositionSet = false;
 	eastl::vector<CreationEngineRaytracing::PassTiming> passTimings;
+	eastl::vector<eastl::pair<eastl::string, eastl::vector<eastl::pair<eastl::string, uint64_t>>>> vramUsageData;
+	bool vramUsageQueried = false;
 
 	bool initialized = false;
 	bool forcedDisabled = false;
