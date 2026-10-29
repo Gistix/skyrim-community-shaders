@@ -11,6 +11,7 @@
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
 #include "Features/IBL.h"
+#include "Features/Raytracing.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/Skylighting.h"
 #include "Features/SubsurfaceScattering.h"
@@ -184,6 +185,8 @@ void Deferred::SetupResources()
 		directionalShadowLights = new Buffer(sbDesc, nullptr, "Deferred::DirectionalShadowLights");
 		directionalShadowLights->CreateSRV(srvDesc);
 	}
+
+	globals::features::raytracing.SetupResourcesPostDeferred();
 }
 
 void Deferred::ReflectionsPrepasses()
@@ -354,8 +357,15 @@ void Deferred::DeferredPasses()
 
 	auto& ibl = globals::features::ibl;
 
+	auto& rt = globals::features::raytracing;
+	bool skipDeferredComposite = false;
+	if (rt.loaded) {
+		rt.Execute();
+		skipDeferredComposite = rt.Available() && rt.IsPathTracing();
+	}
+
 	// Deferred Composite
-	{
+	if (!skipDeferredComposite) {
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
 		ID3D11ShaderResourceView* srvs[16]{

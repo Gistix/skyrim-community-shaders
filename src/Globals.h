@@ -39,6 +39,8 @@ struct Effects11;
 struct ExponentialHeightFog;
 struct HDRDisplay;
 struct PostProcessing;
+struct Raytracing;
+struct PathTracing;
 struct ScreenshotFeature;
 struct Skin;
 struct SceneManager;
@@ -138,6 +140,8 @@ namespace globals
 		extern Skin skin;
 		extern SceneManager sceneManager;
 		extern PostProcessing postProcessing;
+		extern Raytracing raytracing;
+		extern PathTracing pathTracing;
 
 	}
 

@@ -135,7 +135,7 @@ if(MSVC)
 
 	# /MP (multi-process compilation) only for MSBuild; Ninja handles parallelism itself
 	if(CMAKE_GENERATOR MATCHES "Visual Studio")
-		target_compile_options("${PROJECT_NAME}" PRIVATE /MP)
+		target_compile_options("${PROJECT_NAME}" PRIVATE /MP4)
 	endif()
 
 	target_compile_options(${PROJECT_NAME} PRIVATE "$<$<CONFIG:DEBUG>:${SC_DEBUG_OPTS}>")

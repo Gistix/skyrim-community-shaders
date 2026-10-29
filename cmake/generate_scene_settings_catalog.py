@@ -4271,7 +4271,7 @@ def nested_type_candidates(owner: str, field_type: str) -> list[str]:
 
 
 def build_entries(source_dir: Path) -> list[dict[str, object]]:
-    src_paths = list((source_dir / "src").rglob("*.cpp")) + list((source_dir / "src").rglob("*.h"))
+    src_paths = list((source_dir / "src").rglob("*.cpp")) + list((source_dir / "src").rglob("*.h")) + list((source_dir / "include").rglob("*.h"))
     src_paths += [source_dir / "src" / "TruePBR.cpp", source_dir / "src" / "TruePBR.h"]
     src_paths = sorted({p for p in src_paths if p.exists()})
 
