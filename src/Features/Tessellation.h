@@ -40,7 +40,7 @@ struct Tessellation : public Feature
 
 	static void RestoreTechnique();
 	static void SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial const* a_material);
-	static void SetupGeometry(RE::BSShader* a_shader);
+	static void SetupGeometry(RE::BSShader* a_shader, RE::BSRenderPass* a_pass);
 	static void RestoreGeometry();
 
 	struct Hooks;
@@ -49,13 +49,13 @@ struct Tessellation : public Feature
 	struct Settings
 	{
 		bool Enable = true;
-		float Scale = 0.02f;
-		float Factor = 2.0f;
+		float Scale = 0.5f;
+		float Factor = 32.0f;
 		float Offset = 0.5f;
 		float FadeStart = 30.0f;
 		float FadeDistance = 20.0f;
 		float Density = 200.0f;
-		float PerturbationScale = 1.0f;
+		float PerturbationScale = 0.1f;
 	} settings;
 
 	struct CbData
@@ -96,6 +96,12 @@ struct Tessellation : public Feature
 
 	/** @brief Set per pass in the SetupMaterial hooks: the current material actually has displacement. */
 	bool currentPassHasDisplacement = false;
+
+	/** @brief Set per geometry pass in SetupGeometry: the stage was actually applied to the pipeline. */
+	bool currentStageApplied = false;
+
+	/** @brief Active height texture SRV for the current displacement pass. */
+	ID3D11ShaderResourceView* currentHeightTexture = nullptr;
 
 	eastl::unique_ptr<ConstantBuffer> tessellationCb = nullptr;
 	winrt::com_ptr<ID3D11SamplerState> parallaxSampler = nullptr;

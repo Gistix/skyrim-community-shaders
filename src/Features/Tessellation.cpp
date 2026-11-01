@@ -46,7 +46,7 @@ void Tessellation::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("tessellation_scale"), "Scale"), &settings.Scale, 0.0f, 1.0f, "%.4f");
 	ImGui::SliderFloat(T(TKEY("tessellation_factor"), "Factor"), &settings.Factor, 1.0f, 32.0f, "%.1f");
 	ImGui::SliderFloat(T(TKEY("tessellation_offset"), "Offset"), &settings.Offset, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::SliderFloat(T(TKEY("tessellation_perturbation_scale"), "Normal Perturbation Scale"), &settings.PerturbationScale, 0.0f, 2.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("tessellation_perturbation_scale"), "Normal Perturbation Scale"), &settings.PerturbationScale, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	
 	ImGui::DragFloat(T(TKEY("tessellation_fade_start"), "Fade Start"), &settings.FadeStart, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::DragFloat(T(TKEY("tessellation_fade_distance"), "Fade Distance"), &settings.FadeDistance, 0.1f, 0.0f, 10000.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp);
@@ -98,6 +98,7 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 		return;
 
 	tessellation.currentPassHasDisplacement = false;
+	tessellation.currentHeightTexture = nullptr;
 
 	const bool utility = a_shader->shaderType.all(RE::BSShader::Type::Utility);
 	if (utility) {
@@ -106,7 +107,7 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 		auto* utilityShader = reinterpret_cast<RE::BSUtilityShader*>(a_shader);
 		const auto flags = stl::enumeration<Flags>(static_cast<Flags>(utilityShader->unk90));
 		
-		if (flags.none(Flags::RenderDepth, Flags::RenderShadowmap, Flags::RenderShadowmap, Flags::RenderShadowmapPb))
+		if (flags.none(Flags::RenderDepth, Flags::RenderShadowmap, Flags::RenderShadowmapPb))
 			return;
 	}
 
@@ -138,14 +139,12 @@ void Tessellation::SetupMaterial(RE::BSShader* a_shader, RE::BSShaderMaterial co
 		return;
 
 	tessellation.currentPassHasDisplacement = true;
+	tessellation.currentHeightTexture = heightTexture->rendererTexture->resourceView;
 
 	if (utility) {
 		tessellation.tessellationData.MaterialScale = scale;
 		tessellation.tessellationCb->Update(tessellation.tessellationData);
 	}
-
-	auto context = globals::d3d::context;
-	context->DSSetShaderResources(0, 1, &heightTexture->rendererTexture->resourceView);
 }
 
 /** @brief Binds the feature CB, HS/DS shaders and patch topology for a stage. */
@@ -186,6 +185,10 @@ static void ApplyTessellationStage(const Tessellation::TessellationStage& stage)
 		context->DSSetSamplers(0, 1, &heightSampler);
 	}
 
+	if (tessellation.currentHeightTexture) {
+		context->DSSetShaderResources(0, 1, &tessellation.currentHeightTexture);
+	}
+
 	auto buffer = tessellation.tessellationCb->CB();
 	context->HSSetConstantBuffers(0, 1, &buffer);
 	context->DSSetConstantBuffers(0, 1, &buffer);
@@ -198,7 +201,45 @@ static void ApplyTessellationStage(const Tessellation::TessellationStage& stage)
 
 void Tessellation::RestoreTechnique()
 {
-	if (!globals::features::tessellation.currentPassHasDisplacement)
+	auto& tessellation = globals::features::tessellation;
+	tessellation.currentPassHasDisplacement = false;
+	tessellation.currentHeightTexture = nullptr;
+
+	if (tessellation.currentStageApplied) {
+		RestoreGeometry();
+	}
+}
+
+void Tessellation::SetupGeometry(RE::BSShader* a_shader, RE::BSRenderPass* a_pass)
+{
+	auto& tessellation = globals::features::tessellation;
+	if (!tessellation.settings.Enable)
+		return;
+
+	if (!tessellation.currentPassHasDisplacement)
+		return;
+
+	if (a_pass->geometry && a_pass->geometry->GetGeometryRuntimeData().alphaProperty)
+		return;
+
+	// Key on the modified pixel descriptor: it retains the technique bits (the
+	// vertex descriptor has them cleared for Parallax etc. by ModifyShaderLookup).
+	// The Deferred bit is masked out since it does not affect HS/DS code.
+	const auto descriptor = globals::state->modifiedPixelDescriptor & ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
+	auto stage = tessellation.GetStage(*a_shader, descriptor);
+	if (!stage.hull || !stage.domain) {
+		logger::error("[Tessellation] Missing HS/DS stage for descriptor {:X}, pass renders vanilla", descriptor);
+		return;
+	}
+
+	ApplyTessellationStage(stage);
+	tessellation.currentStageApplied = true;
+}
+
+void Tessellation::RestoreGeometry()
+{
+	auto& tessellation = globals::features::tessellation;
+	if (!tessellation.currentStageApplied)
 		return;
 
 	auto context = globals::d3d::context;
@@ -214,36 +255,10 @@ void Tessellation::RestoreTechnique()
 	ID3D11Buffer* nullBuffers[13] = { nullptr };
 	context->HSSetConstantBuffers(0, 13, nullBuffers);
 	context->DSSetConstantBuffers(0, 13, nullBuffers);
-}
 
-void Tessellation::SetupGeometry(RE::BSShader* a_shader)
-{
-	auto& tessellation = globals::features::tessellation;
-	if (!tessellation.settings.Enable)
-		return;
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-	if (!tessellation.currentPassHasDisplacement)
-		return;
-
-	// Key on the modified pixel descriptor: it retains the technique bits (the
-	// vertex descriptor has them cleared for Parallax etc. by ModifyShaderLookup).
-	// The Deferred bit is masked out since it does not affect HS/DS code.
-	const auto descriptor = globals::state->modifiedPixelDescriptor & ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
-	auto stage = tessellation.GetStage(*a_shader, descriptor);
-	if (!stage.hull || !stage.domain) {
-		logger::error("[Tessellation] Missing HS/DS stage for descriptor {:X}, pass renders vanilla", descriptor);
-		return;
-	}
-
-	ApplyTessellationStage(stage);
-}
-
-void Tessellation::RestoreGeometry()
-{
-	if (!globals::features::tessellation.currentPassHasDisplacement)
-		return;
-
-	globals::d3d::context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	tessellation.currentStageApplied = false;
 }
 
 struct Tessellation::Hooks
@@ -292,7 +307,7 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSLightingShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::SetupGeometry(a_shader);
+			Tessellation::SetupGeometry(a_shader, a_pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -332,7 +347,7 @@ struct Tessellation::Hooks
 		static void thunk(RE::BSUtilityShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 		{
 			func(a_shader, a_pass, a_flags);
-			Tessellation::SetupGeometry(a_shader);
+			Tessellation::SetupGeometry(a_shader, a_pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -355,6 +370,9 @@ struct Tessellation::Hooks
 		// offset from the descriptor's own offset bits, which are retained.
 		static ID3D11InputLayout* thunk(RE::BSGraphics::VertexDesc a_vertexDesc)
 		{
+			if (!globals::features::tessellation.settings.Enable)
+				return func(a_vertexDesc);
+
 			auto originalShader = globals::state->currentShader;
 			auto originalVertexShader = *globals::game::currentVertexShader;
 
@@ -379,7 +397,8 @@ struct Tessellation::Hooks
 				if (asyncCompilation)
 					shaderCache->SetAsync(true);
 
-				*globals::game::currentVertexShader = customShader;
+				if (customShader)
+					*globals::game::currentVertexShader = customShader;
 			}
 
 			auto result = func(a_vertexDesc);
