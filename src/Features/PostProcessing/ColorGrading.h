@@ -158,6 +158,8 @@ struct ColorGrading : public PostProcessFeature
 	winrt::com_ptr<ID3D11SamplerState> linearSampler = nullptr;
 
 	virtual void SetupResources() override;
+	virtual void CreateScreenResources() override;
+	virtual void ReleaseScreenResources() override;
 	virtual void ClearShaderCache() override;
 	void CompileShaders();
 

@@ -228,13 +228,44 @@ void LensFlare::SaveSettings(json& o_json)
 
 void LensFlare::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("LensFlare: Creating buffers...");
 	{
 		lensFlareCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<LensFlareCB>());
 	}
+
+	logger::debug("LensFlare: Creating samplers...");
+	{
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
+
+		D3D11_SAMPLER_DESC borderDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_BORDER,
+			.AddressV = D3D11_TEXTURE_ADDRESS_BORDER,
+			.AddressW = D3D11_TEXTURE_ADDRESS_BORDER,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&borderDesc, borderSampler.put()));
+	}
+
+	CompileComputeShaders();
+}
+
+void LensFlare::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("LensFlare: Creating 2D textures...");
 	{
@@ -283,35 +314,25 @@ void LensFlare::SetupResources()
 		logger::debug("LensFlare: textures created - full {}x{}, half {}x{}, quarter {}x{}", fullW, fullH, halfW, halfH, quarterW, quarterH);
 	}
 
-	logger::debug("LensFlare: Creating samplers...");
-	{
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
-
-		D3D11_SAMPLER_DESC borderDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_BORDER,
-			.AddressV = D3D11_TEXTURE_ADDRESS_BORDER,
-			.AddressW = D3D11_TEXTURE_ADDRESS_BORDER,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&borderDesc, borderSampler.put()));
-	}
-
-	CompileComputeShaders();
-
-	// Create initial FFT textures
+	// FFT scratch for the quality path; Draw() rebuilds it if the resolution setting changes.
 	CreateFFTTextures(NormaliseFFTResolution(settings.FFTResolution));
+}
+
+void LensFlare::ReleaseScreenResources()
+{
+	outputReady = false;
+	texFlare = nullptr;
+	texThreshold = nullptr;
+	texGhostHalo = nullptr;
+	texBlurTemp = nullptr;
+	for (auto& tex : texFFT)
+		tex = nullptr;
+	texSceneFFT = nullptr;
+	texFFTResult = nullptr;
+	for (auto& cache : bokehFFTCache) {
+		cache.texture = nullptr;
+		cache.valid = false;
+	}
 }
 
 void LensFlare::CreateFFTTextures(uint resolution)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Buffer.h"
 #include "Feature.h"
 #include "ShaderCache.h"
 
@@ -114,7 +115,33 @@ struct PostProcessFeature : public std::enable_shared_from_this<PostProcessFeatu
 	/// If false, the feature performs internal work but does not replace inout_tex.
 	virtual bool WritesToMainTexture() const { return true; }
 
+	/// @brief Creates resources that persist for the feature's lifetime regardless of
+	///        whether it is drawn: constant buffers, samplers, small lookup textures and
+	///        shader compiles. Screen-sized textures belong in CreateScreenResources().
 	virtual inline void SetupResources() = 0;
+
+	/// @brief Creates resources whose size follows the game's render targets
+	///        (full/half/quarter-resolution textures, FFT scratch). Called lazily on the
+	///        render thread right before the first Draw() after they were released, so a
+	///        feature that is turned off holds no screen-sized VRAM.
+	virtual void CreateScreenResources() {}
+
+	/// @brief Releases everything CreateScreenResources() made and clears any state
+	///        that referenced it (output-ready flags, temporal history).
+	virtual void ReleaseScreenResources() {}
+
+	/// @brief Creates screen resources if they are missing and marks them used this
+	///        frame. Called by PostProcessing before every Draw().
+	void EnsureScreenResources();
+
+	/// @brief Called once per frame by PostProcessing::Reset(); releases screen
+	///        resources after they went undrawn for LazyResourceLifetime's delay.
+	void UpdateScreenResourceLifetime();
+
+	/// @brief Releases screen resources immediately (e.g. after a settings reload) so
+	///        the next Draw() recreates them with current settings.
+	void InvalidateScreenResources();
+
 	virtual void ClearShaderCache() = 0;
 	virtual void RestoreDefaultSettings() = 0;
 
@@ -130,4 +157,7 @@ struct PostProcessFeature : public std::enable_shared_from_this<PostProcessFeatu
 	virtual void Draw(TextureInfo& inout_tex) = 0;  // read from last pass, do the thing, and replace it with output texture
 
 	virtual inline void Reset() {};
+
+private:
+	LazyResourceLifetime screenResourceLifetime;
 };

@@ -688,7 +688,6 @@ void ColorGrading::UpdateColorSpaceTransforms(bool hdrEnabled)
 
 void ColorGrading::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
 
@@ -697,35 +696,8 @@ void ColorGrading::SetupResources()
 		colorCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ColorCB>());
 	}
 
-	logger::debug("Creating 2D textures...");
+	logger::debug("Creating LUT texture...");
 	{
-		auto gameTexMainCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY];
-
-		D3D11_TEXTURE2D_DESC texDesc;
-		gameTexMainCopy.texture->GetDesc(&texDesc);
-
-		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-			.Format = texDesc.Format,
-			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-			.Texture2D = { .MostDetailedMip = 0, .MipLevels = 1 }
-		};
-
-		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {
-			.Format = texDesc.Format,
-			.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D,
-			.Texture2D = { .MipSlice = 0 }
-		};
-
-		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = 1;
-		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-		texDesc.MiscFlags = 0;
-
-		texColor = std::make_unique<Texture2D>(texDesc);
-		texColor->CreateSRV(srvDesc);
-		texColor->CreateRTV(rtvDesc);
-
 		D3D11_TEXTURE3D_DESC lutTexDesc = {
 			.Width = LUTDim,
 			.Height = LUTDim,
@@ -823,6 +795,46 @@ void ColorGrading::SetupResources()
 	}
 
 	CompileShaders();
+}
+
+void ColorGrading::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
+
+	logger::debug("Creating 2D textures...");
+	{
+		auto gameTexMainCopy = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN_COPY];
+
+		D3D11_TEXTURE2D_DESC texDesc;
+		gameTexMainCopy.texture->GetDesc(&texDesc);
+
+		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+			.Format = texDesc.Format,
+			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+			.Texture2D = { .MostDetailedMip = 0, .MipLevels = 1 }
+		};
+
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {
+			.Format = texDesc.Format,
+			.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D,
+			.Texture2D = { .MipSlice = 0 }
+		};
+
+		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = 1;
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+		texDesc.MiscFlags = 0;
+
+		texColor = std::make_unique<Texture2D>(texDesc);
+		texColor->CreateSRV(srvDesc);
+		texColor->CreateRTV(rtvDesc);
+	}
+}
+
+void ColorGrading::ReleaseScreenResources()
+{
+	texColor = nullptr;
 }
 
 void ColorGrading::ClearShaderCache()
@@ -1099,11 +1111,11 @@ void ColorGrading::OutputTextures()
 	DirectX::ScratchImage lutImage;
 	DirectX::ScratchImage colorImage;
 
-	if (texLUT->resource) {
+	if (texLUT && texLUT->resource) {
 		DirectX::CaptureTexture(device, context, texLUT->resource.get(), lutImage);
 	}
 
-	if (texColor->resource) {
+	if (texColor && texColor->resource) {
 		DirectX::CaptureTexture(device, context, texColor->resource.get(), colorImage);
 	}
 

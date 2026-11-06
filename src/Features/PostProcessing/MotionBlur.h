@@ -120,6 +120,7 @@ struct MotionBlur : public PostProcessFeature
 
 	// Interface methods
 	void SetupResources() override;
+	void ReleaseScreenResources() override;
 	void ClearShaderCache() override;
 	void RestoreDefaultSettings() override;
 	void LoadSettings(json&) override;

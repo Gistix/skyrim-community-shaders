@@ -78,13 +78,38 @@ void Camera::SaveSettings(json& o_json)
 
 void Camera::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("Creating buffers...");
 	{
 		cameraCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<CameraCB>());
 	}
+
+	logger::debug("Creating samplers...");
+	{
+		// Linear clamp filtering for the fisheye / chromatic aberration sampling.
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
+	}
+
+	logger::debug("Compiling shaders...");
+	{
+		CompileRasterShaders();
+	}
+}
+
+void Camera::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -113,27 +138,11 @@ void Camera::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateRTV(rtvDesc);
 	}
+}
 
-	logger::debug("Creating samplers...");
-	{
-		// Linear clamp filtering for the fisheye / chromatic aberration sampling.
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
-	}
-
-	logger::debug("Compiling shaders...");
-	{
-		CompileRasterShaders();
-	}
+void Camera::ReleaseScreenResources()
+{
+	texOutput = nullptr;
 }
 
 void Camera::ClearShaderCache()

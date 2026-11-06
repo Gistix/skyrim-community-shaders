@@ -39,7 +39,7 @@ struct PhysicalGlare : public PostProcessFeature
 	virtual inline std::string GetDesc() const override { return T("feature.post_processing.physical_glare.description", "Physically based glare from aperture diffraction and ocular scattering. FFT convolution with a wavelength-dependent PSF, dual eye/lens modes, wavefront aberrations, and wide-gamut chromatic dispersion."); }
 	virtual bool WritesToMainTexture() const override { return false; }
 
-	TextureInfo GetGlareOutput() const { return outputReady ? TextureInfo{ texOutput->resource.get(), texOutput->srv.get() } : TextureInfo{}; }
+	TextureInfo GetGlareOutput() const { return outputReady && texOutput ? TextureInfo{ texOutput->resource.get(), texOutput->srv.get() } : TextureInfo{}; }
 
 	static constexpr uint FFT_MIN = 128;
 	static constexpr uint FFT_MAX = 1024;
@@ -261,6 +261,8 @@ struct PhysicalGlare : public PostProcessFeature
 	uint currentFFTResolution = 256;
 
 	virtual void SetupResources() override;
+	virtual void CreateScreenResources() override;
+	virtual void ReleaseScreenResources() override;
 	virtual void ClearShaderCache() override;
 	void CompileComputeShaders();
 	void CreateFFTTextures(uint resolution);

@@ -157,6 +157,8 @@ struct LensFlare : public PostProcessFeature
 	bool bokehFFTDirty = true;
 
 	virtual void SetupResources() override;
+	virtual void CreateScreenResources() override;
+	virtual void ReleaseScreenResources() override;
 	virtual void ClearShaderCache() override;
 	void CompileComputeShaders();
 	void CreateFFTTextures(uint resolution);
@@ -190,4 +192,4 @@ private:
 	void PrepareBokehFFT(BokehFFTCache& cache, const LensFlareCB& data);
 };
 
-inline PostProcessFeature::TextureInfo LensFlare::GetFlareOutput() const { return outputReady ? TextureInfo{ texFlare->resource.get(), texFlare->srv.get() } : TextureInfo{}; }
+inline PostProcessFeature::TextureInfo LensFlare::GetFlareOutput() const { return outputReady && texFlare ? TextureInfo{ texFlare->resource.get(), texFlare->srv.get() } : TextureInfo{}; }

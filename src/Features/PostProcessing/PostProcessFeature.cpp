@@ -58,3 +58,30 @@ void PostProcessFeature::CompileRasterShadersAsync(
 			SIE::ShaderCache::StandaloneShaderClass::Pixel, info.programPtr);
 	}
 }
+
+void PostProcessFeature::EnsureScreenResources()
+{
+	screenResourceLifetime.MarkUsed();
+	if (screenResourceLifetime.IsCreated())
+		return;
+
+	CreateScreenResources();
+	screenResourceLifetime.MarkCreated();
+	logger::debug("[PostProcessing] {}: created screen resources", GetType());
+}
+
+void PostProcessFeature::UpdateScreenResourceLifetime()
+{
+	if (screenResourceLifetime.ShouldRelease())
+		InvalidateScreenResources();
+}
+
+void PostProcessFeature::InvalidateScreenResources()
+{
+	if (!screenResourceLifetime.IsCreated())
+		return;
+
+	ReleaseScreenResources();
+	screenResourceLifetime.MarkReleased();
+	logger::debug("[PostProcessing] {}: released screen resources", GetType());
+}

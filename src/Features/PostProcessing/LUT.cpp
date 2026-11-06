@@ -89,8 +89,6 @@ void LUT::SaveSettings(json& o_json)
 
 void LUT::SetupResources()
 {
-	auto renderer = globals::game::renderer;
-
 	if (!settings.LutPath.empty())
 		ReadTexture(settings.LutPath);
 
@@ -98,6 +96,13 @@ void LUT::SetupResources()
 	{
 		lutCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<LUTCB>());
 	}
+
+	CompileRasterShaders();
+}
+
+void LUT::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -126,8 +131,11 @@ void LUT::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateRTV(rtvDesc);
 	}
+}
 
-	CompileRasterShaders();
+void LUT::ReleaseScreenResources()
+{
+	texOutput = nullptr;
 }
 
 void LUT::ReadTexture(std::filesystem::path path)

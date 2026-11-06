@@ -98,6 +98,31 @@ void LocalExposure::SaveSettings(json& o_json)
 
 void LocalExposure::SetupResources()
 {
+	// Create linear sampler
+	{
+		D3D11_SAMPLER_DESC sampDesc = {};
+		sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+		sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+		sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+
+		auto device = globals::d3d::device;
+		DX::ThrowIfFailed(device->CreateSamplerState(&sampDesc, linearSampler.put()));
+
+		sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_MIRROR;
+		sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_MIRROR;
+		DX::ThrowIfFailed(device->CreateSamplerState(&sampDesc, mirrorSampler.put()));
+	}
+
+	// Create constant buffer
+	localExposureCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<LocalExposureCB>());
+
+	CompileComputeShaders();
+}
+
+void LocalExposure::CreateScreenResources()
+{
 	auto renderer = globals::game::renderer;
 
 	// Get screen dimensions from game render target
@@ -254,28 +279,21 @@ void LocalExposure::SetupResources()
 		uavDesc.Texture2D.MipSlice = 0;
 		texBaseLuminance->CreateUAV(uavDesc);
 	}
+}
 
-	// Create linear sampler
-	{
-		D3D11_SAMPLER_DESC sampDesc = {};
-		sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
-
-		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateSamplerState(&sampDesc, linearSampler.put()));
-
-		sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_MIRROR;
-		sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_MIRROR;
-		DX::ThrowIfFailed(device->CreateSamplerState(&sampDesc, mirrorSampler.put()));
-	}
-
-	// Create constant buffer
-	localExposureCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<LocalExposureCB>());
-
-	CompileComputeShaders();
+void LocalExposure::ReleaseScreenResources()
+{
+	outputReady = false;
+	texLogLuminance = nullptr;
+	texLuminanceGrid = nullptr;
+	texBlurTemp = nullptr;
+	texBlurredLuminance = nullptr;
+	texBaseLuminance = nullptr;
+	for (auto& srv : logLuminanceMipSRVs)
+		srv = nullptr;
+	for (auto& uav : logLuminanceMipUAVs)
+		uav = nullptr;
+	numMips = 0;
 }
 
 void LocalExposure::ClearShaderCache()

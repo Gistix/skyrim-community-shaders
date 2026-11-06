@@ -29,6 +29,11 @@ void Composite::UpdateAutoEnabled()
 
 void Composite::SetupResources()
 {
+	CompileRasterShaders();
+}
+
+void Composite::CreateScreenResources()
+{
 	auto renderer = globals::game::renderer;
 
 	{
@@ -58,8 +63,11 @@ void Composite::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateRTV(rtvDesc);
 	}
+}
 
-	CompileRasterShaders();
+void Composite::ReleaseScreenResources()
+{
+	texOutput = nullptr;
 }
 
 void Composite::ClearShaderCache()

@@ -262,7 +262,6 @@ void DoF::UpdateProceduralBokehSamples(int bladeCount, float bladeRoundness, boo
 
 void DoF::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("Creating buffers...");
@@ -275,6 +274,30 @@ void DoF::SetupResources()
 		proceduralBokehSamples->CreateSRV();
 		UpdateProceduralBokehSamples(settings.BokehBladeCount, settings.BokehBladeRoundness, true);
 	}
+
+	// Bokeh shapes are loaded by PostProcessing::bokehResources (shared with LensFlare)
+
+	logger::debug("Creating samplers...");
+	{
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_MIRROR,
+			.AddressV = D3D11_TEXTURE_ADDRESS_MIRROR,
+			.AddressW = D3D11_TEXTURE_ADDRESS_MIRROR,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearSampler.put()));
+		Util::SetResourceName(linearSampler.get(), "DoF::LinearSampler");
+	}
+
+	CompileComputeShaders();
+}
+
+void DoF::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -401,25 +424,28 @@ void DoF::SetupResources()
 		texPreFocus->CreateSRV(srvDesc);
 		texPreFocus->CreateUAV(uavDesc);
 	}
+}
 
-	// Bokeh shapes are loaded by PostProcessing::bokehResources (shared with LensFlare)
-
-	logger::debug("Creating samplers...");
-	{
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_MIRROR,
-			.AddressV = D3D11_TEXTURE_ADDRESS_MIRROR,
-			.AddressW = D3D11_TEXTURE_ADDRESS_MIRROR,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearSampler.put()));
-		Util::SetResourceName(linearSampler.get(), "DoF::LinearSampler");
-	}
-
-	CompileComputeShaders();
+void DoF::ReleaseScreenResources()
+{
+	texOutput = nullptr;
+	texPreBlurred = nullptr;
+	texFarBlurred = nullptr;
+	texNearBlurred = nullptr;
+	texBlurredFiltered = nullptr;
+	texPostSmooth = nullptr;
+	texPostSmooth2 = nullptr;
+	texFocus = nullptr;
+	texPreFocus = nullptr;
+	texCoC = nullptr;
+	texCoCHalf = nullptr;
+	texCoCTile = nullptr;
+	texCoCTileTmp = nullptr;
+	texCoCTileDilated = nullptr;
+	for (auto& tex : texGatherColor)
+		tex = nullptr;
+	for (auto& tex : texGatherCoC)
+		tex = nullptr;
 }
 
 void DoF::ClearShaderCache()

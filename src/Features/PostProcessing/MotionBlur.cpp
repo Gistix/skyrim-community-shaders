@@ -66,6 +66,18 @@ void MotionBlur::SetupResources()
 	logger::info("Motion blur resources initialized");
 }
 
+void MotionBlur::ReleaseScreenResources()
+{
+	// Textures are created on demand by CheckAndResizeResources(); clearing the size
+	// tracking makes the next Draw() recreate them.
+	horizontalPassTexture = nullptr;
+	verticalPassTexture = nullptr;
+	neighborMaxTexture = nullptr;
+	blurOutputTexture = nullptr;
+	lastWidth = 0;
+	lastHeight = 0;
+}
+
 void MotionBlur::CompileComputeShaders()
 {
 	const std::vector<ComputeShaderCompileInfo> shaderInfos = {

@@ -331,8 +331,11 @@ void PostProcessing::ProcessSettings(json& o_json)
 				feat->enabled = o_json.value(feat->GetType(), json::object()).value("enabled", true);
 			json featSettings = o_json.value(feat->GetType(), json::object()).value("settings", json::object());
 			feat->LoadSettings(featSettings);
-			if (loaded)
+			if (loaded) {
 				feat->SetupResources();
+				// Screen-sized resources are rebuilt lazily on the next draw with the new settings.
+				feat->InvalidateScreenResources();
+			}
 		}
 	}
 
@@ -608,8 +611,12 @@ void PostProcessing::Reset()
 	isrefraction = false;
 
 	for (auto& pipe : pipeline) {
-		if (pipe)
+		if (pipe) {
 			pipe->Reset();
+			// Frees screen-sized textures of effects that stopped being drawn (turned off,
+			// bypassed by Effects11, or disabled in the main/loading menu).
+			pipe->UpdateScreenResourceLifetime();
+		}
 	}
 }
 
@@ -685,6 +692,8 @@ void PostProcessing::BeginLinearProcessing(PostProcessFeature::TextureInfo& text
 
 void PostProcessing::DrawFeature(PostProcessFeature& feature, PostProcessFeature::TextureInfo& lastTexColor)
 {
+	feature.EnsureScreenResources();
+
 	if (feature.WritesToMainTexture()) {
 		feature.Draw(lastTexColor);
 	} else {

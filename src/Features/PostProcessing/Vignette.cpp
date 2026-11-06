@@ -61,12 +61,17 @@ void Vignette::SaveSettings(json& o_json)
 
 void Vignette::SetupResources()
 {
-	auto renderer = globals::game::renderer;
-
 	logger::debug("Creating buffers...");
 	{
 		vignetteCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<VignetteCB>());
 	}
+
+	CompileRasterShaders();
+}
+
+void Vignette::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -95,8 +100,11 @@ void Vignette::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateRTV(rtvDesc);
 	}
+}
 
-	CompileRasterShaders();
+void Vignette::ReleaseScreenResources()
+{
+	texOutput = nullptr;
 }
 
 void Vignette::ClearShaderCache()

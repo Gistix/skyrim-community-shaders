@@ -40,7 +40,8 @@ void CODBloom::DrawSettings()
 		ImGui::SliderInt(T("feature.post_processing.codbloom.debug_mip_level", "Debug Mip Level"), &mip, 0, (int)s_BloomMips - 1, "%d", ImGuiSliderFlags_NoInput | ImGuiSliderFlags_AlwaysClamp);
 
 		ImGui::BulletText(T("feature.post_processing.codbloom.texbloom", "texBloom"));
-		ImGui::Image(texBloomMipSRVs[mip].get(), { texBloom->desc.Width * .2f, texBloom->desc.Height * .2f });
+		if (texBloom && texBloomMipSRVs[mip])
+			ImGui::Image(texBloomMipSRVs[mip].get(), { texBloom->desc.Width * .2f, texBloom->desc.Height * .2f });
 	}
 }
 
@@ -61,13 +62,53 @@ void CODBloom::SaveSettings(json& o_json)
 
 void CODBloom::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("Creating buffers...");
 	{
 		bloomCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<BloomCB>());
 	}
+
+	logger::debug("Creating samplers...");
+	{
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_BORDER,
+			.AddressV = D3D11_TEXTURE_ADDRESS_BORDER,
+			.AddressW = D3D11_TEXTURE_ADDRESS_BORDER,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
+	}
+
+	logger::debug("Creating blend states...");
+	{
+		// Upsample accumulate: out = PS_Out * 1 + dst * CurrentMipMult, with the
+		// PS already scaling its output by UpsampleMult. Blend factor carries
+		// CurrentMipMult (alpha factor 0 keeps the written alpha at 1).
+		D3D11_BLEND_DESC blendDesc = {};
+		blendDesc.RenderTarget[0].BlendEnable = TRUE;
+		blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_BLEND_FACTOR;
+		blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+		blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+		blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_BLEND_FACTOR;
+		blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+		DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, upsampleBlendState.put()));
+	}
+
+	CompileRasterShaders();
+}
+
+void CODBloom::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
+	auto device = globals::d3d::device;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -110,41 +151,16 @@ void CODBloom::SetupResources()
 			DX::ThrowIfFailed(device->CreateRenderTargetView(texBloom->resource.get(), &mipRtvDesc, texBloomMipRTVs[i].put()));
 		}
 	}
+}
 
-	logger::debug("Creating samplers...");
-	{
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_BORDER,
-			.AddressV = D3D11_TEXTURE_ADDRESS_BORDER,
-			.AddressW = D3D11_TEXTURE_ADDRESS_BORDER,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, colorSampler.put()));
-	}
-
-	logger::debug("Creating blend states...");
-	{
-		// Upsample accumulate: out = PS_Out * 1 + dst * CurrentMipMult, with the
-		// PS already scaling its output by UpsampleMult. Blend factor carries
-		// CurrentMipMult (alpha factor 0 keeps the written alpha at 1).
-		D3D11_BLEND_DESC blendDesc = {};
-		blendDesc.RenderTarget[0].BlendEnable = TRUE;
-		blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_BLEND_FACTOR;
-		blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-		blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_BLEND_FACTOR;
-		blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-
-		DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, upsampleBlendState.put()));
-	}
-
-	CompileRasterShaders();
+void CODBloom::ReleaseScreenResources()
+{
+	outputReady = false;
+	for (auto& srv : texBloomMipSRVs)
+		srv = nullptr;
+	for (auto& rtv : texBloomMipRTVs)
+		rtv = nullptr;
+	texBloom = nullptr;
 }
 
 void CODBloom::ClearShaderCache()

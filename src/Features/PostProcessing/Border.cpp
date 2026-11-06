@@ -44,12 +44,17 @@ void Border::SaveSettings(json& o_json)
 
 void Border::SetupResources()
 {
-	auto renderer = globals::game::renderer;
-
 	logger::debug("Creating buffers...");
 	{
 		borderCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<BorderCB>());
 	}
+
+	CompileComputeShaders();
+}
+
+void Border::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("Creating 2D textures...");
 	{
@@ -78,8 +83,11 @@ void Border::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateUAV(uavDesc);
 	}
+}
 
-	CompileComputeShaders();
+void Border::ReleaseScreenResources()
+{
+	texOutput = nullptr;
 }
 
 void Border::ClearShaderCache()

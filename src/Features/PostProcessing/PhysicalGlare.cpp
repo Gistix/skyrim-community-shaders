@@ -410,13 +410,44 @@ void PhysicalGlare::CreateFFTTextures(uint resolution)
 
 void PhysicalGlare::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("PhysicalGlare: Creating buffers...");
 	{
 		glareCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<GlareCB>());
 	}
+
+	logger::debug("PhysicalGlare: Creating samplers...");
+	{
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearSampler.put()));
+
+		D3D11_SAMPLER_DESC wrapSamplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_WRAP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_WRAP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_WRAP,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&wrapSamplerDesc, wrapSampler.put()));
+	}
+
+	CompileComputeShaders();
+}
+
+void PhysicalGlare::CreateScreenResources()
+{
+	auto renderer = globals::game::renderer;
 
 	logger::debug("PhysicalGlare: Creating FFT textures...");
 	{
@@ -451,33 +482,20 @@ void PhysicalGlare::SetupResources()
 		texOutput->CreateSRV(srvDesc);
 		texOutput->CreateUAV(uavDesc);
 	}
+}
 
-	logger::debug("PhysicalGlare: Creating samplers...");
-	{
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearSampler.put()));
-
-		D3D11_SAMPLER_DESC wrapSamplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_WRAP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_WRAP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_WRAP,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&wrapSamplerDesc, wrapSampler.put()));
-	}
-
-	CompileComputeShaders();
+void PhysicalGlare::ReleaseScreenResources()
+{
+	outputReady = false;
+	for (auto& channel : texFFT)
+		for (auto& tex : channel)
+			tex = nullptr;
+	for (auto& tex : texPSF_FFT)
+		tex = nullptr;
+	texApertureBase = nullptr;
+	texGlarePacked = nullptr;
+	texOutput = nullptr;
+	psfDirty = true;
 }
 
 void PhysicalGlare::ClearShaderCache()
