@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <d3d11.h>
 #include <string>
 
@@ -427,4 +428,72 @@ public:
 
 private:
 	std::string name_;
+};
+
+/**
+ * @brief Decides when lazily created, screen-sized resources should be released.
+ *
+ * Features that only need full/half-resolution scratch textures while they are
+ * drawing call MarkUsed() on every frame they draw, create their resources when
+ * IsCreated() is false (then MarkCreated()), and call ShouldRelease() once per
+ * frame. ShouldRelease() returns true after the resources went unused for
+ * `releaseDelayFrames` consecutive frames; the caller then frees them and calls
+ * MarkReleased(). The delay keeps a quickly toggled menu checkbox from freeing
+ * and re-creating hundreds of MB, while still returning VRAM shortly after a
+ * feature is turned off.
+ */
+class LazyResourceLifetime
+{
+public:
+	/// ~2 s at 60 fps.
+	static constexpr std::uint32_t kDefaultReleaseDelayFrames = 120;
+
+	explicit LazyResourceLifetime(std::uint32_t a_releaseDelayFrames = kDefaultReleaseDelayFrames) :
+		releaseDelayFrames(a_releaseDelayFrames) {}
+
+	/** @brief Whether the owner's lazy resources currently exist. */
+	bool IsCreated() const { return created; }
+
+	/** @brief Records that the resources were just created. */
+	void MarkCreated()
+	{
+		created = true;
+		framesUnused = 0;
+	}
+
+	/** @brief Records that the resources are needed this frame. */
+	void MarkUsed()
+	{
+		usedThisFrame = true;
+		framesUnused = 0;
+	}
+
+	/**
+	 * @brief Advances the unused-frame counter. Call exactly once per frame.
+	 * @return True when the resources have gone unused long enough to be released.
+	 */
+	bool ShouldRelease()
+	{
+		if (!created)
+			return false;
+		if (usedThisFrame) {
+			usedThisFrame = false;
+			return false;
+		}
+		return ++framesUnused >= releaseDelayFrames;
+	}
+
+	/** @brief Records that the resources were released. */
+	void MarkReleased()
+	{
+		created = false;
+		usedThisFrame = false;
+		framesUnused = 0;
+	}
+
+private:
+	std::uint32_t releaseDelayFrames;
+	std::uint32_t framesUnused = 0;
+	bool created = false;
+	bool usedThisFrame = false;
 };

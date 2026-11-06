@@ -51,6 +51,15 @@ public:
 	/** @brief Updates the SSGI constant buffer with current camera, resolution, and settings data. */
 	void UpdateSB();
 
+	/** @brief Creates the full-resolution working/history textures if missing and marks them used this frame. */
+	void EnsureScreenResources();
+
+	/** @brief Releases the full-resolution working/history textures (noise, samplers and CB stay). */
+	void ReleaseScreenResources();
+
+	/** Releases the screen-sized textures shortly after SSGI is turned off. */
+	LazyResourceLifetime screenResourceLifetime;
+
 	//////////////////////////////////////////////////////////////////////////////////
 
 	bool recompileFlag = false;
@@ -162,7 +171,7 @@ public:
 	/** @brief Returns the current output SRVs for AO, indirect lighting Y/CoCg, and specular GI (or nullptrs if disabled). */
 	inline auto GetOutputTextures()
 	{
-		return (loaded && settings.Enabled) ?
+		return (loaded && settings.Enabled && texAo[outputAoIdx]) ?
 		           std::make_tuple(
 					   texAo[outputAoIdx]->srv.get(),
 					   texIlY[outputIlIdx]->srv.get(),

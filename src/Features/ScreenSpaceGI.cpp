@@ -383,7 +383,6 @@ void ScreenSpaceGI::PostPostLoad()
 
 void ScreenSpaceGI::SetupResources()
 {
-	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
 	logger::debug("Creating buffers...");
@@ -391,7 +390,72 @@ void ScreenSpaceGI::SetupResources()
 		ssgiCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<SSGICB>(), "SSGI::CB");
 	}
 
-	logger::debug("Creating textures...");
+	logger::debug("Loading noise texture...");
+	{
+		DirectX::ScratchImage image;
+		try {
+			std::filesystem::path path{ "Data\\Shaders\\ScreenSpaceGI\\fast_2uges.dds" };
+
+			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
+		} catch (const DX::com_exception& e) {
+			logger::error("{}", e.what());
+			return;
+		}
+
+		ID3D11Resource* pResource = nullptr;
+		try {
+			DX::ThrowIfFailed(CreateTexture(device,
+				image.GetImages(), image.GetImageCount(),
+				image.GetMetadata(), &pResource));
+		} catch (const DX::com_exception& e) {
+			logger::error("{}", e.what());
+			return;
+		}
+
+		texNoise = eastl::make_unique<Texture2D>(reinterpret_cast<ID3D11Texture2D*>(pResource), "SSGI::Noise");
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+			.Format = texNoise->desc.Format,
+			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
+			.Texture2D = {
+				.MostDetailedMip = 0,
+				.MipLevels = 1 }
+		};
+		texNoise->CreateSRV(srvDesc);
+	}
+
+	logger::debug("Creating samplers...");
+	{
+		D3D11_SAMPLER_DESC samplerDesc = {
+			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+			.MaxAnisotropy = 1,
+			.MinLOD = 0,
+			.MaxLOD = D3D11_FLOAT32_MAX
+		};
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearClampSampler.put()));
+		Util::SetResourceName(linearClampSampler.get(), "SSGI::LinearClampSampler");
+
+		samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, pointClampSampler.put()));
+		Util::SetResourceName(pointClampSampler.get(), "SSGI::PointClampSampler");
+	}
+
+	CompileComputeShaders();
+}
+
+void ScreenSpaceGI::EnsureScreenResources()
+{
+	screenResourceLifetime.MarkUsed();
+	if (screenResourceLifetime.IsCreated())
+		return;
+
+	auto renderer = globals::game::renderer;
+	auto device = globals::d3d::device;
+
+	logger::debug("Creating screen-sized textures...");
 	{
 		D3D11_TEXTURE2D_DESC texDesc{
 			.Width = 64,
@@ -549,60 +613,33 @@ void ScreenSpaceGI::SetupResources()
 		}
 	}
 
-	logger::debug("Loading noise texture...");
-	{
-		DirectX::ScratchImage image;
-		try {
-			std::filesystem::path path{ "Data\\Shaders\\ScreenSpaceGI\\fast_2uges.dds" };
+	screenResourceLifetime.MarkCreated();
+	// Fresh textures carry no valid history.
+	queuedResetHistory = true;
+}
 
-			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
-		} catch (const DX::com_exception& e) {
-			logger::error("{}", e.what());
-			return;
-		}
-
-		ID3D11Resource* pResource = nullptr;
-		try {
-			DX::ThrowIfFailed(CreateTexture(device,
-				image.GetImages(), image.GetImageCount(),
-				image.GetMetadata(), &pResource));
-		} catch (const DX::com_exception& e) {
-			logger::error("{}", e.what());
-			return;
-		}
-
-		texNoise = eastl::make_unique<Texture2D>(reinterpret_cast<ID3D11Texture2D*>(pResource), "SSGI::Noise");
-
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
-			.Format = texNoise->desc.Format,
-			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-			.Texture2D = {
-				.MostDetailedMip = 0,
-				.MipLevels = 1 }
-		};
-		texNoise->CreateSRV(srvDesc);
+void ScreenSpaceGI::ReleaseScreenResources()
+{
+	texWorkingDepth = nullptr;
+	texPrevGeo = nullptr;
+	texRadiance = nullptr;
+	texRadianceTemp = nullptr;
+	texNormal = nullptr;
+	for (uint i = 0; i < 5; ++i) {
+		uavWorkingDepth[i] = nullptr;
+		uavRadiance[i] = nullptr;
+		uavNormal[i] = nullptr;
+	}
+	for (uint i = 0; i < 2; ++i) {
+		texAccumFrames[i] = nullptr;
+		texAo[i] = nullptr;
+		texIlY[i] = nullptr;
+		texIlCoCg[i] = nullptr;
+		texGiSpecular[i] = nullptr;
 	}
 
-	logger::debug("Creating samplers...");
-	{
-		D3D11_SAMPLER_DESC samplerDesc = {
-			.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-			.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
-			.MaxAnisotropy = 1,
-			.MinLOD = 0,
-			.MaxLOD = D3D11_FLOAT32_MAX
-		};
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, linearClampSampler.put()));
-		Util::SetResourceName(linearClampSampler.get(), "SSGI::LinearClampSampler");
-
-		samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, pointClampSampler.put()));
-		Util::SetResourceName(pointClampSampler.get(), "SSGI::PointClampSampler");
-	}
-
-	CompileComputeShaders();
+	screenResourceLifetime.MarkReleased();
+	logger::debug("[SSGI] Released screen-sized textures");
 }
 
 void ScreenSpaceGI::ClearShaderCache()
@@ -730,7 +767,17 @@ void ScreenSpaceGI::DrawSSGI()
 	if (BSImagespaceShaderISSAOBlurH)
 		BSImagespaceShaderISSAOBlurH->enableSAO = settings.EnableVanillaSSAO;
 
-	if (!(settings.Enabled && ShadersOK())) {
+	// Turned off: hold no screen-sized VRAM. GetOutputTextures() hands the composite null SRVs.
+	if (!settings.Enabled) {
+		if (screenResourceLifetime.ShouldRelease())
+			ReleaseScreenResources();
+		return;
+	}
+
+	EnsureScreenResources();
+
+	// Enabled but shaders still compiling: the composite reads our outputs, so present them as "no GI".
+	if (!ShadersOK()) {
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
 		context->ClearUnorderedAccessViewFloat(texAo[outputAoIdx]->uav.get(), clr);
 		context->ClearUnorderedAccessViewFloat(texIlY[outputIlIdx]->uav.get(), clr);
