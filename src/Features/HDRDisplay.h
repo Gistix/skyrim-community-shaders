@@ -152,6 +152,18 @@ public:
 	/** @brief Releases all HDR textures, constant buffers, and restores LDR render targets. */
 	void DestroyResources();
 
+	/** @brief Creates the screen-sized HDR scene, output and UI textures if they are missing. Only needed while HDR output is on. */
+	void CreateScreenTextures();
+
+	/** @brief Frees the HDR scene, output, UI and clean-capture textures without waiting on the GPU. */
+	void DestroyScreenTextures();
+
+	/**
+	 * @brief Frees the HDR-only textures once the GPU is provably done with them.
+	 * @return True when nothing is left to free; false when the release was deferred to a later frame.
+	 */
+	bool ReleaseScreenTexturesWhenIdle();
+
 	XM_ALIGNED_STRUCT(16)
 	HDRDataCB
 	{
@@ -231,6 +243,7 @@ private:
 	bool pendingHDREnable = false;
 	bool hdrEnabledForFrame = false;
 	bool presentSuppressed = false;
+	bool screenTextureReleaseDeferredLogged = false;
 	std::unordered_map<ID3D11BlendState*, winrt::com_ptr<ID3D11BlendState>> patchedBlendStateCache;
 
 	HRESULT PresentToSwapChain(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags);

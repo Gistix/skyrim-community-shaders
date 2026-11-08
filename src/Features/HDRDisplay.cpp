@@ -645,6 +645,26 @@ void HDRDisplay::SetupResources()
 	// This ensures outputTexture matches the actual swap chain format for CopyResource
 	UpdateSwapChainColorSpace();
 
+	// Scene/output/UI textures are only used while HDR output is on; BeginRenderFrame()
+	// creates and releases them as enableHDR changes.
+	if (hdrEnabledForFrame)
+		CreateScreenTextures();
+
+	hdrDataCB = new ConstantBuffer(ConstantBufferDesc<HDRDataCB>(), "HDR::DataCB");
+
+	UpdateHDRData();
+
+	GetHDROutputCS();
+
+	UpgradeLDRRenderTargets();
+}
+
+void HDRDisplay::CreateScreenTextures()
+{
+	if (hdrTexture && outputTexture && uiTexture)
+		return;
+	DestroyScreenTextures();
+
 	auto renderer = globals::game::renderer;
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
@@ -717,13 +737,69 @@ void HDRDisplay::SetupResources()
 	rtvDesc.Texture2D.MipSlice = 0;
 	uiTexture->CreateRTV(rtvDesc);
 
-	hdrDataCB = new ConstantBuffer(ConstantBufferDesc<HDRDataCB>(), "HDR::DataCB");
+	logger::info("[HDR] Created HDR scene/output/UI textures");
+}
 
-	UpdateHDRData();
+void HDRDisplay::DestroyScreenTextures()
+{
+	if (hdrTexture) {
+		hdrTexture->srv = nullptr;
+		hdrTexture->uav = nullptr;
+		hdrTexture->rtv = nullptr;
+		hdrTexture->resource = nullptr;
+		delete hdrTexture;
+		hdrTexture = nullptr;
+	}
 
-	GetHDROutputCS();
+	if (outputTexture) {
+		outputTexture->srv = nullptr;
+		outputTexture->uav = nullptr;
+		outputTexture->resource = nullptr;
+		delete outputTexture;
+		outputTexture = nullptr;
+	}
 
-	UpgradeLDRRenderTargets();
+	if (uiTexture) {
+		uiTexture->srv = nullptr;
+		uiTexture->uav = nullptr;
+		uiTexture->rtv = nullptr;
+		uiTexture->resource = nullptr;
+		delete uiTexture;
+		uiTexture = nullptr;
+	}
+
+	if (cleanSceneCapture) {
+		cleanSceneCapture->srv = nullptr;
+		cleanSceneCapture->resource = nullptr;
+		delete cleanSceneCapture;
+		cleanSceneCapture = nullptr;
+		cleanSceneCaptureFrame = UINT32_MAX;
+	}
+}
+
+bool HDRDisplay::ReleaseScreenTexturesWhenIdle()
+{
+	if (!hdrTexture && !outputTexture && !uiTexture && !cleanSceneCapture)
+		return true;
+
+	// Never leave the game's framebuffer pointing at views we are about to free.
+	RestoreFramebuffer();
+	ClearUIBuffer();
+
+	// outputTexture was copied to the back buffer by the last HDR present; under DXVK
+	// interop that work may still be in flight. A faulted ring would make every drain attempt
+	// wait for device idle and log, so wait for Upscaling's per-frame recovery instead.
+	auto* dxvk = DXVKInterop::GetSingleton();
+	if (dxvk->HasCommandRingFault() || !dxvk->DrainCommandRing()) {
+		if (!std::exchange(screenTextureReleaseDeferredLogged, true))
+			logger::warn("[HDR] Release of HDR textures deferred: command completion could not be proven");
+		return false;
+	}
+
+	screenTextureReleaseDeferredLogged = false;
+	DestroyScreenTextures();
+	logger::info("[HDR] Released HDR scene/output/UI textures (SDR output)");
+	return true;
 }
 
 void HDRDisplay::BeginRenderFrame()
@@ -736,13 +812,19 @@ void HDRDisplay::BeginRenderFrame()
 		std::lock_guard<std::mutex> lock(settingsMutex);
 		requestedHDR = settings.enableHDR;
 	}
-	if (requestedHDR == hdrEnabledForFrame)
-		return;
+	if (requestedHDR != hdrEnabledForFrame) {
+		hdrEnabledForFrame = requestedHDR;
+		logger::info("HDR: applying enableHDR={} for the next rendered frame", hdrEnabledForFrame);
+		UpdateHDRData();
+		UpdateSwapChainColorSpace();
+	}
 
-	hdrEnabledForFrame = requestedHDR;
-	logger::info("HDR: applying enableHDR={} for the next rendered frame", hdrEnabledForFrame);
-	UpdateHDRData();
-	UpdateSwapChainColorSpace();
+	// HDR-only textures follow the output mode. Both calls are no-ops once in the right state;
+	// a release that cannot prove the GPU is done with them is retried next frame.
+	if (hdrEnabledForFrame)
+		CreateScreenTextures();
+	else
+		ReleaseScreenTexturesWhenIdle();
 }
 
 void HDRDisplay::RedirectFramebuffer()
@@ -1237,39 +1319,7 @@ ID3D11Texture2D* HDRDisplay::ComposeCleanCapture(ID3D11ShaderResourceView* scene
 
 void HDRDisplay::DestroyResources()
 {
-	if (hdrTexture) {
-		hdrTexture->srv = nullptr;
-		hdrTexture->uav = nullptr;
-		hdrTexture->rtv = nullptr;
-		hdrTexture->resource = nullptr;
-		delete hdrTexture;
-		hdrTexture = nullptr;
-	}
-
-	if (outputTexture) {
-		outputTexture->srv = nullptr;
-		outputTexture->uav = nullptr;
-		outputTexture->resource = nullptr;
-		delete outputTexture;
-		outputTexture = nullptr;
-	}
-
-	if (uiTexture) {
-		uiTexture->srv = nullptr;
-		uiTexture->uav = nullptr;
-		uiTexture->rtv = nullptr;
-		uiTexture->resource = nullptr;
-		delete uiTexture;
-		uiTexture = nullptr;
-	}
-
-	if (cleanSceneCapture) {
-		cleanSceneCapture->srv = nullptr;
-		cleanSceneCapture->resource = nullptr;
-		delete cleanSceneCapture;
-		cleanSceneCapture = nullptr;
-		cleanSceneCaptureFrame = UINT32_MAX;
-	}
+	DestroyScreenTextures();
 
 	if (hdrDataCB) {
 		delete hdrDataCB;
