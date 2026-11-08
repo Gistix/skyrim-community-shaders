@@ -65,6 +65,35 @@ void TerrainBlending::SetupResources()
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 
+	// The game's own depth SRVs, restored whenever blending is inactive.
+	{
+		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		depthSRVBackup = mainDepth.depthSRV;
+
+		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+		prepassSRVBackup = zPrepassCopy.depthSRV;
+	}
+
+	{
+		D3D11_DEPTH_STENCIL_DESC depthStencilDesc{};
+		depthStencilDesc.DepthEnable = true;
+		depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		depthStencilDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+		depthStencilDesc.StencilEnable = false;
+		DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, &terrainDepthStencilState));
+		Util::SetResourceName(terrainDepthStencilState, "TerrainBlending::DepthStencilState");
+	}
+}
+
+void TerrainBlending::EnsureScreenResources()
+{
+	screenResourceLifetime.MarkUsed();
+	if (screenResourceLifetime.IsCreated())
+		return;
+
+	auto renderer = globals::game::renderer;
+	auto device = globals::d3d::device;
+
 	{
 		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
@@ -73,8 +102,9 @@ void TerrainBlending::SetupResources()
 		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, NULL, &terrainDepth.texture));
 		Util::SetResourceName(terrainDepth.texture, "TerrainBlending::TerrainDepth");
 
+		// mainDepth.depthSRV may currently point at our blended depth; the backup is always the game's view.
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		mainDepth.depthSRV->GetDesc(&srvDesc);
+		depthSRVBackup->GetDesc(&srvDesc);
 		DX::ThrowIfFailed(device->CreateShaderResourceView(terrainDepth.texture, &srvDesc, &terrainDepth.depthSRV));
 		Util::SetResourceName(terrainDepth.depthSRV, "TerrainBlending::TerrainDepth SRV");
 
@@ -111,23 +141,35 @@ void TerrainBlending::SetupResources()
 		blendedDepthTexture16 = new Texture2D(texDesc, "TerrainBlending::BlendedDepth16");
 		blendedDepthTexture16->CreateSRV(srvDesc);
 		blendedDepthTexture16->CreateUAV(uavDesc);
-
-		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		depthSRVBackup = mainDepth.depthSRV;
-
-		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-		prepassSRVBackup = zPrepassCopy.depthSRV;
 	}
 
-	{
-		D3D11_DEPTH_STENCIL_DESC depthStencilDesc{};
-		depthStencilDesc.DepthEnable = true;
-		depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-		depthStencilDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-		depthStencilDesc.StencilEnable = false;
-		DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, &terrainDepthStencilState));
-		Util::SetResourceName(terrainDepthStencilState, "TerrainBlending::DepthStencilState");
+	screenResourceLifetime.MarkCreated();
+	logger::debug("[Terrain Blending] Created screen-sized depth textures");
+}
+
+void TerrainBlending::ReleaseScreenResources()
+{
+	// Callers must have pointed the game's depth SRVs back at depthSRVBackup/prepassSRVBackup first.
+	if (terrainDepth.views[0]) {
+		terrainDepth.views[0]->Release();
+		terrainDepth.views[0] = nullptr;
 	}
+	if (terrainDepth.depthSRV) {
+		terrainDepth.depthSRV->Release();
+		terrainDepth.depthSRV = nullptr;
+	}
+	if (terrainDepth.texture) {
+		terrainDepth.texture->Release();
+		terrainDepth.texture = nullptr;
+	}
+
+	delete blendedDepthTexture;
+	blendedDepthTexture = nullptr;
+	delete blendedDepthTexture16;
+	blendedDepthTexture16 = nullptr;
+
+	screenResourceLifetime.MarkReleased();
+	logger::debug("[Terrain Blending] Released screen-sized depth textures");
 }
 
 void TerrainBlending::PostPostLoad()
@@ -274,6 +316,8 @@ void TerrainBlending::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 	singleton.eyePosition = Util::GetEyePosition();
 
 	if (shaderCache->IsEnabled() && singleton.Active()) {
+		singleton.EnsureScreenResources();
+
 		mainDepth.depthSRV = singleton.blendedDepthTexture->srv.get();
 		zPrepassCopy.depthSRV = singleton.blendedDepthTexture->srv.get();
 
@@ -301,6 +345,10 @@ void TerrainBlending::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 			ZoneScopedN("Terrain Depth - Game Render");
 			func(a1, a2);
 		}
+
+		// The game's depth SRVs are restored above, so our textures can go once blending stays off.
+		if (singleton.screenResourceLifetime.ShouldRelease())
+			singleton.ReleaseScreenResources();
 	}
 }
 
@@ -368,6 +416,9 @@ void TerrainBlending::RenderTerrainBlendingPasses()
 		zPrepassCopy.depthSRV = prepassSRVBackup;
 		return;
 	}
+
+	// Normally created by the depth prepass hook already; covers a frame where blending was switched on after it ran.
+	EnsureScreenResources();
 
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;

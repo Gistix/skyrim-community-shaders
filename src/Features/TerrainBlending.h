@@ -43,8 +43,17 @@ public:
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
-	/** @brief Creates GPU resources including depth textures, blended depth buffers, and stencil states. */
+	/** @brief Creates persistent GPU state (depth stencil state, backups of the game's depth SRVs). */
 	virtual void SetupResources() override;
+
+	/** @brief Creates the screen-sized terrain depth and blended depth textures if missing and marks them used this frame. */
+	void EnsureScreenResources();
+
+	/** @brief Releases the screen-sized depth textures. The game's depth SRVs must already be restored. */
+	void ReleaseScreenResources();
+
+	/** Releases the screen-sized depth textures shortly after blending is turned off. */
+	LazyResourceLifetime screenResourceLifetime;
 
 	/** @brief Returns the terrain depth vertex shader, compiling on first use. */
 	ID3D11VertexShader* GetTerrainVertexShader();
