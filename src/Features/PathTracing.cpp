@@ -393,6 +393,22 @@ void PathTracing::DrawLightingSettings()
 	if (ImGui::CollapsingHeader(T(RT_TKEY("lighting"), "Lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		auto& lightingSettings = settings.LightingSettings;
 
+		// Celestial Body Color
+		{
+			const char* names[] = {
+				T(RT_TKEY("cc_default"), "Default"),
+				T(RT_TKEY("cc_hue"), "Hue"),
+				T(RT_TKEY("cc_absolute"), "Absolute")
+			};
+
+			int currentCelestialColor = static_cast<int>(lightingSettings.CelestialColors);
+			if (ImGui::Combo(T(RT_TKEY("celestial_color"), "Celestial Color"), &currentCelestialColor, names, IM_ARRAYSIZE(names)))
+				lightingSettings.CelestialColors = static_cast<CreationEngineRaytracing::CelestialColorMode>(currentCelestialColor);
+
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(RT_TKEY("celestial_color_desc"), "Whether to use the original moon colors or attempt to match their real physical colors.\n"));
+		}
+
 		if (ImGui::DragFloat(T(RT_TKEY("directional_strength"), "Directional Strength"), &lightingSettings.Directional, 0.001f))
 			lightingSettings.Directional = std::max(0.0f, lightingSettings.Directional);
 

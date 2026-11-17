@@ -257,6 +257,14 @@ struct CreationEngineRaytracing
 		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(MaterialSettings, Roughness, Metalness)
 	};
 
+	// Colour of the night directional lights (moons)
+	enum struct CelestialColorMode
+	{
+		Default,   // Native directional light colour
+		Hue,       // Moon base colours, brightness from the game's native directional light
+		Absolute   // Moon base colours and intensities
+	};
+
 	struct LightingSettings
 	{
 		float Directional = 5.0f;
@@ -265,10 +273,11 @@ struct CreationEngineRaytracing
 		float Emissive = 5.0f;
 		float Effect = 5.0f;
 		float Sky = 5.0f;
+		CelestialColorMode CelestialColors = CelestialColorMode::Default;
 
 		bool operator==(const LightingSettings&) const = default;
 
-		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingSettings, Directional, Point, LodDimmer, Emissive, Effect, Sky)
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(LightingSettings, Directional, Point, LodDimmer, Emissive, Effect, Sky, CelestialColors)
 	};
 
 	struct SHaRCSettings
