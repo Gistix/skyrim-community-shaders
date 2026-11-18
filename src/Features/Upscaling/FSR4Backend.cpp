@@ -156,6 +156,12 @@ void FSR4Backend::Shutdown()
 {
 	auto* interop = D3D12Interop::GetSingleton();
 	if (interop) {
+		// Evaluate no longer blocks until each dispatch finishes, so the last one may still be
+		// reading the shared textures and the FFX context destroyed below.
+		if (initialized && lastD3dSignalVal && interop->IsAvailable())
+			interop->VulkanWaitFence(interop->GetMainSharedFence(), lastD3dSignalVal);
+		lastD3dSignalVal = 0;
+
 		interop->DestroySharedTexture(sharedColorIn);
 		interop->DestroySharedTexture(sharedColorOut);
 		interop->DestroySharedTexture(sharedDepth);
@@ -286,14 +292,26 @@ bool FSR4Backend::Evaluate(
 	const uint64_t baseFence = interop->AdvanceTimelineFrame();
 	const uint64_t vkSignalVal = baseFence + 3;
 	const uint64_t d3dSignalVal = baseFence + 4;
+	const VkSemaphore sharedSemaphore = interop->GetMainSharedFence().vkTimelineSemaphore;
+
+	// baseFence is the previous frame's d3dSignalVal: the input copies overwrite the shared
+	// inputs that frame's FSR 4 dispatch reads, so wait for it on the GPU (nothing to wait on
+	// for the first frame).
+	const VkSemaphore prevFrameWait = baseFence ? sharedSemaphore : VK_NULL_HANDLE;
 
 	if (tx) {
-		dxvk->SubmitFrameCommandBuffer(tx, interop->GetMainSharedFence().vkTimelineSemaphore, vkSignalVal);
+		dxvk->SubmitFrameCommandBuffer(tx, sharedSemaphore, vkSignalVal, prevFrameWait, baseFence);
+	} else {
+		// Nothing was submitted to signal it, so signal from the CPU rather than leave the
+		// D3D12 queue waiting forever.
+		interop->VulkanSignalFence(interop->GetMainSharedFence(), vkSignalVal);
 	}
 	interop->D3D12QueueWait(interop->GetMainSharedFence(), vkSignalVal);
 
-	// 3. Record & dispatch D3D12 FSR 4 upscaling work
-	const uint32_t slot = 1;
+	// 3. Record & dispatch D3D12 FSR 4 upscaling work. Rotate allocator slots so resetting one
+	// never has to wait for the previous frame's dispatch to finish.
+	const uint32_t slot = d3d12Slot;
+	d3d12Slot = (d3d12Slot + 1) % D3D12Interop::kMaxFramesInFlight;
 	auto* cmdList = interop->BeginCommandList(slot);
 	if (cmdList) {
 		// Transition D3D12 resources from COMMON to active execution states
@@ -422,9 +440,11 @@ bool FSR4Backend::Evaluate(
 	}
 
 	interop->D3D12QueueSignal(interop->GetMainSharedFence(), d3dSignalVal);
-	interop->VulkanWaitFence(interop->GetMainSharedFence(), d3dSignalVal);
+	lastD3dSignalVal = d3dSignalVal;
 
-	// 4. Copy high-resolution output back to game display surface with full layout barriers
+	// 4. Copy high-resolution output back to game display surface with full layout barriers.
+	// The copy waits for the FSR 4 dispatch on the GPU (d3dSignalVal) instead of the CPU
+	// blocking here until the D3D12 queue has finished.
 	auto txOut = dxvk->BeginFrameCommandBuffer();
 	if (txOut) {
 		VkCommandBuffer cb = txOut.GetCommandBuffer();
@@ -455,7 +475,7 @@ bool FSR4Backend::Evaluate(
 			RecordImageBarrier(cb, sharedColorOut.vkImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 		}
-		dxvk->SubmitFrameCommandBuffer(txOut);
+		dxvk->SubmitFrameCommandBuffer(txOut, VK_NULL_HANDLE, 0, sharedSemaphore, d3dSignalVal);
 	}
 
 	return true;

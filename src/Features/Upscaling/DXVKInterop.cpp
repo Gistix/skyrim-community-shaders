@@ -101,7 +101,8 @@ namespace
 	QueueSubmitAttempt DirectQueueSubmitSEH(IDXGIVkInteropDevice* a_interopDevice,
 		VkDevice a_device, VkQueue a_queue,
 		VkCommandBuffer a_commandBuffer, VkFence a_fence,
-		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0) noexcept
+		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0,
+		VkSemaphore a_waitSemaphore = VK_NULL_HANDLE, uint64_t a_waitValue = 0) noexcept
 	{
 		QueueSubmitAttempt attempt{};
 		__try {
@@ -124,6 +125,20 @@ namespace
 							if (a_signalValue > 0) {
 								timelineInfo.signalSemaphoreValueCount = 1;
 								timelineInfo.pSignalSemaphoreValues = &a_signalValue;
+								submitInfo.pNext = &timelineInfo;
+							}
+						}
+
+						// GPU-side wait, e.g. for D3D12 work, instead of blocking the CPU on it.
+						// Every stage waits: the wait mask is this batch's second sync scope.
+						const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+						if (a_waitSemaphore != VK_NULL_HANDLE) {
+							submitInfo.waitSemaphoreCount = 1;
+							submitInfo.pWaitSemaphores = &a_waitSemaphore;
+							submitInfo.pWaitDstStageMask = &waitStage;
+							if (a_waitValue > 0) {
+								timelineInfo.waitSemaphoreValueCount = 1;
+								timelineInfo.pWaitSemaphoreValues = &a_waitValue;
 								submitInfo.pNext = &timelineInfo;
 							}
 						}
@@ -436,6 +451,19 @@ bool DXVKInterop::Initialize()
 
 	available = true;
 	return true;
+}
+
+bool DXVKInterop::GetExternalSubmissionQueue(ExternalQueue a_owner, VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const
+{
+	if (!interopDevice)
+		return false;
+
+	winrt::com_ptr<IDXGIVkInteropDevice2> interopDevice2;
+	if (FAILED(interopDevice->QueryInterface(__uuidof(IDXGIVkInteropDevice2), interopDevice2.put_void())))
+		return false;
+
+	return SUCCEEDED(interopDevice2->GetExternalSubmissionQueue(
+		static_cast<UINT>(a_owner), a_outQueue, a_outQueueIndex, a_outQueueFamilyIndex));
 }
 
 bool DXVKInterop::GetSubmissionQueue1(VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const
@@ -867,7 +895,8 @@ DXVKInterop::CommandTransaction DXVKInterop::BeginFrameCommandBuffer()
 }
 
 bool DXVKInterop::SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
-	VkSemaphore a_signalSemaphore, uint64_t a_signalValue)
+	VkSemaphore a_signalSemaphore, uint64_t a_signalValue,
+	VkSemaphore a_waitSemaphore, uint64_t a_waitValue)
 {
 	if (a_transaction.owner != this || !a_transaction.ringLock.owns_lock() ||
 		a_transaction.submitted || a_transaction.slot >= commandBuffers.size() ||
@@ -881,7 +910,8 @@ bool DXVKInterop::SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
 	VkFence& fence = commandFences[slot];
 
 	const QueueSubmitAttempt attempt = DirectQueueSubmitSEH(
-		interopDevice.get(), device, queue, commandBuffer, fence, a_signalSemaphore, a_signalValue);
+		interopDevice.get(), device, queue, commandBuffer, fence, a_signalSemaphore, a_signalValue,
+		a_waitSemaphore, a_waitValue);
 	if (attempt.faulted || attempt.endResult != VK_SUCCESS ||
 		attempt.resetResult != VK_SUCCESS || attempt.submitResult != VK_SUCCESS) {
 		commandRingFaulted = true;

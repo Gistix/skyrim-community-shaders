@@ -182,6 +182,15 @@ private:
 	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[kMaxFramesInFlight];
 	winrt::com_ptr<ID3D12GraphicsCommandList> commandLists[kMaxFramesInFlight];
 
+	// Signalled on the D3D12 queue after each ExecuteCommandList, so a slot's allocator is only
+	// reset once the GPU has finished the work last recorded with it.
+	winrt::com_ptr<ID3D12Fence> slotFence;
+	uint64_t slotFenceCounter = 0;
+	uint64_t slotFenceValues[kMaxFramesInFlight] = {};
+
+	/** @brief Blocks until the work last submitted from a slot has completed on the GPU (usually already true). */
+	void WaitForSlot(uint32_t a_frameIndex);
+
 	SharedFence mainFence;
 	uint64_t timelineCounter = 0;
 	std::mutex timelineMutex;

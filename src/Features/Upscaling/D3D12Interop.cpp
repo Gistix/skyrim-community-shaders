@@ -173,6 +173,12 @@ bool D3D12Interop::Initialize(VkInstance a_vkInstance, VkPhysicalDevice a_vkPhys
 		commandLists[i]->Close();
 	}
 
+	hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(slotFence.put()));
+	if (FAILED(hr) || !slotFence) {
+		logger::error("[D3D12Interop] CreateFence for command-list slots failed ({:#x})", static_cast<uint32_t>(hr));
+		return false;
+	}
+
 	// 6. Create main shared timeline fence
 	if (!CreateSharedFence(mainFence, 0)) {
 		logger::error("[D3D12Interop] Failed to create main shared timeline fence");
@@ -189,12 +195,19 @@ void D3D12Interop::Shutdown()
 	if (!available)
 		return;
 
+	// Command lists may still be executing now that callers no longer wait for them on the CPU.
+	for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+		WaitForSlot(i);
+
 	DestroySharedFence(mainFence);
 
 	for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
 		commandLists[i] = nullptr;
 		commandAllocators[i] = nullptr;
+		slotFenceValues[i] = 0;
 	}
+	slotFence = nullptr;
+	slotFenceCounter = 0;
 
 	commandQueue = nullptr;
 	device = nullptr;
@@ -613,6 +626,9 @@ ID3D12GraphicsCommandList* D3D12Interop::BeginCommandList(uint32_t a_frameIndex)
 	auto& allocator = commandAllocators[a_frameIndex];
 	auto& cmdList = commandLists[a_frameIndex];
 
+	// An allocator may only be reset once the GPU is done with what it last recorded.
+	WaitForSlot(a_frameIndex);
+
 	allocator->Reset();
 	cmdList->Reset(allocator.get(), nullptr);
 	return cmdList.get();
@@ -632,7 +648,21 @@ bool D3D12Interop::ExecuteCommandList(uint32_t a_frameIndex)
 
 	ID3D12CommandList* lists[] = { cmdList.get() };
 	commandQueue->ExecuteCommandLists(1, lists);
+
+	if (slotFence && SUCCEEDED(commandQueue->Signal(slotFence.get(), slotFenceCounter + 1)))
+		slotFenceValues[a_frameIndex] = ++slotFenceCounter;
+
 	return true;
+}
+
+void D3D12Interop::WaitForSlot(uint32_t a_frameIndex)
+{
+	if (!slotFence || a_frameIndex >= kMaxFramesInFlight)
+		return;
+
+	const uint64_t value = slotFenceValues[a_frameIndex];
+	if (value && slotFence->GetCompletedValue() < value)
+		slotFence->SetEventOnCompletion(value, nullptr);  // null event: blocks until reached
 }
 
 void D3D12Interop::D3D12QueueWait(const SharedFence& a_fence, uint64_t a_value)

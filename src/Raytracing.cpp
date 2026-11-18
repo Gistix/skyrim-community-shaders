@@ -462,19 +462,28 @@ bool Raytracing::InitializeCERaytracing()
 		VkQueue graphicsQueue = dxvk->GetQueue();
 		uint32_t queueIndex = 0;
 		uint32_t queueFamilyIndex = dxvk->GetQueueFamilyIndex();
-		dxvk->GetSubmissionQueue1(&graphicsQueue, &queueIndex, &queueFamilyIndex);
 
+		// Prefer the queue the DXVK fork reserves for us: the renderer then syncs with
+		// D3D11 through fences instead of locking (and draining) DXVK's own queue.
+		if (dxvk->GetExternalSubmissionQueue(DXVKInterop::ExternalQueue::kRaytracing, &graphicsQueue, &queueIndex, &queueFamilyIndex)) {
+			logger::info("[Raytracing] Using dedicated Vulkan queue (family {}, index {})", queueFamilyIndex, queueIndex);
+		} else {
+			dxvk->GetSubmissionQueue1(&graphicsQueue, &queueIndex, &queueFamilyIndex);
+			logger::info("[Raytracing] Sharing DXVK's Vulkan queue (family {}, index {})", queueFamilyIndex, queueIndex);
+		}
+
+		// The renderer takes queue *family* indices (NVRHI DeviceDesc::*QueueIndex).
 		bool result = creationEngineRaytracing->InitializeVulkanRenderer(
 			&settings.RendererSettings,
 			dxvk->GetInstance(),
 			dxvk->GetPhysicalDevice(),
 			dxvk->GetDevice(),
 			graphicsQueue,
-			static_cast<int>(queueIndex),
+			static_cast<int>(queueFamilyIndex),
 			graphicsQueue,
-			static_cast<int>(queueIndex),
+			static_cast<int>(queueFamilyIndex),
 			graphicsQueue,
-			static_cast<int>(queueIndex));
+			static_cast<int>(queueFamilyIndex));
 
 		if (!result) {
 			settings.CreationEngineRaytracingSettings.Enabled = false;

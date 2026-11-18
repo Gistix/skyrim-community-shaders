@@ -69,6 +69,22 @@ IDXGIVkInteropDevice1 : public IDXGIVkInteropDevice
 		ID3D11Texture2D** ppTexture2D) = 0;
 };
 
+struct ID3D11Fence;
+
+/** @brief Fork-only: a queue reserved for external renderers, plus D3D11 fence semaphores. */
+MIDL_INTERFACE("e2ef5fa5-dc21-4af7-90c4-f67ef6a09325")
+IDXGIVkInteropDevice2 : public IDXGIVkInteropDevice1
+{
+	virtual HRESULT STDMETHODCALLTYPE GetExternalSubmissionQueue(
+		UINT Index,
+		VkQueue * pQueue,
+		uint32_t * pQueueIndex,
+		uint32_t * pQueueFamilyIndex) = 0;
+	virtual HRESULT STDMETHODCALLTYPE GetFenceSemaphore(
+		ID3D11Fence * pFence,
+		VkSemaphore * pSemaphore) = 0;
+};
+
 /** @brief Accesses DXVK's Vulkan device through its D3D11 interop interfaces. */
 class DXVKInterop
 {
@@ -144,6 +160,15 @@ public:
 	uint32_t GetQueueFamilyIndex() const { return queueFamilyIndex; }
 	IDXGIVkInteropDevice* GetInteropDevice() const { return interopDevice.get(); }
 	bool GetSubmissionQueue1(VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const;
+	/** @brief Owners of the DXVK fork's reserved queues. Each index is one queue; never share one. */
+	enum class ExternalQueue : uint32_t
+	{
+		kRaytracing = 0,
+		kUpscaling = 1,
+	};
+
+	/** @brief A queue reserved for external renderers (fork-only); false if this DXVK build has none at that index. */
+	bool GetExternalSubmissionQueue(ExternalQueue a_owner, VkQueue* a_outQueue, uint32_t* a_outQueueIndex, uint32_t* a_outQueueFamilyIndex) const;
 	PFN_vkGetInstanceProcAddr GetInstanceProcAddr() const { return vkGetInstanceProcAddr; }
 	PFN_vkGetDeviceProcAddr GetDeviceProcAddr() const { return vkGetDeviceProcAddr; }
 
@@ -181,9 +206,13 @@ public:
 	/** @brief Begins an available command buffer from the ring. */
 	CommandTransaction BeginFrameCommandBuffer();
 
-	/** @brief Submits a ring command buffer on DXVK's queue, optionally signaling a semaphore on GPU completion. */
+	/**
+	 * @brief Submits a ring command buffer on DXVK's queue, optionally signaling a semaphore on GPU completion
+	 * and waiting on one on the GPU before it runs (timeline values when non-zero).
+	 */
 	bool SubmitFrameCommandBuffer(CommandTransaction& a_transaction,
-		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0);
+		VkSemaphore a_signalSemaphore = VK_NULL_HANDLE, uint64_t a_signalValue = 0,
+		VkSemaphore a_waitSemaphore = VK_NULL_HANDLE, uint64_t a_waitValue = 0);
 
 	/** @brief Defers image-view destruction until the current ring slot completes. */
 	void QueueViewsForDeferredDelete(const CommandTransaction& a_transaction,

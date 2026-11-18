@@ -51,6 +51,11 @@ private:
 	uint32_t displayWidth = 0;
 	uint32_t displayHeight = 0;
 
+	// D3D12 command-list slot for the next dispatch; rotated so a slot is not reset while in flight
+	uint32_t d3d12Slot = 0;
+	// Timeline value the last dispatch signals on completion; Shutdown waits for it
+	uint64_t lastD3dSignalVal = 0;
+
 	// Shared NT textures for cross-API handoff
 	D3D12Interop::SharedTexture sharedColorIn;
 	D3D12Interop::SharedTexture sharedColorOut;
